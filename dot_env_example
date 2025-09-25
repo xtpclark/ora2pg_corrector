@@ -1,22 +1,45 @@
-# Database backend (sqlite or postgresql)
+#This is an example file. Copy it to .env and fill in your actual values.
+#IMPORTANT: Do not commit the .env file to your version control system.
+
+#--- Application Configuration ---
+#Generate a strong, random secret key for signing JWTs.
+#You can generate one with: python -c 'import secrets; print(secrets.token_hex(32))'
+
+APP_SECRET_KEY=
+#Generate a Fernet key for encrypting sensitive data in the database.
+#You can generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+
+APP_ENCRYPTION_KEY=
+
+#--- Dummy User for Development Login ---
+#Replace with a real user management system in production
+
+DUMMY_USER=admin
+DUMMY_PASSWORD=password
+
+#--- Database Configuration ---
+#Set the database backend. Options: 'sqlite' or 'postgresql'
+
 DB_BACKEND=sqlite
+#If using postgresql, provide the DSN for the application's config database.
+#The hostname 'postgres' matches the service name in docker-compose.yml.
 
-# PostgreSQL DSN for config storage (if DB_BACKEND=postgresql)
-PG_DSN_CONFIG=dbname=ora2pg_settings user=postgres password=your_password host=localhost port=5432
+#PG_DSN_CONFIG="dbname=ora2pg_settings user=postgres password=password host=postgres port=5432"
+#DSN for the staging PostgreSQL database used for validating corrected SQL.
+#This can be the same database or a different one.
 
-# PostgreSQL DSN for staging database (for SQL validation)
-STAGING_PG_DSN=dbname=staging user=postgres password=your_password host=localhost port=5432
+#STAGING_PG_DSN="dbname=staging user=postgres password=password host=postgres port=5432"
 
-# JWT secret for authentication
-APP_SECRET_KEY=your_jwt_secret
+#--- Docker Compose Postgres Service Configuration ---
+#These are used by docker-compose.yml to initialize the postgres service.
 
-# Encryption key for sensitive data
-APP_ENCRYPTION_KEY=your_encryption_key
+#POSTGRES_USER=postgres
+#POSTGRES_PASSWORD=password
+#POSTGRES_DB=ora2pg_settings
 
-# AI API key (OpenAI or Google Gemini)
-OPENAI_API_KEY=your_openai_key
-# GEMINI_API_KEY=your_gemini_key
+#--- AI Provider API Keys ---
+#Provide the API key for your chosen AI service.
+#Only one is needed, based on your configuration.
 
-# Optional: SSL settings for AI API calls
-AI_SSL_VERIFY=true
-# SSL_CERT_PATH=/path/to/cert.pem
+GEMINI_API_KEY=
+OPENAI_API_KEY=

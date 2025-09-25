@@ -1,15 +1,19 @@
 version: '3.8'
 
 services:
-  ora2pg-ai-corrector:
+  app:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      - ./output:/app/output
-      - ./settings.db:/app/settings.db
+      # FIX: Add a bind mount for the output directory
+      # This makes local files like oracle_test_set.sql available inside the container.
+      - ./output:/app/output:z
+      # Mount the settings database file
+      - ./settings.db:/app/settings.db:z
     env_file:
       - .env
+    # Use depends_on to ensure postgres starts first
     depends_on:
       - postgres
     networks:
@@ -18,9 +22,10 @@ services:
   postgres:
     image: postgres:13
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: your_password
-      POSTGRES_DB: ora2pg_settings
+      # These should match the values in your .env file
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: ${POSTGRES_DB:-ora2pg_settings}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
@@ -32,3 +37,4 @@ volumes:
 networks:
   app-network:
     driver: bridge
+
