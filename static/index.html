@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ora2PG AI Corrector</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            background-color: #fff;
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background: #f0f0f0;
+            border-radius: 5px;
+        }
+        .tab.active {
+            background: #007bff;
+            color: white;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            max-width: 400px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .form-group input[type="checkbox"] {
+            max-width: auto;
+            margin-right: 10px;
+        }
+        .error {
+            color: red;
+            margin-top: 5px;
+        }
+        .logs {
+            white-space: pre-wrap;
+            background: #f8f8f8;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .object-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+        }
+        .object-item {
+            padding: 5px 10px;
+            cursor: pointer;
+        }
+        .object-item:hover {
+            background: #f0f0f0;
+        }
+        .diff-view {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .diff-view > div {
+            flex: 1;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+        }
+        #editor,
+        #corrected-editor {
+            height: 400px;
+            border: none;
+        }
+        .search-bar {
+            margin-bottom: 15px;
+        }
+        .search-bar input {
+            width: 100%;
+            max-width: 400px;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 16px;
+            margin-right: 10px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        @media (max-width: 600px) {
+            .form-group input,
+            .form-group select,
+            .search-bar input {
+                max-width: 100%;
+            }
+            .diff-view {
+                flex-direction: column;
+            }
+            #editor,
+            #corrected-editor {
+                height: 200px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="root"></div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.28.4/babel.min.js" integrity="sha512-BCw4VuBF2HKIgxDP8K7DRHcHzazAAND+5+2E7GgX3CC1u1pteJ415mMJlQfUORjkFT64irzu1jIV93Vfvzkevw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.4.0/dist/axios.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs/loader.js"></script>
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function App() {
+            const [token, setToken] = useState('');
+            const [username, setUsername] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+            const [activeTab, setActiveTab] = useState('login');
+
+            if (!token) {
+                return (
+                    <div>
+                        <h2>Login</h2>
+                        <div className="form-group">
+                            <label>Username</label>
+                            <input value={username} onChange={e => setUsername(e.target.value)} />
+                        </div>
+                        <div className="form-group">
+                            <label>Password</label>
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} />
+                        </div>
+                        <button onClick={async () => {
+                            try {
+                                const response = await axios.post('/api/login', { username, password });
+                                setToken(response.data.token);
+                                setError('');
+                            } catch (err) {
+                                setError('Invalid credentials');
+                            }
+                        }}>Login</button>
+                        {error && <div className="error">{error}</div>}
+                    </div>
+                );
+            }
+
+            return (
+                <div>
+                    <div className="tabs">
+                        <div className={`tab ${activeTab === 'config' ? 'active' : ''}`} onClick={() => setActiveTab('config')}>
+                            Config Manager
+                        </div>
+                        <div className={`tab ${activeTab === 'configurator' ? 'active' : ''}`} onClick={() => setActiveTab('configurator')}>
+                            Configurator
+                        </div>
+                        <div className={`tab ${activeTab === 'comparison' ? 'active' : ''}`} onClick={() => setActiveTab('comparison')}>
+                            Comparison
+                        </div>
+                    </div>
+                    {activeTab === 'config' && <ConfigManager token={token} />}
+                    {activeTab === 'configurator' && <Configurator token={token} />}
+                    {activeTab === 'comparison' && <ComparisonView token={token} />}
+                </div>
+            );
+        }
+
+        function ConfigManager({ token }) {
+            const [configs, setConfigs] = useState([]);
+            const [clientName, setClientName] = useState('');
+            const [error, setError] = useState('');
+
+            useEffect(() => {
+                axios.get('/api/configs', { headers: { Authorization: `Bearer ${token}` } })
+                    .then(response => setConfigs(response.data))
+                    .catch(err => setError('Failed to load configs'));
+            }, [token]);
+
+            const createConfig = async () => {
+                try {
+                    await axios.post('/api/configs', { client_name: clientName }, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    setConfigs([...configs, { client_name: clientName }]);
+                    setClientName('');
+                    setError('');
+                } catch (err) {
+                    setError('Failed to create config');
+                }
+            };
+
+            const deleteConfig = async (clientId) => {
+                try {
+                    await axios.delete(`/api/config/${clientId}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    setConfigs(configs.filter(c => c.client_id !== clientId));
+                    setError('');
+                } catch (err) {
+                    setError('Failed to delete config');
+                }
+            };
+
+            return (
+                <div>
+                    <h2>Config Manager</h2>
+                    <div className="form-group">
+                        <label>Client Name</label>
+                        <input value={clientName} onChange={e => setClientName(e.target.value)} />
+                        <button onClick={createConfig}>Create Config</button>
+                    </div>
+                    {error && <div className="error">{error}</div>}
+                    <h3>Existing Configs</h3>
+                    <ul>
+                        {configs.map(config => (
+                            <li key={config.client_id}>
+                                {config.client_name} (Last modified: {config.last_modified})
+                                <button onClick={() => deleteConfig(config.client_id)}>Delete</button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+            );
+        }
+
+        function Configurator({ token }) {
+            const [config, setConfig] = useState({
+                oracle_dsn: '', oracle_user: '', oracle_password: '',
+                output_dir: 'output', type: 'SHOW_REPORT', dump_as_html: true,
+                ai_provider: 'openai', ai_endpoint: 'https://api.openai.com/',
+                ai_model: 'gpt-4', ai_api_key: '', ai_temperature: 0.7,
+                ai_max_output_tokens: 2048, ai_run_integrated: true,
+                report_filename: 'migration_report.html', validation_timeout: '5s'
+            });
+            const [clientId, setClientId] = useState('');
+            const [logs, setLogs] = useState('');
+            const [error, setError] = useState('');
+
+            const loadConfig = async () => {
+                try {
+                    const response = await axios.get(`/api/config/${clientId}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    setConfig(response.data);
+                    setError('');
+                } catch (err) {
+                    setError('Failed to load config');
+                }
+            };
+
+            const runOra2Pg = async () => {
+                try {
+                    const response = await axios.post('/api/run', { ...config, client_id: clientId }, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    });
+                    setLogs(response.data.logs);
+                    setError('');
+                } catch (err) {
+                    setError('Failed to run Ora2Pg');
+                    setLogs(err.response?.data?.logs || 'Error occurred');
+                }
+            };
+
+            return (
+                <div>
+                    <h2>Configurator</h2>
+                    <div className="form-group">
+                        <label>Client ID</label>
+                        <input value={clientId} onChange={e => setClientId(e.target.value)} />
+                        <button onClick={loadConfig}>Load Config</button>
+                    </div>
+                    <div className="form-group">
+                        <label>Oracle DSN</label>
+                        <input value={config.oracle_dsn} onChange={e => setConfig({ ...config, oracle_dsn: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>Oracle User</label>
+                        <input value={config.oracle_user} onChange={e => setConfig({ ...config, oracle_user: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>Oracle Password</label>
+                        <input type="password" value={config.oracle_password} onChange={e => setConfig({ ...config, oracle_password: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>Output Directory</label>
+                        <input value={config.output_dir} onChange={e => setConfig({ ...config, output_dir: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>Type</label>
+                        <select value={config.type} onChange={e => setConfig({ ...config, type: e.target.value })}>
+                            <option value="SHOW_REPORT">SHOW_REPORT</option>
+                            <option value="FUNCTION">FUNCTION</option>
+                            <option value="PROCEDURE">PROCEDURE</option>
+                        </select>
+                    </div>
+                    <div className="form-group">
+                        <label>Dump as HTML</label>
+                        <input type="checkbox" checked={config.dump_as_html} onChange={e => setConfig({ ...config, dump_as_html: e.target.checked })} />
+                    </div>
+                    <div className="form-group">
+                        <label>AI Provider</label>
+                        <input value={config.ai_provider} onChange={e => setConfig({ ...config, ai_provider: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>AI Endpoint</label>
+                        <input value={config.ai_endpoint} onChange={e => setConfig({ ...config, ai_endpoint: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>AI Model</label>
+                        <input value={config.ai_model} onChange={e => setConfig({ ...config, ai_model: e.target.value })} />
+                    </div>
+                    <div className="form-group">
+                        <label>AI API Key</label>
+                        <input type="password" value={config.ai_api_key} onChange={e => setConfig({ ...config, ai_api_key: e.target.value })} />
+                    </div>
+                    <button onClick={runOra2Pg}>Run Ora2Pg</button>
+                    {error && <div className="error">{error}</div>}
+                    {logs && <div className="logs">{logs}</div>}
+                </div>
+            );
+        }
+
+        function ComparisonView({ token }) {
+            const [objects, setObjects] = useState([]);
+            const [selectedObject, setSelectedObject] = useState(null);
+            const [error, setError] = useState('');
+            const [validationResult, setValidationResult] = useState('');
+            const [searchTerm, setSearchTerm] = useState('');
+            let editor = null;
+            let correctedEditor = null;
+
+            useEffect(() => {
+                require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs' } });
+                require(['vs/editor/editor.main'], () => {
+                    editor = monaco.editor.create(document.getElementById('editor'), {
+                        value: '',
+                        language: 'sql',
+                        readOnly: true
+                    });
+                    correctedEditor = monaco.editor.create(document.getElementById('corrected-editor'), {
+                        value: '',
+                        language: 'sql'
+                    });
+                });
+
+                axios.get('/api/objects', { headers: { Authorization: `Bearer ${token}` } })
+                    .then(response => setObjects(response.data))
+                    .catch(err => setError('Failed to load objects'));
+
+                return () => {
+                    if (editor) editor.dispose();
+                    if (correctedEditor) correctedEditor.dispose();
+                };
+            }, [token]);
+
+            useEffect(() => {
+                if (selectedObject && editor && correctedEditor) {
+                    editor.setValue(selectedObject.sql);
+                    correctedEditor.setValue(selectedObject.corrected_sql || '');
+                }
+            }, [selectedObject]);
+
+            const reRunAICorrection = async () => {
+                if (!selectedObject) return;
+                try {
+                    const response = await axios.post('/api/correct', {
+                        name: selectedObject.name,
+                        client_id: selectedObject.client_id
+                    }, { headers: { Authorization: `Bearer ${token}` } });
+                    setObjects(objects.map(obj => obj.name === selectedObject.name ? { ...obj, corrected_sql: response.data.corrected_sql, metrics: response.data.metrics } : obj));
+                    setSelectedObject({ ...selectedObject, corrected_sql: response.data.corrected_sql, metrics: response.data.metrics });
+                    setError('');
+                } catch (err) {
+                    setError('Failed to re-run AI correction');
+                }
+            };
+
+            const validateSQL = async () => {
+                if (!selectedObject) return;
+                try {
+                    const response = await axios.post('/api/validate', {
+                        sql: correctedEditor.getValue(),
+                        client_id: selectedObject.client_id
+                    }, { headers: { Authorization: `Bearer ${token}` } });
+                    setValidationResult(response.data.message);
+                    setError('');
+                } catch (err) {
+                    setValidationResult('Validation failed');
+                    setError('Failed to validate SQL');
+                }
+            };
+
+            const saveSQL = async () => {
+                if (!selectedObject) return;
+                try {
+                    await axios.post('/api/save', {
+                        name: selectedObject.name,
+                        sql: correctedEditor.getValue(),
+                        client_id: selectedObject.client_id
+                    }, { headers: { Authorization: `Bearer ${token}` } });
+                    setError('');
+                    alert('SQL saved successfully');
+                } catch (err) {
+                    setError('Failed to save SQL');
+                }
+            };
+
+            const filteredObjects = objects.filter(obj => 
+                obj.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                obj.type.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+
+            return (
+                <div>
+                    <h2>Comparison</h2>
+                    <div className="search-bar">
+                        <input 
+                            type="text" 
+                            placeholder="Search objects..." 
+                            value={searchTerm} 
+                            onChange={e => setSearchTerm(e.target.value)} 
+                        />
+                    </div>
+                    {error && <div className="error">{error}</div>}
+                    {validationResult && <div>{validationResult}</div>}
+                    <div className="object-list">
+                        {filteredObjects.map(obj => (
+                            <div 
+                                key={obj.name} 
+                                className="object-item" 
+                                onClick={() => setSelectedObject(obj)}
+                            >
+                                {obj.name} ({obj.type}) - Issues: {obj.issues.join(', ')}
+                            </div>
+                        ))}
+                    </div>
+                    {selectedObject && (
+                        <div>
+                            <h3>{selectedObject.name} ({selectedObject.type})</h3>
+                            <p>Issues: {selectedObject.issues.join(', ')}</p>
+                            {selectedObject.metrics && (
+                                <p>
+                                    Processing Time: {selectedObject.metrics.processing_time_seconds}s,
+                                    Tokens: {selectedObject.metrics.prompt_estimated_tokens}
+                                </p>
+                            )}
+                            <div className="diff-view">
+                                <div>
+                                    <h4>Original SQL</h4>
+                                    <div id="editor"></div>
+                                </div>
+                                <div>
+                                    <h4>Corrected SQL</h4>
+                                    <div id="corrected-editor"></div>
+                                </div>
+                            </div>
+                            <button onClick={reRunAICorrection}>Re-run AI Correction</button>
+                            <button onClick={validateSQL}>Validate SQL</button>
+                            <button onClick={saveSQL}>Save SQL</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>

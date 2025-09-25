@@ -1,0 +1,22 @@
+# Database backend (sqlite or postgresql)
+DB_BACKEND=sqlite
+
+# PostgreSQL DSN for config storage (if DB_BACKEND=postgresql)
+PG_DSN_CONFIG=dbname=ora2pg_settings user=postgres password=your_password host=localhost port=5432
+
+# PostgreSQL DSN for staging database (for SQL validation)
+STAGING_PG_DSN=dbname=staging user=postgres password=your_password host=localhost port=5432
+
+# JWT secret for authentication
+APP_SECRET_KEY=your_jwt_secret
+
+# Encryption key for sensitive data
+APP_ENCRYPTION_KEY=your_encryption_key
+
+# AI API key (OpenAI or Google Gemini)
+OPENAI_API_KEY=your_openai_key
+# GEMINI_API_KEY=your_gemini_key
+
+# Optional: SSL settings for AI API calls
+AI_SSL_VERIFY=true
+# SSL_CERT_PATH=/path/to/cert.pem
