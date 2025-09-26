@@ -207,6 +207,10 @@ def correct_sql_with_ai():
 def validate_sql():
     data = request.json
     sql_to_validate, client_id = data.get('sql'), data.get('client_id')
+    
+    clean_slate = data.get('clean_slate', False)
+    auto_create_ddl = data.get('auto_create_ddl', True)
+
     if not sql_to_validate or not client_id:
         return jsonify({'error': 'SQL and client ID are required'}), 400
     
@@ -245,8 +249,20 @@ def validate_sql():
             encryption_key=ENCRYPTION_KEY
         )
         
-        is_valid, message, new_sql = corrector.validate_sql(sql_to_validate, validation_dsn)
-        log_audit(client_id, 'validate_sql', f'Validation result: {is_valid} - {message}')
+        is_valid, message, new_sql = corrector.validate_sql(
+            sql_to_validate, 
+            validation_dsn, 
+            clean_slate=clean_slate, 
+            auto_create_ddl=auto_create_ddl
+        )
+        
+        audit_details = f'Validation result: {is_valid} - {message}'
+        options = []
+        if clean_slate: options.append('Clean Slate')
+        if auto_create_ddl: options.append('Auto-create DDL')
+        if options: audit_details += f" (Options: {', '.join(options)})"
+        log_audit(client_id, 'validate_sql', audit_details)
+        
         return jsonify({'message': message, 'status': 'success' if is_valid else 'error', 'corrected_sql': new_sql})
     except Exception as e:
         return jsonify({'error': f'Failed to validate SQL: {str(e)}'}), 500
@@ -295,4 +311,3 @@ def log_audit_event(client_id):
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'error': f'Failed to log audit event: {e}'}), 500
-

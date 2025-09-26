@@ -31,26 +31,31 @@
             opacity: 1;
             transform: translateY(0);
         }
+        /* Spinner Animation */
+        .spinner {
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body class="bg-gray-800 text-gray-200 flex h-screen overflow-hidden">
 
-    <!-- Sidebar -->
     <aside class="sidebar bg-gray-900 p-6 flex flex-col flex-shrink-0">
         <h1 class="text-2xl font-bold text-white mb-8">Ora2Pg Corrector</h1>
         <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Clients</h2>
         <div id="client-list" class="space-y-2 overflow-y-auto">
-            <!-- Client items will be dynamically inserted here -->
         </div>
         <button id="add-client-btn" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center">
             <i class="fas fa-plus mr-2"></i> New Client
         </button>
         <div class="mt-auto text-center text-gray-500 text-xs">
-            Version 2.3
+            Version 2.4
         </div>
     </aside>
 
-    <!-- Main Content -->
     <main class="flex-1 p-8 overflow-y-auto">
         <div id="main-content" class="hidden">
             <h1 class="text-3xl font-bold text-white mb-4" id="client-name-header"></h1>
@@ -69,26 +74,41 @@
                         <div class="flex items-center space-x-4 mb-6">
                             <input type="file" id="sql-file-picker" class="hidden" accept=".sql,text/plain">
                             <button id="load-file-proxy-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
-                                <i class="fas fa-folder-open mr-2"></i> Load SQL File
+                                <i class="fas fa-folder-open mr-2"></i> <span>Load SQL File</span>
                             </button>
                         </div>
-                        <div class="grid grid-cols-2 gap-6">
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <h3 class="text-lg font-semibold mb-3">Original SQL</h3>
                                 <div id="original-editor" class="editor-container rounded-lg overflow-hidden"></div>
                             </div>
                             <div>
-                                <h3 class="text-lg font-semibold mb-3">Corrected PostgreSQL</h3>
+                                <div class="flex justify-between items-center mb-3">
+                                    <h3 class="text-lg font-semibold">Corrected PostgreSQL</h3>
+                                    <button id="copy-btn" title="Copy to Clipboard" class="text-gray-400 hover:text-white">
+                                        <i class="fas fa-clipboard"></i>
+                                    </button>
+                                </div>
                                 <div id="corrected-editor" class="editor-container rounded-lg overflow-hidden"></div>
                             </div>
                         </div>
                          <div class="mt-6 flex justify-between items-center">
-                             <button id="correct-ai-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
-                                <i class="fas fa-magic mr-2"></i> Correct with AI
+                             <button id="correct-ai-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-6 rounded-lg flex items-center disabled:opacity-50">
+                                <i class="fas fa-magic mr-2"></i> <span>Correct with AI</span>
                             </button>
-                            <div class="space-x-4">
-                                <button id="validate-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg">Validate</button>
-                                <button id="save-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg">Save</button>
+                            <div class="flex items-center space-x-4">
+                                <div class="flex items-center space-x-3">
+                                    <div class="flex items-center">
+                                        <input id="auto-create-ddl-checkbox" type="checkbox" class="h-4 w-4 bg-gray-700 border-gray-600 text-purple-600 focus:ring-purple-500 rounded" checked>
+                                        <label for="auto-create-ddl-checkbox" class="ml-2 block text-sm text-gray-400" title="Allows AI to generate DDL for missing tables during validation.">Auto-create Tables</label>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <input id="clean-slate-checkbox" type="checkbox" class="h-4 w-4 bg-gray-700 border-gray-600 text-purple-600 focus:ring-purple-500 rounded">
+                                        <label for="clean-slate-checkbox" class="ml-2 block text-sm text-gray-400" title="Drops tables referenced in the query before running validation.">Clean Slate</label>
+                                    </div>
+                                </div>
+                                <button id="validate-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg disabled:opacity-50"><span>Validate</span></button>
+                                <button id="save-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg disabled:opacity-50"><span>Save</span></button>
                             </div>
                         </div>
                     </div>
@@ -146,7 +166,6 @@
         </div>
     </main>
 
-    <!-- Toast Notification -->
     <div id="toast" class="toast bg-gray-700 border border-gray-600 text-white py-3 px-5 rounded-lg shadow-lg">
         <p id="toast-message"></p>
     </div>
@@ -178,7 +197,7 @@
             let clients = [];
             let aiProviders = [];
             let ora2pgOptions = [];
-            let appSettings = {}; // To store global settings
+            let appSettings = {};
 
             // DOM Elements
             const clientListEl = document.getElementById('client-list');
@@ -200,6 +219,22 @@
                 setTimeout(() => toast.classList.remove('show'), 3000);
             }
 
+            function toggleButtonLoading(button, isLoading, originalContent = null) {
+                const textSpan = button.querySelector('span');
+                if (isLoading) {
+                    button.disabled = true;
+                    if (textSpan) {
+                         if (originalContent) button.dataset.originalContent = originalContent;
+                         textSpan.innerHTML = '<i class="fas fa-spinner spinner"></i>';
+                    }
+                } else {
+                    button.disabled = false;
+                    if (textSpan && button.dataset.originalContent) {
+                        textSpan.innerHTML = button.dataset.originalContent;
+                    }
+                }
+            }
+
             async function apiFetch(url, options = {}) {
                 try {
                     const response = await fetch(url, options);
@@ -207,7 +242,11 @@
                         const errorData = await response.json();
                         throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
                     }
-                    return response.json();
+                    const contentType = response.headers.get("content-type");
+                    if (contentType && contentType.indexOf("application/json") !== -1) {
+                        return response.json();
+                    }
+                    return;
                 } catch (error) {
                     showToast(error.message, true);
                     console.error('API Fetch Error:', error);
@@ -241,8 +280,9 @@
                 const aiContainer = document.getElementById('ai-settings-container');
                 aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>';
                 let providerOptionsHtml = aiProviders.map(p => `<option value="${p.name}" ${config.ai_provider === p.name ? 'selected' : ''}>${p.name}</option>`).join('');
+                
                 aiContainer.insertAdjacentHTML('beforeend', `
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         <div>
                             <label for="ai_provider" class="block text-sm font-medium text-gray-300 mb-1">AI Provider</label>
                             <select name="ai_provider" id="ai_provider" class="form-input w-full rounded-md">${providerOptionsHtml}</select>
@@ -258,6 +298,14 @@
                         <div>
                             <label for="ai_endpoint" class="block text-sm font-medium text-gray-300 mb-1">AI Endpoint</label>
                             <input type="text" name="ai_endpoint" id="ai_endpoint" class="form-input w-full rounded-md" value="${config.ai_endpoint || ''}">
+                        </div>
+                        <div>
+                            <label for="ai_temperature" class="block text-sm font-medium text-gray-300 mb-1">Temperature</label>
+                            <input type="number" step="0.1" name="ai_temperature" id="ai_temperature" class="form-input w-full rounded-md" value="${config.ai_temperature || '0.2'}">
+                        </div>
+                        <div>
+                            <label for="ai_max_output_tokens" class="block text-sm font-medium text-gray-300 mb-1">Max Output Tokens</label>
+                            <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md" value="${config.ai_max_output_tokens || '8192'}">
                         </div>
                     </div>
                 `);
@@ -331,20 +379,18 @@
 
             function handleFileSelect(event) {
                 const file = event.target.files[0];
-                if (!file) {
-                    return;
-                }
+                if (!file) return;
+
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     const content = e.target.result;
                     originalEditor.setValue(content);
+                    correctedEditor.setValue('-- AI-corrected PostgreSQL will appear here...');
                     showToast(`Loaded ${file.name} successfully.`);
-                    log_audit(currentClientId, 'load_sql_file', `Loaded SQL from file: ${file.name}`)
-                    event.target.value = ''; // Allow loading the same file again
+                    log_audit(currentClientId, 'load_sql_file', `Loaded SQL from file: ${file.name}`);
+                    event.target.value = '';
                 };
-                reader.onerror = function() {
-                    showToast('Failed to read the file.', true);
-                };
+                reader.onerror = () => showToast('Failed to read the file.', true);
                 reader.readAsText(file);
             }
             
@@ -355,14 +401,22 @@
                     showToast('No original SQL to correct.', true);
                     return;
                 }
-                showToast('AI correction in progress...');
-                const data = await apiFetch(`/api/correct_sql`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sql: originalSql, client_id: currentClientId })
-                });
-                correctedEditor.setValue(data.corrected_sql || '');
-                showToast(`AI correction complete. Tokens used: ${data.metrics.tokens_used}`);
+                
+                const button = document.getElementById('correct-ai-btn');
+                toggleButtonLoading(button, true, 'Correct with AI');
+
+                try {
+                    showToast('AI correction in progress...');
+                    const data = await apiFetch(`/api/correct_sql`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sql: originalSql, client_id: currentClientId })
+                    });
+                    correctedEditor.setValue(data.corrected_sql || '');
+                    showToast(`AI correction complete. Tokens used: ${data.metrics.tokens_used}`);
+                } finally {
+                    toggleButtonLoading(button, false);
+                }
             }
 
             async function handleValidateSql() {
@@ -372,30 +426,53 @@
                     showToast('No corrected SQL to validate.', true);
                     return;
                 }
-                showToast('Validation in progress...');
-                const data = await apiFetch(`/api/validate`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ sql: correctedSql, client_id: currentClientId })
-                });
                 
-                if (data.corrected_sql) {
-                    correctedEditor.setValue(data.corrected_sql);
+                const button = document.getElementById('validate-btn');
+                toggleButtonLoading(button, true, 'Validate');
+                
+                try {
+                    showToast('Validation in progress...');
+                    
+                    const isCleanSlate = document.getElementById('clean-slate-checkbox').checked;
+                    const isAutoCreateDdl = document.getElementById('auto-create-ddl-checkbox').checked;
+
+                    const data = await apiFetch(`/api/validate`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ 
+                            sql: correctedSql, 
+                            client_id: currentClientId,
+                            clean_slate: isCleanSlate,
+                            auto_create_ddl: isAutoCreateDdl
+                        })
+                    });
+                    
+                    if (data.corrected_sql) {
+                        correctedEditor.setValue(data.corrected_sql);
+                    }
+                    showToast(data.message, data.status !== 'success');
+                } finally {
+                    toggleButtonLoading(button, false);
                 }
-                
-                showToast(data.message, data.status !== 'success');
             }
 
             async function handleSaveSql() {
                 if (!currentClientId) return;
-                const originalSql = originalEditor.getValue();
-                const correctedSql = correctedEditor.getValue();
-                const data = await apiFetch(`/api/save`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ original_sql: originalSql, corrected_sql: correctedSql, client_id: currentClientId })
-                });
-                showToast(data.message);
+                const button = document.getElementById('save-btn');
+                toggleButtonLoading(button, true, 'Save');
+
+                try {
+                    const originalSql = originalEditor.getValue();
+                    const correctedSql = correctedEditor.getValue();
+                    const data = await apiFetch(`/api/save`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ original_sql: originalSql, corrected_sql: correctedSql, client_id: currentClientId })
+                    });
+                    showToast(data.message);
+                } finally {
+                    toggleButtonLoading(button, false);
+                }
             }
             
             async function handleSaveSettings(e) {
@@ -448,20 +525,29 @@
 
             // --- Initialization ---
             async function initializeApp() {
-                const results = await Promise.all([
-                    apiFetch('/api/clients'),
-                    apiFetch('/api/ai_providers'),
-                    apiFetch('/api/ora2pg_config_options'),
-                    apiFetch('/api/app_settings')
-                ]);
-                clients = results[0];
-                aiProviders = results[1];
-                ora2pgOptions = results[2];
-                appSettings = results[3];
-                renderClients();
+                try {
+                    const results = await Promise.all([
+                        apiFetch('/api/clients'),
+                        apiFetch('/api/ai_providers'),
+                        apiFetch('/api/ora2pg_config_options'),
+                        apiFetch('/api/app_settings')
+                    ]);
+                    clients = results[0];
+                    aiProviders = results[1];
+                    ora2pgOptions = results[2];
+                    appSettings = results[3];
+                    renderClients();
+                } catch (error) {
+                    welcomeMessageEl.innerHTML = `<div class="text-center text-red-400">
+                        <i class="fas fa-exclamation-triangle text-5xl mb-4"></i>
+                        <h2 class="text-2xl">Failed to initialize application</h2>
+                        <p class="text-red-500 mt-2">Could not connect to the backend. Please ensure the server is running and accessible.</p>
+                    </div>`;
+                    welcomeMessageEl.classList.remove('hidden');
+                }
             }
-
-            // Event Listeners
+            
+            // --- Event Listeners ---
             clientListEl.addEventListener('click', e => {
                 if (e.target && e.target.matches('.sidebar-item')) {
                     e.preventDefault();
@@ -473,6 +559,16 @@
                     switchTab(e.target.dataset.tab);
                 }
             });
+
+            document.getElementById('copy-btn').addEventListener('click', () => {
+                const correctedSql = correctedEditor.getValue();
+                navigator.clipboard.writeText(correctedSql).then(() => {
+                    showToast('Copied to clipboard!');
+                }, () => {
+                    showToast('Failed to copy text.', true);
+                });
+            });
+
             document.getElementById('add-client-btn').addEventListener('click', handleAddClient);
             loadFileProxyBtn.addEventListener('click', () => filePicker.click());
             filePicker.addEventListener('change', handleFileSelect);
@@ -486,4 +582,3 @@
     </script>
 </body>
 </html>
-

@@ -1,0 +1,160 @@
+= AI-Powered SQL Validator: Feature Breakdown and Test Cases
+
+// Document Purpose
+:description: This document outlines the features and test cases for the AI-powered SQL validation and self-healing engine.
+:toc:
+:source-highlighter: highlight.js
+
+== Introduction
+
+The AI-Powered SQL Validator is an advanced tool designed to assist with Oracle to PostgreSQL migrations. Its core purpose is to validate translated PostgreSQL code against a live database. To achieve this, it includes a sophisticated, multi-layered "self-healing" engine that can proactively and reactively build the required database schema and even correct SQL syntax errors on the fly, using a large language model.
+
+== Core Features
+
+The validation engine is comprised of three main components: Proactive Schema Generation, Reactive Self-Healing, and fine-grained User Controls.
+
+=== Proactive Schema Generation
+
+For DML queries (like `SELECT`), the engine does not wait for an error. It first performs a static analysis of the SQL to identify all required tables.
+
+. It parses the query to extract table names from `FROM` and `JOIN` clauses.
+. It connects to the validation database to check which of these tables already exist.
+. It makes a *single, consolidated call* to the AI, asking it to generate the DDL for all missing tables at once.
+. It executes the returned DDL before proceeding to the actual query validation.
+
+This proactive approach significantly reduces validation time and API costs by creating the entire required schema in one step.
+
+=== Reactive Self-Healing
+
+If the proactive step is insufficient or if errors occur during DDL execution, a reactive, `try/except`-based loop takes over.
+
+==== On-the-fly DDL for Dependencies
+
+When validating DDL, dependencies like foreign key references may not be discovered until execution.
+
+. The application executes the provided SQL.
+. If PostgreSQL returns a `relation "..." does not exist` error, the application catches it.
+. It makes a targeted AI call, asking for the DDL of the *specific* missing object.
+. It applies the new DDL and retries the original validation, repeating this process up to 5 times.
+
+==== AI-Powered Query Correction
+
+If the database returns any other error (e.g., a syntax error, a missing column), the engine assumes the SQL itself may be flawed.
+
+. The application catches the PostgreSQL error.
+. It sends the failed query and the error message to the AI with a prompt to "fix this query".
+. It receives a corrected version of the query from the AI.
+. It retries the validation using the *new, corrected* SQL.
+
+=== User Controls
+
+To handle different user intentions, the UI provides two primary controls:
+
+Auto-create Tables::
+A checkbox (checked by default) that enables or disables the DDL generation features. When unchecked, the application will not create any tables and will fail immediately if a table is missing.
+
+Clean Slate::
+A checkbox (unchecked by default) that, when checked, will drop all tables identified in the query *before* validation begins. This ensures a completely fresh environment for the test.
+
+== Test Cases & Scenarios
+
+The following test cases were performed to validate the engine's functionality.
+
+=== Test Case 1: Oracle DDL Translation
+
+The core translation feature was tested with Oracle-specific DDL.
+
+.Oracle Input:
+[source,sql]
+----
+CREATE TABLE countries
+    ( country_id      CHAR(2)
+       CONSTRAINT  country_id_nn NOT NULL
+    , country_name    VARCHAR2(60)
+    , region_id       NUMBER
+    , CONSTRAINT     country_c_id_pk
+                 PRIMARY KEY (country_id)
+    )
+    ORGANIZATION INDEX;
+
+ALTER TABLE countries
+ADD ( CONSTRAINT countr_reg_fk
+             FOREIGN KEY (region_id)
+              REFERENCES regions(region_id)
+    ) ;
+----
+
+.PostgreSQL Output:
+[source,sql]
+----
+CREATE TABLE countries
+    ( country_id      CHAR(2)
+       CONSTRAINT  country_id_nn NOT NULL
+    , country_name    VARCHAR(60)
+    , region_id       INTEGER
+    , CONSTRAINT     country_c_id_pk
+                 PRIMARY KEY (country_id)
+    ) ;
+
+ALTER TABLE countries
+ADD CONSTRAINT countr_reg_fk
+    FOREIGN KEY (region_id)
+    REFERENCES regions(region_id)
+;
+----
+*Result:* The AI correctly converted `VARCHAR2` to `VARCHAR`, `NUMBER` to `INTEGER`, and removed the Oracle-specific `ORGANIZATION INDEX` clause.
+
+=== Test Case 2: DDL Validation with Dependency Resolution
+
+The translated DDL from Test Case 1 was validated.
+
+*Goal:* To see if the engine could resolve the missing `regions` table referenced in the `FOREIGN KEY` constraint.
+
+*Workflow:*
+. The validation of the `ALTER TABLE` statement failed with `relation "regions" does not exist`.
+. The reactive self-healing logic caught the error and asked the AI to generate the DDL for `regions`.
+. The `regions` table was created, and the original DDL was retried, resulting in a successful validation.
+
+=== Test Case 3: DML Validation with Syntax Error & Schema Generation
+
+A query was tested that required a new schema *and* contained a syntax error.
+
+.Query with Syntax Error:
+[source,sql]
+----
+SELECT
+    p.product_name, p.price, s.supplier_name,
+    s.country, po.po_order_number, po.po_promise_date
+FROM products p
+JOIN suppliers s ON p.supplier_id = s.supplier_id
+JOIN purchase_orders po ON s.supplier_id = po.po_supplier_id
+ORDER BY p.price LIMIT DESC 10;
+----
+
+*Workflow (with both user controls checked):*
+. The "Clean Slate" logic dropped all three tables.
+. The proactive engine identified that `products`, `suppliers`, and `purchase_orders` were all missing and made a single AI call to create them.
+. The initial validation attempt failed with a `syntax error at or near "DESC"`.
+. The reactive engine asked the AI to fix the query.
+. The validation was retried with the corrected query (`ORDER BY p.price DESC LIMIT 10;`) and succeeded.
+
+== Recommended Workflows
+
+The user controls enable four distinct operational modes, summarized below.
+
+[cols="1,2,2a", options="header"]
+|===
+| | *✅ Clean Slate* (Wipe First) | *⬜️ Clean Slate* (Keep Existing)
+
+| *✅ Auto-create Tables*
+| *`Blank Canvas`* +
+Wipes the DB, then AI proactively creates all tables needed for the query. Best for starting a new project or testing in isolation.
+| *`Iterative Development`* +
+Keeps existing tables, but the proactive and reactive logic will create any *new* tables the query needs. Best for building out a project query by query.
+
+| *⬜️ Auto-create Tables*
+| *`Load and Test`* +
+Wipes tables first, then runs validation. Will fail if tables are missing, as it's not allowed to create them. Useful for testing against a specific, fresh schema loaded by other means.
+| *`Pure Validator`* +
+Keeps existing tables and *never* creates new ones. Fails immediately if a table is missing. Best for testing queries against a known, pre-loaded "golden" schema.
+|===
