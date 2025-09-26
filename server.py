@@ -419,10 +419,10 @@ def save_sql():
         logger.error(f"Error saving SQL: {e}")
         return jsonify({'error': f'Failed to save SQL: {str(e)}'}), 500
 
-@app.route('/logout', methods=['GET'])
-@token_required
+@app.route('/logout')
 def logout():
-    localStorage.removeItem('token');
+    # The token is removed from localStorage by the browser's JavaScript.
+    # This server-side route simply needs to handle the redirect.
     return redirect('/')
 
 if __name__ == '__main__':

@@ -72,7 +72,7 @@ class Ora2PgAICorrector:
         for pattern in patterns:
             matches = re.findall(pattern, logs, re.MULTILINE)
             for obj_type, issue_desc in matches:
-                issues.append(f"{obj_type): {issue_desc}")
+                issues.append(f"{obj_type}: {issue_desc}")
         return issues
 
     def ai_correct_sql(self, sql, issues=None):
