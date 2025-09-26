@@ -1,73 +1,38 @@
 {% extends "base.html" %}
 {% block title %}Configurator{% endblock %}
 {% block content %}
-<h2>Configurator</h2>
-<div class="form-group">
-    <label for="client_name">New Client Name:</label>
-    <input type="text" id="client_name" placeholder="Enter new client name">
-    <button onclick="createClient()">Create Client</button>
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">Configurator</h2>
+        <div class="card p-4">
+            <div class="form-group mb-3">
+                <label for="client_name" class="form-label">New Client Name:</label>
+                <div class="input-group">
+                    <input type="text" id="client_name" class="form-control" placeholder="Enter new client name">
+                    <button class="btn btn-primary" onclick="createClient()">Create Client</button>
+                </div>
+            </div>
+            <div id="client-list" class="mb-4"></div>
+            <ul class="nav nav-tabs" id="configTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="ora2pg-tab" data-bs-toggle="tab" data-bs-target="#ora2pg" type="button" role="tab" aria-controls="ora2pg" aria-selected="true">Ora2Pg Configuration</button>
+                </li>
+            </ul>
+            <div class="tab-content" id="configTabContent">
+                <div class="tab-pane fade show active" id="ora2pg" role="tabpanel" aria-labelledby="ora2pg-tab">
+                    <div id="ora2pg-config" class="mt-3"></div>
+                    <button class="btn btn-success mt-3" onclick="saveOra2PgConfig()">Save Ora2Pg Configuration</button>
+                </div>
+            </div>
+            <a href="/ai_config" class="btn btn-secondary mt-3">Configure AI Settings</a>
+            <div id="status" class="status-message mt-3"></div>
+            <div id="error" class="error-message mt-3"></div>
+        </div>
+    </div>
 </div>
-<div id="client-list"></div>
-<h3>Ora2Pg Configuration</h3>
-<div id="ora2pg-config"></div>
-<h3>AI Configuration</h3>
-<div class="form-group">
-    <label for="ai_provider">AI Provider:</label>
-    <select id="ai_provider" name="ai_provider" onchange="updateProviderDetails()"></select>
-</div>
-<div class="form-group">
-    <label for="ai_endpoint">AI Endpoint:</label>
-    <input type="text" id="ai_endpoint" name="ai_endpoint">
-</div>
-<div class="form-group">
-    <label for="ai_model">AI Model:</label>
-    <input type="text" id="ai_model" name="ai_model">
-</div>
-<div class="form-group">
-    <label for="ai_api_key">AI API Key:</label>
-    <input type="password" id="ai_api_key" name="ai_api_key">
-</div>
-<div class="form-group">
-    <label for="ai_temperature">AI Temperature:</label>
-    <input type="number" id="ai_temperature" name="ai_temperature" step="0.1" value="0.2">
-</div>
-<div class="form-group">
-    <label for="ai_max_output_tokens">AI Max Output Tokens:</label>
-    <input type="number" id="ai_max_output_tokens" name="ai_max_output_tokens" value="8192">
-</div>
-<div class="form-group">
-    <label for="ai_run_integrated">Run AI Integrated:</label>
-    <input type="checkbox" id="ai_run_integrated" name="ai_run_integrated" checked>
-</div>
-<button onclick="saveConfig()">Save All Configurations</button>
-<button onclick="exportConfig()">Export Config to ora2pg.conf</button>
-<div class="form-group">
-    <label for="localFile">Local SQL File:</label>
-    <input type="text" id="localFile" name="localFile" placeholder="e.g., oracle_test_set.sql">
-    <button onclick="loadFile()">Load & Process Local File</button>
-</div>
-<div id="status" class="status-message"></div>
-<div id="error" class="error-message"></div>
 <script>
     let token = null;
     let currentClientId = null;
-    let providers = [];
-
-    function loadAiProviders(authToken) {
-        return fetch('/api/ai_providers', { headers: { 'Authorization': `Bearer ${authToken}` } })
-            .then(response => response.json())
-            .then(data => {
-                providers = data;
-                const select = document.getElementById('ai_provider');
-                select.innerHTML = '<option value="">Select a provider</option>';
-                providers.forEach(provider => {
-                    const option = document.createElement('option');
-                    option.value = provider.name;
-                    option.innerText = provider.name;
-                    select.appendChild(option);
-                });
-            });
-    }
 
     function loadClients(authToken) {
         return fetch('/api/clients', { headers: { 'Authorization': `Bearer ${authToken}` } })
@@ -106,6 +71,7 @@
                     div.appendChild(label);
                     if (option.option_type === 'dropdown') {
                         const select = document.createElement('select');
+                        select.className = 'form-select';
                         select.name = option.option_name.toLowerCase();
                         (option.allowed_values || '').split(',').forEach(value => {
                             if (value.trim()) {
@@ -120,12 +86,14 @@
                     } else if (option.option_type === 'checkbox') {
                         const input = document.createElement('input');
                         input.type = 'checkbox';
+                        input.className = 'form-check-input';
                         input.name = option.option_name.toLowerCase();
                         input.checked = option.default_value === '1';
                         div.appendChild(input);
                     } else {
                         const input = document.createElement('input');
                         input.type = option.option_type === 'password' ? 'password' : 'text';
+                        input.className = 'form-control';
                         input.name = option.option_name.toLowerCase();
                         input.value = option.default_value || '';
                         div.appendChild(input);
@@ -135,31 +103,10 @@
             });
     }
 
-    function updateProviderDetails() {
-        const select = document.getElementById('ai_provider');
-        const selectedProviderName = select.value;
-        const provider = providers.find(p => p.name === selectedProviderName);
-        if (provider) {
-            document.getElementById('ai_endpoint').value = provider.api_endpoint;
-            document.getElementById('ai_model').value = provider.default_model;
-        } else {
-            document.getElementById('ai_endpoint').value = '';
-            document.getElementById('ai_model').value = '';
-        }
-    }
-
     function loadConfig(clientId, authToken) {
         fetch(`/api/client/${clientId}/config`, { headers: { 'Authorization': `Bearer ${authToken}` } })
             .then(response => response.json())
             .then(config => {
-                document.getElementById('ai_provider').value = config.ai_provider || '';
-                updateProviderDetails();
-                if(config.ai_endpoint) document.getElementById('ai_endpoint').value = config.ai_endpoint;
-                if(config.ai_model) document.getElementById('ai_model').value = config.ai_model;
-                document.getElementById('ai_api_key').value = config.ai_api_key || '';
-                document.getElementById('ai_temperature').value = config.ai_temperature || 0.2;
-                document.getElementById('ai_max_output_tokens').value = config.ai_max_output_tokens || 8192;
-                document.getElementById('ai_run_integrated').checked = config.ai_run_integrated || false;
                 const ora2pgConfig = document.getElementById('ora2pg-config');
                 ora2pgConfig.querySelectorAll('input, select').forEach(input => {
                     if (input.type === 'checkbox') {
@@ -171,18 +118,10 @@
             });
     }
 
-    function saveConfig() {
+    function saveOra2PgConfig() {
         if (!currentClientId) { return; }
-        const config = {
-            ai_provider: document.getElementById('ai_provider').value,
-            ai_endpoint: document.getElementById('ai_endpoint').value,
-            ai_model: document.getElementById('ai_model').value,
-            ai_api_key: document.getElementById('ai_api_key').value,
-            ai_temperature: document.getElementById('ai_temperature').value,
-            ai_max_output_tokens: document.getElementById('ai_max_output_tokens').value,
-            ai_run_integrated: document.getElementById('ai_run_integrated').checked
-        };
         const ora2pgConfig = document.getElementById('ora2pg-config');
+        const config = {};
         ora2pgConfig.querySelectorAll('input, select').forEach(input => {
             config[input.name] = input.type === 'checkbox' ? input.checked : input.value;
         });
@@ -190,25 +129,11 @@
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify(config)
+        }).then(response => {
+            if (response.ok) document.getElementById('status').innerText = 'Ora2Pg Config saved successfully';
         });
     }
 
-    function exportConfig() {
-        if (!currentClientId) { return; }
-        fetch(`/api/client/${currentClientId}/export_config`, { headers: { 'Authorization': `Bearer ${token}` } })
-            .then(response => response.json())
-            .then(data => {
-                if (data.error) { return; }
-                const blob = new Blob([data.config_content], { type: 'text/plain' });
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'ora2pg.conf';
-                a.click();
-                window.URL.revokeObjectURL(url);
-            });
-    }
-    
     function createClient() {
         const clientName = document.getElementById('client_name').value;
         if (!clientName) { return; }
@@ -222,26 +147,6 @@
         });
     }
 
-    function loadFile() {
-        if (!currentClientId) { return; }
-        const filename = document.getElementById('localFile').value;
-        fetch('/api/load_file', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename, client_id: currentClientId })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                document.getElementById('error').innerText = data.error;
-            } else {
-                sessionStorage.setItem('original_sql', data.original_sql);
-                sessionStorage.setItem('corrected_sql', data.corrected_sql);
-                window.location.href = '/comparison';
-            }
-        });
-    }
-
     window.onload = () => {
         token = localStorage.getItem('token');
         if (!token) {
@@ -249,12 +154,10 @@
             return;
         }
         loadOra2pgConfigOptions(token);
-        loadAiProviders(token).then(() => {
-            loadClients(token).then(clients => {
-                if (clients && clients.length > 0) {
-                    document.querySelector('.object-item').click();
-                }
-            });
+        loadClients(token).then(clients => {
+            if (clients && clients.length > 0) {
+                document.querySelector('.object-item').click();
+            }
         });
     };
 </script>
