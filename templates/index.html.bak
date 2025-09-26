@@ -372,17 +372,11 @@
                     showToast('No corrected SQL to validate.', true);
                     return;
                 }
-                showToast('Validation in progress...');
                 const data = await apiFetch(`/api/validate`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ sql: correctedSql, client_id: currentClientId })
                 });
-                
-                if (data.corrected_sql) {
-                    correctedEditor.setValue(data.corrected_sql);
-                }
-                
                 showToast(data.message, data.status !== 'success');
             }
 

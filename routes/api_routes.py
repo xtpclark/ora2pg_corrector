@@ -15,7 +15,13 @@ if not ENCRYPTION_KEY_STR:
 else:
     ENCRYPTION_KEY = ENCRYPTION_KEY_STR.encode()
 
-STAGING_PG_DSN = os.environ.get('STAGING_PG_DSN')
+@api_bp.route('/app_settings', methods=['GET'])
+def get_app_settings():
+    """Returns application-level settings to the frontend."""
+    settings = {
+        'staging_pg_dsn': os.environ.get('STAGING_PG_DSN', '')
+    }
+    return jsonify(settings)
 
 @api_bp.route('/ai_providers', methods=['GET'])
 def get_ai_providers():
@@ -150,37 +156,6 @@ def manage_config(client_id):
         except Exception as e:
             return jsonify({'error': f'Failed to save config: {str(e)}'}), 500
 
-@api_bp.route('/load_file', methods=['POST'])
-def load_sql_file():
-    data = request.json
-    filename, client_id = data.get('filename'), data.get('client_id')
-    if not filename or not client_id:
-        return jsonify({'error': 'Filename and client ID are required'}), 400
-    
-    output_dir = '/app/output'
-    safe_filename = os.path.basename(filename)
-    file_path = os.path.join(output_dir, safe_filename)
-
-    if not os.path.abspath(file_path).startswith(os.path.abspath(output_dir)):
-        return jsonify({'error': 'Invalid filename'}), 400
-    if not os.path.exists(file_path):
-        return jsonify({'error': f'File not found: {safe_filename}'}), 404
-    
-    try:
-        corrector = Ora2PgAICorrector(output_dir=output_dir, ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        result = corrector.load_sql_file(safe_filename)
-
-        if not result['sql_content']:
-            return jsonify({'error': result['logs']}), 500
-        
-        log_audit(client_id, 'load_sql_file', f'Loaded SQL from file: {safe_filename}')
-        return jsonify({
-            'logs': result['logs'],
-            'original_sql': result['sql_content']
-        })
-    except Exception as e:
-        return jsonify({'error': f'Failed to process file: {str(e)}'}), 500
-
 @api_bp.route('/correct_sql', methods=['POST'])
 def correct_sql_with_ai():
     data = request.json
@@ -213,8 +188,8 @@ def correct_sql_with_ai():
                 'ai_endpoint': config.get('ai_endpoint'),
                 'ai_model': config.get('ai_model'),
                 'ai_api_key': config.get('ai_api_key'),
-                'ai_temperature': float(config.get('ai_temperature', 0.7)),
-                'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 4096))
+                'ai_temperature': float(config.get('ai_temperature', 0.2)),
+                'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
             },
             encryption_key=ENCRYPTION_KEY
         )
@@ -235,24 +210,44 @@ def validate_sql():
     if not sql_to_validate or not client_id:
         return jsonify({'error': 'SQL and client ID are required'}), 400
     
-    conn = get_db()
-    query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-    params = (client_id,)
-    if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-        query = query.replace('?', '%s')
-    cursor = execute_query(conn, query, params)
-    config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-    
-    validation_dsn = config.get('validation_pg_dsn', STAGING_PG_DSN)
-    if not validation_dsn:
-        return jsonify({'message': 'Validation database not configured. Skipping validation.', 'status': 'skipped'})
-
-    corrector = Ora2PgAICorrector(output_dir='/app/output', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-    
     try:
-        is_valid, message = corrector.validate_sql(sql_to_validate, validation_dsn)
-        log_audit(client_id, 'validate_sql', f'Validation result: {is_valid}')
-        return jsonify({'message': message, 'status': 'success' if is_valid else 'error'})
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+        
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd', 'ai_api_key']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    pass
+
+        validation_dsn = config.get('validation_pg_dsn')
+        if not validation_dsn:
+            return jsonify({'message': 'Validation database not configured in client settings.', 'status': 'skipped'})
+
+        corrector = Ora2PgAICorrector(
+            output_dir='/app/output',
+            ai_settings={
+                'ai_provider': config.get('ai_provider'),
+                'ai_endpoint': config.get('ai_endpoint'),
+                'ai_model': config.get('ai_model'),
+                'ai_api_key': config.get('ai_api_key'),
+                'ai_temperature': float(config.get('ai_temperature', 0.2)),
+                'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
+            },
+            encryption_key=ENCRYPTION_KEY
+        )
+        
+        is_valid, message, new_sql = corrector.validate_sql(sql_to_validate, validation_dsn)
+        log_audit(client_id, 'validate_sql', f'Validation result: {is_valid} - {message}')
+        return jsonify({'message': message, 'status': 'success' if is_valid else 'error', 'corrected_sql': new_sql})
     except Exception as e:
         return jsonify({'error': f'Failed to validate SQL: {str(e)}'}), 500
 
@@ -288,4 +283,16 @@ def get_audit_logs(client_id):
         return jsonify(logs)
     except Exception as e:
         return jsonify({'error': f'Failed to fetch audit logs: {e}'}), 500
+
+@api_bp.route('/client/<int:client_id>/log_audit', methods=['POST'])
+def log_audit_event(client_id):
+    data = request.json
+    action, details = data.get('action'), data.get('details')
+    if not action:
+        return jsonify({'error': 'Action is required for audit log'}), 400
+    try:
+        log_audit(client_id, action, details)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': f'Failed to log audit event: {e}'}), 500
 
