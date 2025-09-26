@@ -102,3 +102,24 @@ button:hover {
     color: white;
     border-color: #0056b3;
 }
+/* New styles for tabbed layout */
+.nav-tabs {
+    margin-bottom: 20px;
+}
+.nav-tabs .nav-link {
+    color: #333;
+}
+.nav-tabs .nav-link.active {
+    background-color: #fff;
+    border-bottom: 2px solid #007bff;
+}
+.tab-content {
+    padding: 20px;
+}
+/* Adjust for comparison page load SQL section */
+.form-group .input-group {
+    width: 100%;
+}
+.form-group .input-group .form-control {
+    flex: 1;
+}

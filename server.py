@@ -101,6 +101,7 @@ with app.app_context():
 @app.errorhandler(405)
 def method_not_allowed(e):
     logger.error(f"405 Method Not Allowed: {request.method} {request.url}")
+    log_audit(None, 'method_not_allowed', f'Attempted method not allowed: {request.method}')
     return jsonify({'error': 'Method not allowed'}), 405
 
 @app.errorhandler(Exception)
@@ -113,6 +114,10 @@ def handle_error(e):
 def index():
     return render_template('login.html')
 
+@app.route('/login', methods=['POST'])
+def login_route():
+    return login()
+
 @app.route('/configurator', methods=['GET'])
 def configurator():
     return render_template('configurator.html')
@@ -122,7 +127,7 @@ def comparison():
     return render_template('comparison.html')
 
 @app.route('/api/login', methods=['POST'])
-def login_route():
+def login_route_api():
     return login()
 
 @app.route('/api/ai_providers', methods=['GET'])
