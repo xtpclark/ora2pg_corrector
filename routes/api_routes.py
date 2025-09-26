@@ -1,6 +1,5 @@
 from flask import Blueprint, request, jsonify
-from modules.db import get_db
-from modules.auth import token_required
+from modules.db import get_db, execute_query
 from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
 from cryptography.fernet import Fernet
@@ -8,7 +7,7 @@ import os
 import sqlite3
 import psycopg2
 
-api_bp = Blueprint('api_bp', __name__)
+api_bp = Blueprint('api_bp', __name__, url_prefix='/api')
 
 ENCRYPTION_KEY_STR = os.environ.get('APP_ENCRYPTION_KEY')
 if not ENCRYPTION_KEY_STR:
@@ -18,10 +17,8 @@ else:
 
 STAGING_PG_DSN = os.environ.get('STAGING_PG_DSN')
 
-@api_bp.route('/api/ai_providers', methods=['GET'])
-@token_required
+@api_bp.route('/ai_providers', methods=['GET'])
 def get_ai_providers():
-    from modules.db import execute_query
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -32,10 +29,8 @@ def get_ai_providers():
     except Exception as e:
         return jsonify({'error': f'Failed to fetch AI providers: {e}'}), 500
 
-@api_bp.route('/api/ora2pg_config_options', methods=['GET'])
-@token_required
+@api_bp.route('/ora2pg_config_options', methods=['GET'])
 def get_ora2pg_config_options():
-    from modules.db import execute_query
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -46,16 +41,14 @@ def get_ora2pg_config_options():
     except Exception as e:
         return jsonify({'error': f'Failed to fetch Ora2Pg config options: {e}'}), 500
 
-@api_bp.route('/api/clients', methods=['GET', 'POST'])
-@token_required
+@api_bp.route('/clients', methods=['GET', 'POST'])
 def manage_clients():
-    from modules.db import execute_query
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
     if request.method == 'GET':
         try:
-            cursor = execute_query(conn, 'SELECT client_id, client_name, created_at as last_modified FROM clients')
+            cursor = execute_query(conn, 'SELECT client_id, client_name, created_at as last_modified FROM clients ORDER BY client_name')
             clients = [dict(row) for row in cursor.fetchall()]
             return jsonify(clients)
         except Exception as e:
@@ -73,7 +66,6 @@ def manage_clients():
                     cursor = execute_query(conn, 'INSERT INTO clients (client_name) VALUES (%s) RETURNING client_id', (client_name,))
                     client_id = cursor.fetchone()['client_id']
                 
-                # Fetch the newly created client to return it
                 select_query = 'SELECT client_id, client_name, created_at as last_modified FROM clients WHERE client_id = ?'
                 params = (client_id,)
                 if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
@@ -89,10 +81,8 @@ def manage_clients():
         except Exception as e:
             return jsonify({'error': f'An internal error occurred: {e}'}), 500
 
-@api_bp.route('/api/client/<int:client_id>/config', methods=['GET', 'POST'])
-@token_required
+@api_bp.route('/client/<int:client_id>/config', methods=['GET', 'POST'])
 def manage_config(client_id):
-    from modules.db import execute_query
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -104,10 +94,7 @@ def manage_config(client_id):
                 query = query.replace('?', '%s')
             cursor = execute_query(conn, query, params)
             rows = cursor.fetchall()
-            config = {
-                'ai_provider': 'OpenAI (ChatGPT)', 'ai_endpoint': 'https://api.openai.com/v1/', 'ai_model': 'gpt-4o',
-                'ai_api_key': '', 'ai_temperature': 0.7, 'ai_max_output_tokens': 4096, 'ai_run_integrated': True
-            }
+            config = {}
             for row in rows:
                 key, value = row['config_key'], row['config_value']
                 if key in ['dump_as_html', 'export_schema', 'create_schema', 'compile_schema', 'debug', 'ai_run_integrated']:
@@ -146,28 +133,25 @@ def manage_config(client_id):
                     cursor.execute(param_style_query, params)
                     exists = cursor.fetchone()
 
+                    update_query = 'UPDATE configs SET config_value = ? WHERE client_id = ? AND config_key = ?'
+                    insert_query = 'INSERT INTO configs (client_id, config_type, config_key, config_value) VALUES (?, ?, ?, ?)'
+                    
+                    if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                        update_query = update_query.replace('?', '%s')
+                        insert_query = insert_query.replace('?', '%s')
+
                     if exists:
-                        update_query = 'UPDATE configs SET config_value = ?, last_modified = CURRENT_TIMESTAMP WHERE client_id = ? AND config_key = ?'
-                        update_params = (str(value), client_id, key)
-                        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-                            update_query = update_query.replace('?', '%s')
-                        execute_query(conn, update_query, update_params)
+                        execute_query(conn, update_query, (str(value), client_id, key))
                     else:
-                        insert_query = 'INSERT INTO configs (client_id, config_type, config_key, config_value, last_modified) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)'
-                        insert_params = (client_id, 'ora2pg', key, str(value))
-                        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-                           insert_query = insert_query.replace('?', '%s')
-                        execute_query(conn, insert_query, insert_params)
+                        execute_query(conn, insert_query, (client_id, 'ora2pg', key, str(value)))
                 conn.commit()
             log_audit(client_id, 'save_config', 'Saved configuration')
             return jsonify({'message': 'Configuration saved successfully'})
         except Exception as e:
             return jsonify({'error': f'Failed to save config: {str(e)}'}), 500
 
-@api_bp.route('/api/load_file', methods=['POST'])
-@token_required
+@api_bp.route('/load_file', methods=['POST'])
 def load_sql_file():
-    from modules.db import execute_query
     data = request.json
     filename, client_id = data.get('filename'), data.get('client_id')
     if not filename or not client_id:
@@ -182,6 +166,28 @@ def load_sql_file():
     if not os.path.exists(file_path):
         return jsonify({'error': f'File not found: {safe_filename}'}), 404
     
+    try:
+        corrector = Ora2PgAICorrector(output_dir=output_dir, ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        result = corrector.load_sql_file(safe_filename)
+
+        if not result['sql_content']:
+            return jsonify({'error': result['logs']}), 500
+        
+        log_audit(client_id, 'load_sql_file', f'Loaded SQL from file: {safe_filename}')
+        return jsonify({
+            'logs': result['logs'],
+            'original_sql': result['sql_content']
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to process file: {str(e)}'}), 500
+
+@api_bp.route('/correct_sql', methods=['POST'])
+def correct_sql_with_ai():
+    data = request.json
+    sql, client_id = data.get('sql'), data.get('client_id')
+    if not sql or not client_id:
+        return jsonify({'error': 'SQL content and client ID are required'}), 400
+
     try:
         conn = get_db()
         query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
@@ -201,7 +207,7 @@ def load_sql_file():
                     pass
         
         corrector = Ora2PgAICorrector(
-            output_dir=output_dir,
+            output_dir='/app/output',
             ai_settings={
                 'ai_provider': config.get('ai_provider'),
                 'ai_endpoint': config.get('ai_endpoint'),
@@ -213,31 +219,21 @@ def load_sql_file():
             encryption_key=ENCRYPTION_KEY
         )
         
-        result = corrector.load_sql_file(safe_filename)
-        if not result['sql_content']:
-            return jsonify({'error': result['logs']}), 500
-        
-        corrected_sql, metrics = corrector.ai_correct_sql(result['sql_content'])
-        log_audit(client_id, 'load_sql_file', f'Loaded and corrected SQL from file: {safe_filename}')
+        corrected_sql, metrics = corrector.ai_correct_sql(sql)
+        log_audit(client_id, 'correct_sql_with_ai', f'AI correction performed.')
         return jsonify({
-            'logs': result['logs'],
-            'original_sql': result['sql_content'],
             'corrected_sql': corrected_sql,
             'metrics': metrics
         })
     except Exception as e:
-        return jsonify({'error': f'Failed to process file: {str(e)}'}), 500
+        return jsonify({'error': f'Failed to correct SQL with AI: {str(e)}'}), 500
 
-@api_bp.route('/api/validate', methods=['POST'])
-@token_required
+@api_bp.route('/validate', methods=['POST'])
 def validate_sql():
-    from modules.db import execute_query
     data = request.json
     sql_to_validate, client_id = data.get('sql'), data.get('client_id')
     if not sql_to_validate or not client_id:
         return jsonify({'error': 'SQL and client ID are required'}), 400
-    if not STAGING_PG_DSN:
-        return jsonify({'message': 'Staging database not configured. Skipping validation.', 'status': 'skipped'})
     
     conn = get_db()
     query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
@@ -247,17 +243,20 @@ def validate_sql():
     cursor = execute_query(conn, query, params)
     config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
     
+    validation_dsn = config.get('validation_pg_dsn', STAGING_PG_DSN)
+    if not validation_dsn:
+        return jsonify({'message': 'Validation database not configured. Skipping validation.', 'status': 'skipped'})
+
     corrector = Ora2PgAICorrector(output_dir='/app/output', ai_settings={}, encryption_key=ENCRYPTION_KEY)
     
     try:
-        is_valid, message = corrector.validate_sql(sql_to_validate, STAGING_PG_DSN)
+        is_valid, message = corrector.validate_sql(sql_to_validate, validation_dsn)
         log_audit(client_id, 'validate_sql', f'Validation result: {is_valid}')
         return jsonify({'message': message, 'status': 'success' if is_valid else 'error'})
     except Exception as e:
         return jsonify({'error': f'Failed to validate SQL: {str(e)}'}), 500
 
-@api_bp.route('/api/save', methods=['POST'])
-@token_required
+@api_bp.route('/save', methods=['POST'])
 def save_sql():
     data = request.json
     original_sql, corrected_sql, client_id = data.get('original_sql'), data.get('corrected_sql'), data.get('client_id')
@@ -272,3 +271,21 @@ def save_sql():
         return jsonify({'message': f'Successfully saved corrected file to {output_path}'})
     except Exception as e:
         return jsonify({'error': f'Failed to save SQL: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/audit_logs', methods=['GET'])
+def get_audit_logs(client_id):
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        query = 'SELECT timestamp, action, details FROM audit_logs WHERE client_id = ? ORDER BY timestamp DESC'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        
+        cursor = execute_query(conn, query, params)
+        logs = [dict(row) for row in cursor.fetchall()]
+        return jsonify(logs)
+    except Exception as e:
+        return jsonify({'error': f'Failed to fetch audit logs: {e}'}), 500
+

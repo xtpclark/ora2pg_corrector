@@ -1,7 +1,7 @@
-from flask import Flask, g
-from modules.db import close_db
+from flask import Flask, jsonify, request
+from modules.db import close_db, init_db
+from modules.config import load_ai_providers, load_ora2pg_config
 from routes.main_routes import main_bp
-from routes.auth_routes import auth_bp
 from routes.api_routes import api_bp
 import os
 from dotenv import load_dotenv
@@ -28,17 +28,23 @@ def create_app():
 
     # Register blueprints
     app.register_blueprint(main_bp)
-    app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp)
 
-    # Teardown app context
+    # Teardown app context to close DB connection
     @app.teardown_appcontext
     def teardown_db(exception):
         close_db()
 
+    # Initialize DB schema and seed initial data within the app context
     with app.app_context():
-        from modules.db import init_db
+        from modules.db import get_db
+        # Step 1: Create the database schema
         init_db()
+        # Step 2: Get a connection and seed the data
+        conn = get_db()
+        if conn:
+            load_ai_providers(conn)
+            load_ora2pg_config(conn)
 
     # Error handlers
     @app.errorhandler(405)
@@ -48,7 +54,7 @@ def create_app():
 
     @app.errorhandler(Exception)
     def handle_error(e):
-        logger.error(f"Unhandled error: {str(e)}")
+        logger.error(f"Unhandled error: {str(e)}", exc_info=True)
         return jsonify({'error': 'An unexpected error occurred'}), 500
 
     return app
@@ -56,3 +62,4 @@ def create_app():
 if __name__ == '__main__':
     app = create_app()
     app.run(debug=True, host='0.0.0.0', port=8000)
+
