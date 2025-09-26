@@ -1,21 +1,32 @@
 {% extends "base.html" %}
 {% block title %}Comparison{% endblock %}
 {% block content %}
-<h2>SQL Comparison</h2>
-<div class="editor-container">
-    <div id="original-editor" class="editor"></div>
-    <div id="corrected-editor" class="editor"></div>
+<div class="row">
+    <div class="col-12">
+        <h2 class="mb-4">SQL Comparison</h2>
+        <div class="card p-4">
+            <div class="form-group mb-3">
+                <label for="localFile" class="form-label">Local SQL File:</label>
+                <div class="input-group">
+                    <input type="text" id="localFile" class="form-control" name="localFile" placeholder="e.g., oracle_test_set.sql">
+                    <button class="btn btn-primary" onclick="loadFile()">Load & Process Local File</button>
+                </div>
+            </div>
+            <div class="editor-container mt-3">
+                <div id="original-editor" class="editor"></div>
+                <div id="corrected-editor" class="editor"></div>
+            </div>
+            <div class="mt-3">
+                <button class="btn btn-primary" onclick="validateSql()">Validate SQL</button>
+                <button class="btn btn-success" onclick="saveSql()">Save All Corrections</button>
+            </div>
+            <div id="comparison-status" class="status-message mt-3"></div>
+            <div id="comparison-error" class="error-message mt-3"></div>
+        </div>
+    </div>
 </div>
-<button onclick="validateSql()">Validate SQL</button>
-<button onclick="saveSql()">Save All Corrections</button>
-<div id="comparison-status" class="status-message"></div>
-<div id="comparison-error" class="error-message"></div>
 <script>
     let token = localStorage.getItem('token');
-    // We need to know which client's config to use for validation.
-    // A robust way would be to pass it in sessionStorage from the configurator,
-    // but for now, we can assume the last active client is the one we need.
-    // This part requires a client to have been selected on the configurator page.
     let currentClientId = sessionStorage.getItem('currentClientId'); 
     let originalEditor, correctedEditor;
 
@@ -23,8 +34,6 @@
         if (!token) {
             window.location.href = '/';
         }
-        // A simple way to get the client ID is to fetch the list and use the first one
-        // if one isn't already set. This makes the page work even if visited directly.
         if (!currentClientId) {
             fetch('/api/clients', { headers: { 'Authorization': `Bearer ${token}` } })
                 .then(response => response.json())
@@ -105,6 +114,32 @@
         })
         .catch(error => {
             document.getElementById('comparison-error').innerText = 'Error saving SQL: ' + error.message;
+        });
+    }
+
+    function loadFile() {
+        if (!currentClientId) {
+            document.getElementById('comparison-error').innerText = 'Client context not found. Please go back to the configurator and select a client.';
+            return;
+        }
+        const filename = document.getElementById('localFile').value;
+        fetch('/api/load_file', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename, client_id: currentClientId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('comparison-error').innerText = data.error;
+            } else {
+                sessionStorage.setItem('original_sql', data.original_sql);
+                sessionStorage.setItem('corrected_sql', data.corrected_sql);
+                originalEditor.setValue(data.original_sql || '-- No original SQL loaded --');
+                correctedEditor.setValue(data.corrected_sql || '-- No corrected SQL loaded --');
+                document.getElementById('comparison-status').innerText = 'File loaded and processed successfully';
+                document.getElementById('comparison-error').innerText = '';
+            }
         });
     }
 </script>
