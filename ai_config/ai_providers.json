@@ -2,7 +2,7 @@
     "providers": [
         {
             "name": "Google Gemini",
-            "api_endpoint": "https://generativelanguage.googleapis.com/v1beta/models/",
+            "api_endpoint": "https://generativelanguage.googleapis.com/v1beta/",
             "default_model": "gemini-2.5-flash",
             "key_url": "https://aistudio.google.com/app/apikey",
             "notes": "For Gemini models. Model name appended to endpoint URL."
@@ -27,6 +27,13 @@
             "default_model": "claude-3-opus-20240229",
             "key_url": "https://console.anthropic.com/settings/keys",
             "notes": "Custom API connector."
+        },
+        {
+            "name": "xAI (Grok)",
+            "api_endpoint": "https://api.x.ai/v1/",
+            "default_model": "grok-4",
+            "key_url": "https://docs.x.ai/docs/tutorial",
+            "notes": "OpenAI-compatible endpoint for xAI's Grok models."
         }
     ]
 }

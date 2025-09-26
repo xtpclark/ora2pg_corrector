@@ -49,12 +49,12 @@
 <div id="status" class="status-message"></div>
 <div id="error" class="error-message"></div>
 <script>
-    let token = localStorage.getItem('token');
+    let token = null;
     let currentClientId = null;
     let providers = [];
 
-    function loadAiProviders() {
-        return fetch('/api/ai_providers', { headers: { 'Authorization': `Bearer ${token}` } })
+    function loadAiProviders(authToken) {
+        return fetch('/api/ai_providers', { headers: { 'Authorization': `Bearer ${authToken}` } })
             .then(response => response.json())
             .then(data => {
                 providers = data;
@@ -69,8 +69,8 @@
             });
     }
 
-    function loadClients() {
-        return fetch('/api/clients', { headers: { 'Authorization': `Bearer ${token}` } })
+    function loadClients(authToken) {
+        return fetch('/api/clients', { headers: { 'Authorization': `Bearer ${authToken}` } })
             .then(response => response.json())
             .then(clients => {
                 const clientList = document.getElementById('client-list');
@@ -83,28 +83,148 @@
                         document.querySelectorAll('.object-item').forEach(item => item.classList.remove('active'));
                         div.classList.add('active');
                         currentClientId = client.client_id;
-                        loadConfig(client.client_id);
+                        sessionStorage.setItem('currentClientId', currentClientId);
+                        loadConfig(currentClientId, authToken);
                     };
                     clientList.appendChild(div);
                 });
                 return clients;
             });
     }
+
+    function loadOra2pgConfigOptions(authToken) {
+        return fetch('/api/ora2pg_config_options', { headers: { 'Authorization': `Bearer ${authToken}` } })
+            .then(response => response.json())
+            .then(options => {
+                const configDiv = document.getElementById('ora2pg-config');
+                configDiv.innerHTML = '';
+                options.forEach(option => {
+                    const div = document.createElement('div');
+                    div.className = 'form-group';
+                    const label = document.createElement('label');
+                    label.innerText = option.description;
+                    div.appendChild(label);
+                    if (option.option_type === 'dropdown') {
+                        const select = document.createElement('select');
+                        select.name = option.option_name.toLowerCase();
+                        (option.allowed_values || '').split(',').forEach(value => {
+                            if (value.trim()) {
+                                const opt = document.createElement('option');
+                                opt.value = value.trim();
+                                opt.innerText = value.trim();
+                                select.appendChild(opt);
+                            }
+                        });
+                        select.value = option.default_value || '';
+                        div.appendChild(select);
+                    } else if (option.option_type === 'checkbox') {
+                        const input = document.createElement('input');
+                        input.type = 'checkbox';
+                        input.name = option.option_name.toLowerCase();
+                        input.checked = option.default_value === '1';
+                        div.appendChild(input);
+                    } else {
+                        const input = document.createElement('input');
+                        input.type = option.option_type === 'password' ? 'password' : 'text';
+                        input.name = option.option_name.toLowerCase();
+                        input.value = option.default_value || '';
+                        div.appendChild(input);
+                    }
+                    configDiv.appendChild(div);
+                });
+            });
+    }
+
+    function updateProviderDetails() {
+        const select = document.getElementById('ai_provider');
+        const selectedProviderName = select.value;
+        const provider = providers.find(p => p.name === selectedProviderName);
+        if (provider) {
+            document.getElementById('ai_endpoint').value = provider.api_endpoint;
+            document.getElementById('ai_model').value = provider.default_model;
+        } else {
+            document.getElementById('ai_endpoint').value = '';
+            document.getElementById('ai_model').value = '';
+        }
+    }
+
+    function loadConfig(clientId, authToken) {
+        fetch(`/api/client/${clientId}/config`, { headers: { 'Authorization': `Bearer ${authToken}` } })
+            .then(response => response.json())
+            .then(config => {
+                document.getElementById('ai_provider').value = config.ai_provider || '';
+                updateProviderDetails();
+                if(config.ai_endpoint) document.getElementById('ai_endpoint').value = config.ai_endpoint;
+                if(config.ai_model) document.getElementById('ai_model').value = config.ai_model;
+                document.getElementById('ai_api_key').value = config.ai_api_key || '';
+                document.getElementById('ai_temperature').value = config.ai_temperature || 0.2;
+                document.getElementById('ai_max_output_tokens').value = config.ai_max_output_tokens || 8192;
+                document.getElementById('ai_run_integrated').checked = config.ai_run_integrated || false;
+                const ora2pgConfig = document.getElementById('ora2pg-config');
+                ora2pgConfig.querySelectorAll('input, select').forEach(input => {
+                    if (input.type === 'checkbox') {
+                        input.checked = config[input.name] || false;
+                    } else {
+                        input.value = config[input.name] || '';
+                    }
+                });
+            });
+    }
+
+    function saveConfig() {
+        if (!currentClientId) { return; }
+        const config = {
+            ai_provider: document.getElementById('ai_provider').value,
+            ai_endpoint: document.getElementById('ai_endpoint').value,
+            ai_model: document.getElementById('ai_model').value,
+            ai_api_key: document.getElementById('ai_api_key').value,
+            ai_temperature: document.getElementById('ai_temperature').value,
+            ai_max_output_tokens: document.getElementById('ai_max_output_tokens').value,
+            ai_run_integrated: document.getElementById('ai_run_integrated').checked
+        };
+        const ora2pgConfig = document.getElementById('ora2pg-config');
+        ora2pgConfig.querySelectorAll('input, select').forEach(input => {
+            config[input.name] = input.type === 'checkbox' ? input.checked : input.value;
+        });
+        fetch(`/api/client/${currentClientId}/config`, {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+        });
+    }
+
+    function exportConfig() {
+        if (!currentClientId) { return; }
+        fetch(`/api/client/${currentClientId}/export_config`, { headers: { 'Authorization': `Bearer ${token}` } })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) { return; }
+                const blob = new Blob([data.config_content], { type: 'text/plain' });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'ora2pg.conf';
+                a.click();
+                window.URL.revokeObjectURL(url);
+            });
+    }
     
-    function loadOra2pgConfigOptions() { /* Function content is correct, omitted for brevity */ }
-    function updateProviderDetails() { /* Function content is correct, omitted for brevity */ }
-    function loadConfig(clientId) { /* Function content is correct, omitted for brevity */ }
-    function saveConfig() { /* Function content is correct, omitted for brevity */ }
-    function exportConfig() { /* Function content is correct, omitted for brevity */ }
-    function createClient() { /* Function content is correct, omitted for brevity */ }
+    function createClient() {
+        const clientName = document.getElementById('client_name').value;
+        if (!clientName) { return; }
+        fetch('/api/clients', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_name: clientName })
+        }).then(() => {
+            document.getElementById('client_name').value = '';
+            loadClients(token);
+        });
+    }
 
     function loadFile() {
-        if (!currentClientId) {
-            document.getElementById('error').innerText = 'Please select a client first';
-            return;
-        }
+        if (!currentClientId) { return; }
         const filename = document.getElementById('localFile').value;
-        if (!filename) { return; }
         fetch('/api/load_file', {
             method: 'POST',
             headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -123,18 +243,19 @@
     }
 
     window.onload = () => {
+        token = localStorage.getItem('token');
         if (!token) {
             window.location.href = '/';
-        } else {
-            loadOra2pgConfigOptions();
-            loadAiProviders().then(() => {
-                loadClients().then(clients => {
-                    if (clients && clients.length > 0) {
-                        document.querySelector('.object-item').click();
-                    }
-                });
-            });
+            return;
         }
+        loadOra2pgConfigOptions(token);
+        loadAiProviders(token).then(() => {
+            loadClients(token).then(clients => {
+                if (clients && clients.length > 0) {
+                    document.querySelector('.object-item').click();
+                }
+            });
+        });
     };
 </script>
 {% endblock %}

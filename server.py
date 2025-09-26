@@ -19,7 +19,12 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
+basedir = os.path.abspath(os.path.dirname(__file__))
+
+app = Flask(__name__,
+            static_folder=os.path.join(basedir, 'static'),
+            template_folder=os.path.join(basedir, 'templates'))
+
 app.config['SECRET_KEY'] = os.environ.get('APP_SECRET_KEY')
 if not app.config['SECRET_KEY']:
     raise ValueError("APP_SECRET_KEY environment variable not set.")
@@ -109,17 +114,11 @@ def index():
     return render_template('login.html')
 
 @app.route('/configurator', methods=['GET'])
-@token_required
 def configurator():
-    if not g.user_id:
-        return redirect('/')
     return render_template('configurator.html')
 
 @app.route('/comparison', methods=['GET'])
-@token_required
 def comparison():
-    if not g.user_id:
-        return redirect('/')
     return render_template('comparison.html')
 
 @app.route('/api/login', methods=['POST'])

@@ -9,32 +9,28 @@ body {
     margin: 0 auto;
 }
 nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #333;
+    padding: 10px 20px;
+    border-radius: 5px;
     margin-bottom: 20px;
 }
 nav a {
-    margin-right: 15px;
+    color: white;
     text-decoration: none;
-    color: #007bff;
+    padding: 8px 15px;
 }
 nav a:hover {
-    text-decoration: underline;
-}
-.tabs {
-    display: flex;
-    gap: 10px;
-    margin-bottom: 20px;
-}
-.tab {
-    padding: 10px 20px;
-    cursor: pointer;
-    border: 1px solid #ccc;
-    background-color: #fff;
+    background-color: #555;
     border-radius: 4px;
 }
-.tab.active {
-    background-color: #007bff;
-    color: white;
-    border-color: #007bff;
+.content-wrapper {
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 5px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 .form-group {
     margin-bottom: 15px;
@@ -100,4 +96,9 @@ button:hover {
 }
 .object-item:hover {
     background-color: #f0f0f0;
+}
+.object-item.active {
+    background-color: #007bff;
+    color: white;
+    border-color: #0056b3;
 }

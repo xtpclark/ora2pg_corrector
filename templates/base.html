@@ -9,13 +9,11 @@
 </head>
 <body>
     <div class="container">
-        {% if g.user_id %}
         <nav>
             <a href="/configurator">Configurator</a>
             <a href="/comparison">Comparison</a>
             <a href="/logout" onclick="localStorage.removeItem('token');">Logout</a>
         </nav>
-        {% endif %}
         <div class="content-wrapper">
             {% block content %}{% endblock %}
         </div>

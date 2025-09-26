@@ -5,6 +5,7 @@ import html
 import logging
 import requests
 from cryptography.fernet import Fernet
+import psycopg2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
