@@ -26,16 +26,15 @@ RUN wget https://github.com/darold/ora2pg/archive/refs/tags/v24.3.tar.gz \
 # Install Perl dependencies for Ora2Pg (only DBD::Pg for PostgreSQL)
 RUN cpanm DBD::Pg
 
-# Copy application files
+# Copy application files first
 COPY requirements.txt .
-COPY server.py .
-COPY api_connector.py .
-COPY ora2pg_ai_corrector.py .
-COPY static/ static/
-COPY .env .env
 
 # Install Python dependencies
+# This is done before copying the rest of the code to leverage Docker layer caching
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application files
+COPY . .
 
 # Expose port
 EXPOSE 8000

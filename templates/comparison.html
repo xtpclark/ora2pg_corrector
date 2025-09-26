@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %}Comparison{% endblock %}
+{% block content %}
+<h2>SQL Comparison</h2>
+<div class="editor-container">
+    <div id="original-editor" class="editor"></div>
+    <div id="corrected-editor" class="editor"></div>
+</div>
+<button onclick="validateSql()">Validate SQL</button>
+<button onclick="saveSql()">Save All Corrections</button>
+<div id="comparison-status" class="status-message"></div>
+<div id="comparison-error" class="error-message"></div>
+<script>
+    let token = localStorage.getItem('token');
+    let currentClientId = null;
+
+    require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs' } });
+    let originalEditor, correctedEditor;
+
+    require(['vs/editor/editor.main'], function() {
+        try {
+            originalEditor = monaco.editor.create(document.getElementById('original-editor'), {
+                value: decodeURIComponent(new URLSearchParams(window.location.search).get('original') || ''),
+                language: 'sql',
+                readOnly: true,
+                theme: 'vs-dark',
+                automaticLayout: true
+            });
+            correctedEditor = monaco.editor.create(document.getElementById('corrected-editor'), {
+                value: decodeURIComponent(new URLSearchParams(window.location.search).get('corrected') || ''),
+                language: 'sql',
+                theme: 'vs-dark',
+                automaticLayout: true
+            });
+        } catch (e) {
+            document.getElementById('comparison-error').innerText = 'Failed to initialize editors: ' + e.message;
+        }
+    });
+
+    function validateSql() {
+        if (!currentClientId) {
+            document.getElementById('comparison-error').innerText = 'Please select a client first';
+            return;
+        }
+        fetch('/api/validate', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql: correctedEditor.getValue(), client_id: currentClientId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById('comparison-status').innerText = data.message;
+            document.getElementById('comparison-error').innerText = data.status === 'error' ? data.message : '';
+        })
+        .catch(error => {
+            document.getElementById('comparison-error').innerText = 'Error validating SQL: ' + error.message;
+        });
+    }
+
+    function saveSql() {
+        if (!currentClientId) {
+            document.getElementById('comparison-error').innerText = 'Please select a client first';
+            return;
+        }
+        fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ original_sql: originalEditor.getValue(), corrected_sql: correctedEditor.getValue(), client_id: currentClientId })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                document.getElementById('comparison-error').innerText = data.error;
+            } else {
+                document.getElementById('comparison-status').innerText = data.message;
+                document.getElementById('comparison-error').innerText = '';
+            }
+        })
+        .catch(error => {
+            document.getElementById('comparison-error').innerText = 'Error saving SQL: ' + error.message;
+        });
+    }
+
+    window.onload = () => {
+        if (!token) {
+            window.location.href = '/';
+        } else {
+            fetch('/api/clients', {
+                method: 'GET',
+                headers: { 'Authorization': `Bearer ${token}` }
+            })
+            .then(response => response.json())
+            .then(clients => {
+                if (clients.length > 0) currentClientId = clients[0].client_id;
+            })
+            .catch(error => {
+                document.getElementById('comparison-error').innerText = 'Error loading clients: ' + error.message;
+            });
+        }
+    };
+</script>
+{% endblock %}

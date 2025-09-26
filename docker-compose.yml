@@ -1,28 +1,24 @@
 version: '3.8'
-
 services:
   app:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      # FIX: Add a bind mount for the output directory
-      # This makes local files like oracle_test_set.sql available inside the container.
       - ./output:/app/output:z
-      # Mount the settings database file
       - ./settings.db:/app/settings.db:z
+      - ./ora2pg_config:/app/ora2pg_config:z
+      - ./ai_config:/app/ai_config:z
+      - ./static:/app/static:z
     env_file:
       - .env
-    # Use depends_on to ensure postgres starts first
     depends_on:
       - postgres
     networks:
       - app-network
-
   postgres:
     image: postgres:13
     environment:
-      # These should match the values in your .env file
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: ${POSTGRES_DB:-ora2pg_settings}
@@ -30,11 +26,8 @@ services:
       - pgdata:/var/lib/postgresql/data
     networks:
       - app-network
-
 volumes:
   pgdata:
-
 networks:
   app-network:
     driver: bridge
-

@@ -1,0 +1,103 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+    background-color: #f4f4f4;
+}
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+nav {
+    margin-bottom: 20px;
+}
+nav a {
+    margin-right: 15px;
+    text-decoration: none;
+    color: #007bff;
+}
+nav a:hover {
+    text-decoration: underline;
+}
+.tabs {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+.tab {
+    padding: 10px 20px;
+    cursor: pointer;
+    border: 1px solid #ccc;
+    background-color: #fff;
+    border-radius: 4px;
+}
+.tab.active {
+    background-color: #007bff;
+    color: white;
+    border-color: #007bff;
+}
+.form-group {
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+label {
+    margin-bottom: 0;
+    font-weight: bold;
+    min-width: 150px;
+}
+input, select {
+    width: 300px;
+    padding: 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    box-sizing: border-box;
+}
+button {
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+button:hover {
+    background-color: #0056b3;
+}
+.editor-container {
+    display: flex;
+    gap: 20px;
+    height: 600px;
+    margin-top: 20px;
+}
+.editor {
+    flex: 1;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    overflow: hidden;
+}
+.status-message {
+    margin-top: 10px;
+    color: green;
+    font-weight: bold;
+}
+.error-message {
+    margin-top: 10px;
+    color: red;
+    font-weight: bold;
+}
+#client-list {
+    margin-bottom: 20px;
+}
+.object-item {
+    padding: 10px;
+    border: 1px solid #ccc;
+    margin-bottom: 5px;
+    cursor: pointer;
+    background-color: #fff;
+    border-radius: 4px;
+}
+.object-item:hover {
+    background-color: #f0f0f0;
+}

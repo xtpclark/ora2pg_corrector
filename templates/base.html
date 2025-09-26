@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ora2Pg AI Corrector - {% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs/loader.js"></script>
+    <script>
+        window.addEventListener('load', () => {
+            if (typeof require === 'undefined') {
+                document.getElementById('error').innerText = 'Failed to load Monaco Editor. Check network or contact support.';
+            }
+        });
+    </script>
+</head>
+<body>
+    <div class="container">
+        {% if g.user_id %}
+        <nav>
+            <a href="/configurator">Configurator</a> |
+            <a href="/comparison">Comparison</a> |
+            <a href="/logout" onclick="localStorage.removeItem('token');">Logout</a>
+        </nav>
+        {% endif %}
+        {% block content %}
+        {% endblock %}
+    </div>
+</body>
+</html>

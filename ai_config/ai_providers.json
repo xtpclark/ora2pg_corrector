@@ -1,0 +1,32 @@
+{
+    "providers": [
+        {
+            "name": "Google Gemini",
+            "api_endpoint": "https://generativelanguage.googleapis.com/v1beta/models/",
+            "default_model": "gemini-2.5-flash",
+            "key_url": "https://aistudio.google.com/app/apikey",
+            "notes": "For Gemini models. Model name appended to endpoint URL."
+        },
+        {
+            "name": "OpenAI (ChatGPT)",
+            "api_endpoint": "https://api.openai.com/v1/",
+            "default_model": "gpt-4o",
+            "key_url": "https://platform.openai.com/api-keys",
+            "notes": "For GPT-4, GPT-3.5, etc."
+        },
+        {
+            "name": "Groq",
+            "api_endpoint": "https://api.groq.com/openai/v1/",
+            "default_model": "llama3-70b-8192",
+            "key_url": "https://console.groq.com/keys",
+            "notes": "High-speed inference."
+        },
+        {
+            "name": "Anthropic (Claude)",
+            "api_endpoint": "https://api.anthropic.com/v1/",
+            "default_model": "claude-3-opus-20240229",
+            "key_url": "https://console.anthropic.com/settings/keys",
+            "notes": "Custom API connector."
+        }
+    ]
+}
