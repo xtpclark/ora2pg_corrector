@@ -13,15 +13,17 @@
 <h3>AI Configuration</h3>
 <div class="form-group">
     <label for="ai_provider">AI Provider:</label>
-    <select id="ai_provider" name="ai_provider"></select>
+    <select id="ai_provider" name="ai_provider" onchange="updateProviderDetails()">
+        <option value="">Select a provider</option>
+    </select>
 </div>
 <div class="form-group">
     <label for="ai_endpoint">AI Endpoint:</label>
-    <input type="text" id="ai_endpoint" name="ai_endpoint">
+    <input type="text" id="ai_endpoint" name="ai_endpoint" readonly>
 </div>
 <div class="form-group">
     <label for="ai_model">AI Model:</label>
-    <input type="text" id="ai_model" name="ai_model">
+    <input type="text" id="ai_model" name="ai_model" readonly>
 </div>
 <div class="form-group">
     <label for="ai_api_key">AI API Key:</label>
@@ -29,11 +31,11 @@
 </div>
 <div class="form-group">
     <label for="ai_temperature">AI Temperature:</label>
-    <input type="number" id="ai_temperature" name="ai_temperature" step="0.1" value="0.7">
+    <input type="number" id="ai_temperature" name="ai_temperature" step="0.1" value="0.2">
 </div>
 <div class="form-group">
     <label for="ai_max_output_tokens">AI Max Output Tokens:</label>
-    <input type="number" id="ai_max_output_tokens" name="ai_max_output_tokens" value="4096">
+    <input type="number" id="ai_max_output_tokens" name="ai_max_output_tokens" value="8192">
 </div>
 <div class="form-group">
     <label for="ai_run_integrated">Run AI Integrated:</label>
@@ -51,6 +53,7 @@
 <script>
     let token = localStorage.getItem('token');
     let currentClientId = null;
+    let providers = [];
 
     function loadClients() {
         fetch('/api/clients', {
@@ -77,52 +80,40 @@
         });
     }
 
-    function createClient() {
-        const clientName = document.getElementById('client_name').value;
-        if (!clientName) {
-            document.getElementById('error').innerText = 'Client name is required';
-            return;
-        }
-        fetch('/api/clients', {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_name: clientName })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                document.getElementById('error').innerText = data.error;
-            } else {
-                loadClients();
-                document.getElementById('client_name').value = '';
-                document.getElementById('error').innerText = '';
-                document.getElementById('status').innerText = 'Client created successfully';
-            }
-        })
-        .catch(error => {
-            document.getElementById('error').innerText = 'Error creating client: ' + error.message;
-        });
-    }
-
     function loadAiProviders() {
         fetch('/api/ai_providers', {
             method: 'GET',
             headers: { 'Authorization': `Bearer ${token}` }
         })
         .then(response => response.json())
-        .then(providers => {
+        .then(data => {
+            providers = data;
             const select = document.getElementById('ai_provider');
-            select.innerHTML = '';
+            select.innerHTML = '<option value="">Select a provider</option>';
             providers.forEach(provider => {
                 const option = document.createElement('option');
                 option.value = provider.name;
                 option.innerText = provider.name;
                 select.appendChild(option);
             });
+            updateProviderDetails(); // Set default values if a provider is pre-selected
         })
         .catch(error => {
             document.getElementById('error').innerText = 'Error loading AI providers: ' + error.message;
         });
+    }
+
+    function updateProviderDetails() {
+        const select = document.getElementById('ai_provider');
+        const selectedProviderName = select.value;
+        const provider = providers.find(p => p.name === selectedProviderName);
+        if (provider) {
+            document.getElementById('ai_endpoint').value = provider.api_endpoint;
+            document.getElementById('ai_model').value = provider.default_model;
+        } else {
+            document.getElementById('ai_endpoint').value = '';
+            document.getElementById('ai_model').value = '';
+        }
     }
 
     function loadOra2pgConfigOptions() {
@@ -185,8 +176,8 @@
             document.getElementById('ai_endpoint').value = config.ai_endpoint || '';
             document.getElementById('ai_model').value = config.ai_model || '';
             document.getElementById('ai_api_key').value = config.ai_api_key || '';
-            document.getElementById('ai_temperature').value = config.ai_temperature || 0.7;
-            document.getElementById('ai_max_output_tokens').value = config.ai_max_output_tokens || 4096;
+            document.getElementById('ai_temperature').value = config.ai_temperature || 0.2;
+            document.getElementById('ai_max_output_tokens').value = config.ai_max_output_tokens || 8192;
             document.getElementById('ai_run_integrated').checked = config.ai_run_integrated || false;
             const ora2pgConfig = document.getElementById('ora2pg-config');
             ora2pgConfig.querySelectorAll('input, select').forEach(input => {
@@ -196,6 +187,7 @@
                     input.value = config[input.name] || '';
                 }
             });
+            updateProviderDetails(); // Sync endpoint and model with selected provider
         })
         .catch(error => {
             document.getElementById('error').innerText = 'Error loading config: ' + error.message;

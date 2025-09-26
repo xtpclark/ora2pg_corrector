@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, g, render_template
+from flask import Flask, jsonify, request, g, render_template, redirect
 from modules.config import load_ora2pg_config, load_ai_providers
 from modules.db import get_db, close_db, execute_query
 from modules.auth import token_required, login
@@ -111,11 +111,15 @@ def index():
 @app.route('/configurator', methods=['GET'])
 @token_required
 def configurator():
+    if not g.user_id:
+        return redirect('/')
     return render_template('configurator.html')
 
 @app.route('/comparison', methods=['GET'])
 @token_required
 def comparison():
+    if not g.user_id:
+        return redirect('/')
     return render_template('comparison.html')
 
 @app.route('/api/login', methods=['POST'])

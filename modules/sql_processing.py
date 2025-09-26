@@ -72,7 +72,7 @@ class Ora2PgAICorrector:
         for pattern in patterns:
             matches = re.findall(pattern, logs, re.MULTILINE)
             for obj_type, issue_desc in matches:
-                issues.append(f"{obj_type}: {issue_desc}")
+                issues.append(f"{obj_type): {issue_desc}")
         return issues
 
     def ai_correct_sql(self, sql, issues=None):
@@ -126,7 +126,7 @@ Original SQL:
             # Google Gemini API structure
             if "generativelanguage.googleapis.com" in api_endpoint:
                 model_name = ai_model.replace('-latest', '')
-                api_url = f"{api_endpoint.rstrip('/')}/{model_name}:generateContent?key={api_key}"
+                api_url = f"{api_endpoint.rstrip('/')}/models/{model_name}:generateContent?key={api_key}"
                 payload = {
                     "contents": [{"parts": [{"text": full_prompt}]}],
                     "systemInstruction": {"parts": [{"text": system_instruction}]},
@@ -146,6 +146,7 @@ Original SQL:
                     "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)),
                 }
             
+            logger.info(f"Sending AI request to {api_url} with model {ai_model}")
             response = requests.post(
                 api_url,
                 json=payload,
