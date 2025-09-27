@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ora2Pg AI Corrector</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs/loader.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+</head>
+<body class="bg-gray-800 text-gray-200 flex h-screen overflow-hidden">
+
+    <aside class="sidebar bg-gray-900 p-6 flex flex-col flex-shrink-0">
+        <h1 class="text-2xl font-bold text-white mb-8">Ora2Pg Corrector</h1>
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Clients</h2>
+        <div id="client-list" class="space-y-2 overflow-y-auto">
+        </div>
+        <button id="add-client-btn" class="mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg flex items-center justify-center">
+            <i class="fas fa-plus mr-2"></i> New Client
+        </button>
+        <div class="mt-auto text-center text-gray-500 text-xs">
+            Version 2.5
+        </div>
+    </aside>
+
+    <main class="flex-1 p-8 overflow-y-auto">
+        {% block content %}{% endblock %}
+    </main>
+
+    <div id="toast" class="toast bg-gray-700 border border-gray-600 text-white py-3 px-5 rounded-lg shadow-lg">
+        <p id="toast-message"></p>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

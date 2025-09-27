@@ -6,6 +6,10 @@ from cryptography.fernet import Fernet
 import os
 import sqlite3
 import psycopg2
+import logging
+
+# --- CHANGE: Added logger ---
+logger = logging.getLogger(__name__)
 
 api_bp = Blueprint('api_bp', __name__, url_prefix='/api')
 
@@ -19,7 +23,7 @@ else:
 def get_app_settings():
     """Returns application-level settings to the frontend."""
     settings = {
-        'staging_pg_dsn': os.environ.get('STAGING_PG_DSN', '')
+        'validation_pg_dsn': os.environ.get('VALIDATION_PG_DSN', '')
     }
     return jsonify(settings)
 
@@ -149,12 +153,57 @@ def manage_config(client_id):
                     if exists:
                         execute_query(conn, update_query, (str(value), client_id, key))
                     else:
-                        execute_query(conn, insert_query, (client_id, 'ora2pg', key, str(value)))
+                        if key.startswith('ai_'):
+                            config_type = 'ai'
+                        elif key == 'validation_pg_dsn':
+                            config_type = 'validation'
+                        else:
+                            config_type = 'ora2pg'
+                        
+                        execute_query(conn, insert_query, (client_id, config_type, key, str(value)))
                 conn.commit()
             log_audit(client_id, 'save_config', 'Saved configuration')
             return jsonify({'message': 'Configuration saved successfully'})
         except Exception as e:
             return jsonify({'error': f'Failed to save config: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/run_ora2pg', methods=['POST'])
+def run_ora2pg(client_id):
+    """
+    Triggers an Ora2Pg export using the client's saved configuration.
+    """
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd', 'ai_api_key']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    pass
+        
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        
+        sql_output, error_output = corrector.run_ora2pg_export(config)
+
+        if error_output:
+            log_audit(client_id, 'run_ora2pg', f'Failed: {error_output}')
+            return jsonify({'error': error_output}), 500
+        
+        log_audit(client_id, 'run_ora2pg', 'Successfully executed Ora2Pg export.')
+        return jsonify({'sql_output': sql_output})
+
+    except Exception as e:
+        logger.error(f"Failed to run Ora2Pg for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @api_bp.route('/correct_sql', methods=['POST'])
 def correct_sql_with_ai():
@@ -270,16 +319,22 @@ def validate_sql():
 @api_bp.route('/save', methods=['POST'])
 def save_sql():
     data = request.json
-    original_sql, corrected_sql, client_id = data.get('original_sql'), data.get('corrected_sql'), data.get('client_id')
+    original_sql = data.get('original_sql')
+    corrected_sql = data.get('corrected_sql')
+    client_id = data.get('client_id')
+    filename = data.get('filename', 'corrected_output.sql')
+
     if not corrected_sql or not client_id:
         return jsonify({'error': 'Corrected SQL and client ID are required'}), 400
     
-    corrector = Ora2PgAICorrector(output_dir='/app/output', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+    output_dir = os.environ.get('OUTPUT_DIR', '/app/output')
+
+    corrector = Ora2PgAICorrector(output_dir=output_dir, ai_settings={}, encryption_key=ENCRYPTION_KEY)
     
     try:
-        output_path = corrector.save_corrected_file(original_sql, corrected_sql)
+        output_path = corrector.save_corrected_file(original_sql, corrected_sql, filename)
         log_audit(client_id, 'save_file', f'Saved corrected SQL to {output_path}')
-        return jsonify({'message': f'Successfully saved corrected file to {output_path}'})
+        return jsonify({'message': f'Successfully saved file to {output_path}'})
     except Exception as e:
         return jsonify({'error': f'Failed to save SQL: {str(e)}'}), 500
 
@@ -311,3 +366,22 @@ def log_audit_event(client_id):
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'error': f'Failed to log audit event: {e}'}), 500
+
+@api_bp.route('/test_pg_connection', methods=['POST'])
+def test_pg_connection():
+    data = request.json
+    pg_dsn = data.get('pg_dsn')
+    if not pg_dsn:
+        return jsonify({'error': 'PostgreSQL DSN is required'}), 400
+    try:
+        with psycopg2.connect(pg_dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT version();")
+                pg_version = cursor.fetchone()[0]
+        return jsonify({'status': 'success', 'message': f'Connection successful! PostgreSQL version: {pg_version}'})
+    except psycopg2.OperationalError as e:
+        logger.error(f"PostgreSQL connection test failed for DSN {pg_dsn}: {e}")
+        return jsonify({'status': 'error', 'message': f'Connection failed: {e}'}), 400
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
+        return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500

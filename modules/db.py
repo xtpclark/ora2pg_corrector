@@ -12,7 +12,8 @@ def get_db():
     if 'db' not in g:
         try:
             if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                g.db = sqlite3.connect('/app/settings.db', timeout=10)
+                g.db = sqlite3.connect('/app/data/settings.db', timeout=10)
+
                 g.db.row_factory = sqlite3.Row
             else:
                 if not os.environ.get('PG_DSN_CONFIG'):

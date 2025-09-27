@@ -1,0 +1,47 @@
+<div id="workspace-tab" class="tab-pane hidden">
+    <div class="bg-gray-900 p-6 rounded-lg">
+        <div class="flex items-center space-x-4 mb-6">
+            <input type="file" id="sql-file-picker" class="hidden" accept=".sql,text/plain">
+            <button id="load-file-proxy-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
+                <i class="fas fa-folder-open mr-2"></i> <span>Load SQL File</span>
+            </button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+                <h3 class="text-lg font-semibold mb-3">Original SQL</h3>
+                <div id="original-editor" class="editor-container rounded-lg overflow-hidden"></div>
+            </div>
+            <div>
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-lg font-semibold">Corrected PostgreSQL</h3>
+                    <button id="copy-btn" title="Copy to Clipboard" class="text-gray-400 hover:text-white">
+                        <i class="fas fa-clipboard"></i>
+                    </button>
+                </div>
+                <div id="corrected-editor" class="editor-container rounded-lg overflow-hidden"></div>
+            </div>
+        </div>
+         <div class="mt-6 flex justify-between items-center">
+             <button id="correct-ai-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-6 rounded-lg flex items-center disabled:opacity-50">
+                <i class="fas fa-magic mr-2"></i> <span>Correct with AI</span>
+            </button>
+            <div class="flex items-center space-x-4">
+                <div class="flex items-center space-x-3">
+                    <div class="flex items-center">
+                        <input id="auto-create-ddl-checkbox" type="checkbox" class="h-4 w-4 bg-gray-700 border-gray-600 text-purple-600 focus:ring-purple-500 rounded" checked>
+                        <label for="auto-create-ddl-checkbox" class="ml-2 block text-sm text-gray-400" title="Allows AI to generate DDL for missing tables during validation.">Auto-create Tables</label>
+                    </div>
+                    <div class="flex items-center">
+                        <input id="clean-slate-checkbox" type="checkbox" class="h-4 w-4 bg-gray-700 border-gray-600 text-purple-600 focus:ring-purple-500 rounded">
+                        <label for="clean-slate-checkbox" class="ml-2 block text-sm text-gray-400" title="Drops tables referenced in the query before running validation.">Clean Slate</label>
+                    </div>
+                </div>
+                <button id="validate-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg disabled:opacity-50"><span>Validate</span></button>
+                <div class="flex items-center">
+                    <input type="text" id="save-filename-input" class="form-input w-48 rounded-md text-sm" value="corrected_output.sql">
+                    <button id="save-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-md ml-2 disabled:opacity-50"><span>Save</span></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
