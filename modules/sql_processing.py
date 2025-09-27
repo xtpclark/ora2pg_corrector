@@ -21,15 +21,14 @@ class Ora2PgAICorrector:
         self.encryption_key = encryption_key
         self.fernet = Fernet(encryption_key)
 
-    def run_ora2pg_export(self, client_config):
+    def run_ora2pg_export(self, client_config, extra_args=None):
         """
         Generates a temporary ora2pg config file from client settings
         and executes ora2pg, capturing the output.
         """
+        # --- THIS LINE FIXES THE BUG ---
         config_content = ""
 
-        # --- CHANGE: Ensure PG_VERSION is set ---
-        # Provide a sensible default if not set by the user.
         if 'pg_version' not in client_config:
             client_config['pg_version'] = '13'
             logger.info("PG_VERSION not set, using default of 13.")
@@ -51,7 +50,7 @@ class Ora2PgAICorrector:
             
             logger.info(f"Generated temporary ora2pg config at: {config_path}")
 
-            command = [self.ora2pg_path, '-c', config_path]
+            command = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
             logger.info(f"Executing command: {' '.join(command)}")
             
             result = subprocess.run(command, capture_output=True, text=True, timeout=300)
@@ -77,7 +76,6 @@ class Ora2PgAICorrector:
                 os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
 
-        
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)
@@ -186,7 +184,7 @@ Failed Query:
                 "systemInstruction": {"parts": [{"text": system_instruction}]},
                 "generationConfig": { "temperature": float(self.ai_settings.get('ai_temperature', 0.2)), "maxOutputTokens": int(self.ai_settings.get('ai_max_output_tokens', 8192)) }
             }
-        else: # OpenAI-like
+        else:
             api_url = f"{api_endpoint.rstrip('/')}/chat/completions"
             headers['Authorization'] = f'Bearer {api_key}'
             payload = { "model": ai_model, "messages": [{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}], "temperature": float(self.ai_settings.get('ai_temperature', 0.2)), "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)) }
@@ -205,7 +203,7 @@ Failed Query:
                 if finish_reason == 'MAX_TOKENS': raise ValueError(max_token_error_msg)
                 if 'content' in candidates[0] and 'parts' in candidates[0]['content'] and candidates[0]['content']['parts']: generated_text = candidates[0]['content']['parts'][0].get('text', '').strip()
                 else: raise ValueError(f"Unexpected response structure from Google AI: {response_data}")
-            else: # OpenAI-like
+            else:
                 choices = response_data.get('choices', [])
                 if not choices: raise ValueError(f"AI response is missing 'choices'. Full response: {response_data}")
                 finish_reason = choices[0].get('finish_reason')
@@ -267,7 +265,6 @@ Failed Query:
             except Exception as e:
                 logger.error(f"An unexpected error occurred during proactive DDL check: {e}")
 
-
         max_retries = 5
         current_sql = sql
         for attempt in range(max_retries):
@@ -309,7 +306,7 @@ Failed Query:
                     else:
                         logger.error(f"Validation failed: {error_message}. Auto-create DDL is disabled.")
                         return False, f"Validation failed: {error_message}. Auto-create DDL is disabled.", None
-                else: # Attempt to fix the query itself
+                else:
                     logger.info(f"Attempt {attempt + 1}/{max_retries}: Non-relation error encountered. Asking AI to fix query.")
                     new_sql = self._get_query_fix_from_ai(current_sql, error_message)
                     if not new_sql:

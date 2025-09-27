@@ -41,12 +41,16 @@ services:
       ORACLE_PASSWORD: oracle
     volumes:
       - ./oracle_setup:/container-entrypoint-initdb.d:z
+      # --- CHANGE: Added a named volume for persistent Oracle data ---
+      - oracle_data:/opt/oracle/oradata
     networks:
       - app-network
 
 volumes:
   pgdata:
   settings_data:
+  # --- CHANGE: Defined the new Oracle volume ---
+  oracle_data:
 
 networks:
   app-network:
