@@ -27,18 +27,24 @@ class Ora2PgAICorrector:
         Generates a temporary ora2pg config file from client settings
         and executes ora2pg, capturing the output.
         """
-        # --- CHANGE: Logic to handle multi-file and single-file output ---
         temp_dir = tempfile.mkdtemp()
         logger.info(f"Created temporary directory for ora2pg output: {temp_dir}")
         
-        # Ora2Pg requires an OUTPUT directive, so we'll always provide one.
-        client_config['output'] = os.path.join(temp_dir, 'output.sql')
-        
-        # Check if FILE_PER_TABLE is enabled. Note the key is lowercase from the form.
-        file_per_table = client_config.get('file_per_table', False)
+        # --- FIX: Conditionally set OUTPUT or OUTPUT_DIR, but not both ---
+        file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
+        output_file_path = None
+
         if file_per_table:
-            # If so, also set the directory for the individual files
+            # For multi-file, just set the output directory
             client_config['output_dir'] = temp_dir
+            # Unset 'output' in case it came from the config, to avoid conflict
+            client_config.pop('output', None)
+        else:
+            # For single-file, set the output file path
+            output_file_path = os.path.join(temp_dir, 'output.sql')
+            client_config['output'] = output_file_path
+            # Unset 'output_dir' to avoid conflict
+            client_config.pop('output_dir', None)
 
         config_content = ""
         if 'pg_version' not in client_config:
@@ -49,9 +55,8 @@ class Ora2PgAICorrector:
             if key.startswith('ai_') or key == 'validation_pg_dsn' or value is None:
                 continue
             
-            # The config parser reads booleans as strings '1'/'0', so we handle that
-            if isinstance(value, bool) or value in ['1', '0']:
-                value = 1 if str(value) in ['true', 'True', '1'] else 0
+            if isinstance(value, bool):
+                value = 1 if value else 0
             
             config_content += f"{key.upper()} {value}\n"
 
@@ -69,42 +74,31 @@ class Ora2PgAICorrector:
             result = subprocess.run(command, capture_output=True, text=True, timeout=300)
 
             if result.returncode != 0:
-                shutil.rmtree(temp_dir) # Clean up on failure
+                shutil.rmtree(temp_dir)
                 logger.error(f"Ora2Pg execution failed with exit code {result.returncode}. Stderr: {result.stderr}")
                 return None, result.stderr
             
             logger.info("Ora2Pg execution successful.")
             
-            # --- CHANGE: Return either a list of files or the content of one file ---
             if file_per_table:
-                # List all .sql files in the temp directory and return the list
                 files = [f for f in os.listdir(temp_dir) if f.endswith('.sql')]
-                # We'll return the directory path as well, so the API knows where to find the files
                 return {'files': files, 'directory': temp_dir}, None
             else:
-                # Read the content of the single output file and return it
-                with open(client_config['output'], 'r', encoding='utf-8') as f:
+                with open(output_file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                shutil.rmtree(temp_dir) # Clean up the directory
+                shutil.rmtree(temp_dir)
                 return {'sql_output': content}, None
 
-        except FileNotFoundError:
-            shutil.rmtree(temp_dir)
-            logger.error("ora2pg command not found. Make sure it is installed and in the system's PATH.")
-            return None, "ora2pg command not found on the server."
-        except subprocess.TimeoutExpired:
-            shutil.rmtree(temp_dir)
-            logger.error("Ora2Pg command timed out.")
-            return None, "Ora2Pg execution timed out after 5 minutes."
         except Exception as e:
-            shutil.rmtree(temp_dir)
-            logger.error(f"An unexpected error occurred during Ora2Pg execution: {e}")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            logger.error(f"An unexpected error occurred during Ora2Pg execution: {e}", exc_info=True)
             return None, f"An unexpected error occurred: {str(e)}"
         finally:
             if config_path and os.path.exists(config_path):
-                # os.remove(config_path)
+ #               os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
-    
+
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)
