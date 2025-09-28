@@ -30,20 +30,15 @@ class Ora2PgAICorrector:
         temp_dir = tempfile.mkdtemp()
         logger.info(f"Created temporary directory for ora2pg output: {temp_dir}")
         
-        # --- FIX: Conditionally set OUTPUT or OUTPUT_DIR, but not both ---
         file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
         output_file_path = None
 
         if file_per_table:
-            # For multi-file, just set the output directory
             client_config['output_dir'] = temp_dir
-            # Unset 'output' in case it came from the config, to avoid conflict
             client_config.pop('output', None)
         else:
-            # For single-file, set the output file path
             output_file_path = os.path.join(temp_dir, 'output.sql')
             client_config['output'] = output_file_path
-            # Unset 'output_dir' to avoid conflict
             client_config.pop('output_dir', None)
 
         config_content = ""
@@ -96,9 +91,9 @@ class Ora2PgAICorrector:
             return None, f"An unexpected error occurred: {str(e)}"
         finally:
             if config_path and os.path.exists(config_path):
- #               os.remove(config_path)
+                os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
-
+    
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)
