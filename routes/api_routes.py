@@ -236,8 +236,6 @@ def generate_report(client_id):
         
         log_audit(client_id, 'generate_report', 'Successfully generated assessment report.')
         
-        # --- THIS IS THE FIX ---
-        # The report_output is a dict, get the JSON string from the 'sql_output' key
         json_string = report_output.get('sql_output', '{}')
         report_data = json.loads(json_string)
         
@@ -263,7 +261,6 @@ def run_ora2pg(client_id):
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
         
-        # Convert string bools from DB to real bools for logic
         for key in ['file_per_table']:
             if key in config:
                 config[key] = str(config[key]) in ('1', 'true', 'True')
