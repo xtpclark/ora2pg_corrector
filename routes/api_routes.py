@@ -103,9 +103,8 @@ def manage_config(client_id):
             if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
                 query = query.replace('?', '%s')
             cursor = execute_query(conn, query, params)
-            rows = cursor.fetchall()
             config = {}
-            for row in rows:
+            for row in cursor.fetchall():
                 key, value = row['config_key'], row['config_value']
                 if key in ['dump_as_html', 'export_schema', 'create_schema', 'compile_schema', 'debug', 'file_per_table']:
                     config[key] = str(value) in ('1', 'true', 'True')
@@ -213,6 +212,65 @@ def generate_report(client_id):
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
+
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+        logger.info(f"Client {client_id} config: {config}")
+
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    logger.warning(f"Failed to decrypt {key} for client {client_id}")
+                    pass
+
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        report_args = ['-t', 'SHOW_REPORT', '--estimate_cost', '--dump_as_json']
+        report_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
+
+        if error_output:
+            logger.error(f"Ora2Pg error for client {client_id}: {error_output}")
+            log_audit(client_id, 'generate_report', f'Failed: {error_output}')
+            return jsonify({'error': error_output}), 500
+
+        logger.info(f"Raw report output for client {client_id}: {report_output}")
+        json_string = report_output.get('sql_output', '{}')
+        logger.info(f"JSON string for client {client_id}: {json_string}")
+
+        if not json_string or json_string == '{}':
+            logger.warning(f"No valid JSON data returned for client {client_id}")
+            log_audit(client_id, 'generate_report', 'Failed: Empty or invalid report data')
+            return jsonify({'error': 'No valid report data generated'}), 500
+
+        try:
+            report_data = json.loads(json_string)
+            if not isinstance(report_data, dict) or 'objects' not in report_data:
+                logger.warning(f"Invalid report data structure for client {client_id}: {report_data}")
+                log_audit(client_id, 'generate_report', 'Failed: Invalid report data structure')
+                return jsonify({'error': 'Invalid report data structure'}), 500
+            logger.info(f"Parsed report data for client {client_id}: {report_data}")
+            log_audit(client_id, 'generate_report', 'Successfully generated assessment report.')
+            return jsonify(report_data)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse Ora2Pg JSON output for client {client_id}: {e}")
+            log_audit(client_id, 'generate_report', f'Failed: Invalid JSON output - {str(e)}')
+            return jsonify({'error': 'Failed to parse JSON report from Ora2Pg.'}), 500
+
+    except Exception as e:
+        logger.error(f"Failed to generate report for client {client_id}: {e}", exc_info=True)
+        log_audit(client_id, 'generate_report', f'Failed: {str(e)}')
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/generate_report_old', methods=['POST'])
+def old_generate_report(client_id):
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
         
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
@@ -247,7 +305,6 @@ def generate_report(client_id):
     except Exception as e:
         logger.error(f"Failed to generate report for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
-
 
 @api_bp.route('/client/<int:client_id>/run_ora2pg', methods=['POST'])
 def run_ora2pg(client_id):
@@ -458,7 +515,6 @@ def get_audit_logs(client_id):
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
-        
         cursor = execute_query(conn, query, params)
         logs = [dict(row) for row in cursor.fetchall()]
         return jsonify(logs)

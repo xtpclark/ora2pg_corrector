@@ -1,6 +1,6 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser } from './ui.js';
 
 async function log_audit(clientId, action, details) {
     if (!clientId) return;
@@ -58,6 +58,7 @@ export async function selectClient(clientId) {
     switchTab('migration');
 
     document.getElementById('report-container').classList.add('hidden');
+    document.getElementById('file-browser-container').classList.add('hidden');
     document.getElementById('export-report-btn').disabled = true;
     state.currentReportData = null;
 
@@ -91,13 +92,24 @@ export async function handleRunOra2Pg() {
     if (!state.currentClientId) return;
     const button = document.getElementById('run-ora2pg-btn');
     toggleButtonLoading(button, true, 'Run Ora2Pg Export');
+    
+    document.getElementById('file-browser-container').classList.add('hidden');
+    
     try {
         showToast('Ora2Pg export in progress...');
         const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { method: 'POST' });
-        editors.original.setValue(data.sql_output || '');
-        showToast('Ora2Pg export complete! SQL loaded into Workspace.');
-        log_audit(state.currentClientId, 'run_ora2pg_success', 'Ora2Pg export successful.');
-        switchTab('workspace');
+        
+        if (data.files) {
+            renderFileBrowser(data.files);
+            showToast(`Ora2Pg export complete! ${data.files.length} files generated.`);
+            log_audit(state.currentClientId, 'run_ora2pg_success', `Multi-file export successful.`);
+        } else if (data.sql_output) {
+            editors.original.setValue(data.sql_output);
+            showToast('Ora2Pg export complete! SQL loaded into Workspace.');
+            log_audit(state.currentClientId, 'run_ora2pg_success', 'Single-file export successful.');
+            switchTab('workspace');
+        }
+
     } catch (error) {
         showToast(error.message, true);
         log_audit(state.currentClientId, 'run_ora2pg_failed', `Ora2Pg export failed: ${error.message}`);
@@ -106,40 +118,63 @@ export async function handleRunOra2Pg() {
     }
 }
 
+async function handleFileClick(filename) {
+    if (!filename) return;
 
-export async function handleGenerateReport() {
-    if (!state.currentClientId) return;
-    const button = document.getElementById('run-report-btn');
-    toggleButtonLoading(button, true, 'Generate Assessment Report');
-    
-    const reportContainer = document.getElementById('report-container');
-    const exportButton = document.getElementById('export-report-btn');
+    showToast(`Loading ${filename}...`);
     try {
-        showToast('Generating Ora2Pg assessment report...');
-        const reportData = await apiFetch(`/api/client/${state.currentClientId}/generate_report`, { method: 'POST' });
-        
-        if (reportData && Array.isArray(reportData.objects)) {
-            state.currentReportData = reportData;
-            // --- CHANGE: Pass the entire reportData object, not just the array ---
-            renderReportTable(reportData);
-            reportContainer.classList.remove('hidden');
-            exportButton.disabled = false;
-            showToast('Assessment report generated successfully.');
-            log_audit(state.currentClientId, 'generate_report_success', 'Assessment report generated.');
-        } else {
-            throw new Error("Received invalid report data from server.");
-        }
+        const data = await apiFetch('/get_exported_file', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: filename })
+        });
+
+        editors.original.setValue(data.content || '');
+        editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        switchTab('workspace');
+
     } catch (error) {
-        showToast(error.message, true);
-        state.currentReportData = null;
-        exportButton.disabled = true;
-        reportContainer.classList.add('hidden');
-        log_audit(state.currentClientId, 'generate_report_failed', `Report generation failed: ${error.message}`);
+        showToast(`Failed to load file: ${error.message}`, true);
+    }
+}
+
+async function handleGenerateReport() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+    const button = document.getElementById('run-report-btn');
+    toggleButtonLoading(button, true, button.innerHTML);
+    try {
+        const response = await apiFetch(`/api/client/${state.currentClientId}/generate_report`, {
+            method: 'POST'
+        });
+
+        if (response.error) {
+            await log_audit(state.currentClientId, 'generate_report_failed', `Report generation failed: ${response.error}`);
+            showToast(`Failed to generate report: ${response.error}`, true);
+            return;
+        }
+
+        if (!response || typeof response.objects === 'undefined') {
+            await log_audit(state.currentClientId, 'generate_report_failed', 'Report generation failed: Invalid data structure in response.');
+            showToast('Failed to generate report: Invalid data received.', true);
+            return;
+        }
+
+        state.currentReportData = response;
+        renderReportTable(response); // This function will now handle showing the container
+        
+        await log_audit(state.currentClientId, 'generate_report', 'Report generated successfully.');
+        showToast('Report generated successfully!');
+
+    } catch (error) {
+        await log_audit(state.currentClientId, 'generate_report_failed', `Report generation failed: ${error.message}`);
+        showToast(`Failed to generate report: ${error.message}`, true);
     } finally {
         toggleButtonLoading(button, false);
     }
 }
-
 
 export function handleExportReport() {
     if (!state.currentReportData) {
@@ -167,7 +202,6 @@ function convertReportToAsciiDoc(data) {
     adoc += `|===\n`;
     adoc += `| Object | Number | Invalid | Cost | Comments\n\n`;
     
-    // --- CHANGE: Use item['cost value'] to access the correct JSON key ---
     data.objects.forEach(item => {
         if (item.object.startsWith('Total')) return;
         adoc += `| ${item.object || ''} | ${item.number || '0'} | ${item.invalid || '0'} | ${item['cost value'] || '0.00'} | ${item.comment || ''}\n`;
@@ -175,7 +209,6 @@ function convertReportToAsciiDoc(data) {
     
     const total = data.objects.find(item => item.object.startsWith('Total'));
     if (total) {
-        // --- CHANGE: Use total['cost value'] as well ---
         adoc += `\n| *${total.object}* | *${total.number}* | *${total.invalid}* | *${total['cost value']}* | ${total.comment}\n`;
     }
 
@@ -279,6 +312,8 @@ export async function handleTestPgConnection() {
         showToast('PostgreSQL DSN is required.', true);
         return;
     }
+    const button = document.getElementById('test-pg-conn-btn');
+    toggleButtonLoading(button, true, 'Test Connection');
     try {
         const data = await apiFetch('/api/test_pg_connection', {
             method: 'POST',
@@ -290,17 +325,16 @@ export async function handleTestPgConnection() {
         }
     } catch(error) {
         showToast(error.message, true);
+    } finally {
+        toggleButtonLoading(button, false);
     }
 }
 
-
-// --- NEW: Function to test the Oracle connection ---
 export async function handleTestOra2PgConnection() {
     if (!state.currentClientId) return;
     const button = document.getElementById('test-ora-conn-btn');
     toggleButtonLoading(button, true, 'Test Oracle Connection');
     try {
-        // The DSN is saved on the backend, so no payload is needed
         const data = await apiFetch(`/api/client/${state.currentClientId}/test_ora2pg_connection`, {
             method: 'POST'
         });
@@ -313,7 +347,6 @@ export async function handleTestOra2PgConnection() {
         toggleButtonLoading(button, false);
     }
 }
-
 
 export async function handleSaveSettings(e) {
     e.preventDefault();
@@ -422,10 +455,16 @@ export function initEventListeners() {
     });
 
     document.addEventListener('click', e => {
-        // Use closest to handle clicks on icons inside buttons
-        const button = e.target.closest('button');
+        const button = e.target.closest('button, a.file-item');
         if (!button) return;
         
+        if (button.classList.contains('file-item')) {
+            e.preventDefault();
+            const filename = button.dataset.filename;
+            handleFileClick(filename);
+            return;
+        }
+
         switch (button.id) {
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;

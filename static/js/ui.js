@@ -121,8 +121,72 @@ export function renderSettingsForms(config) {
     document.getElementById('validation_pg_dsn').value = config.validation_pg_dsn || state.appSettings.validation_pg_dsn || '';
 }
 
-// --- CHANGE: Reworked to add header and fix the cost bug ---
+
 export function renderReportTable(reportData) {
+    const reportContainer = document.getElementById('report-container');
+    const exportButton = document.getElementById('export-report-btn');
+
+    if (!reportContainer) {
+        console.error('Report container not found');
+        showToast('Failed to render report: Container not found.', true);
+        return;
+    }
+
+    let headerHtml = `
+        <div class="mb-4">
+            <h2 class="text-xl font-semibold text-gray-200">Migration Assessment Report</h2>
+            <p class="text-sm text-gray-400">Schema: ${reportData.Schema || 'N/A'}</p>
+            <p class="text-sm text-gray-400">Database: ${reportData.Version || 'N/A'}</p>
+            <p class="text-sm text-gray-400">Size: ${reportData.Size || 'N/A'}</p>
+            <p class="text-sm text-gray-400">Total Cost: ${reportData['total cost'] || '0'} (Estimated: ${reportData['human days cost'] || 'N/A'})</p>
+            <p class="text-sm text-gray-400">Migration Level: ${reportData['migration level'] || 'N/A'}</p>
+        </div>
+    `;
+
+    let tableHtml = `
+        <table class="w-full text-left border-collapse">
+            <thead>
+                <tr class="bg-gray-800">
+                    <th class="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Object</th>
+                    <th class="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Number</th>
+                    <th class="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Invalid</th>
+                    <th class="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Cost</th>
+                    <th class="px-6 py-3 text-xs font-medium text-gray-400 uppercase tracking-wider">Comments</th>
+                </tr>
+            </thead>
+            <tbody class="bg-gray-900 divide-y divide-gray-700">
+    `;
+
+    if (!reportData.objects || reportData.objects.length === 0) {
+        tableHtml += `
+            <tr>
+                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400" colspan="5">No objects found in the report.</td>
+            </tr>
+        `;
+    } else {
+        reportData.objects.forEach(item => {
+            tableHtml += `
+                <tr>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-blue-400">${item.object || ''}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.number || '0'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.invalid || '0'}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item['cost value'] || '0.00'}</td>
+                    <td class="px-6 py-4 text-sm text-gray-400">${item.comment || ''}</td>
+                </tr>
+            `;
+        });
+    }
+    tableHtml += `</tbody></table>`;
+    
+    reportContainer.innerHTML = headerHtml + tableHtml;
+    reportContainer.classList.remove('hidden');
+    exportButton.disabled = false;
+}
+
+
+
+// --- CHANGE: Reworked to add header and fix the cost bug ---
+export function old_renderReportTable(reportData) {
     const reportContainer = document.getElementById('report-container');
     
     // Build the header section
@@ -167,4 +231,29 @@ export function renderReportTable(reportData) {
     
     // Combine header and table
     reportContainer.innerHTML = headerHtml + tableHtml;
+}
+
+
+export function renderFileBrowser(files) {
+    const fileListContainer = document.getElementById('migration-file-list');
+    const fileBrowserContainer = document.getElementById('file-browser-container');
+
+    if (!files || files.length === 0) {
+        fileListContainer.innerHTML = '<p class="text-gray-500 col-span-full">No SQL files were generated.</p>';
+        fileBrowserContainer.classList.remove('hidden');
+        return;
+    }
+
+    // Sort files alphabetically
+    files.sort();
+
+    const fileItemsHtml = files.map(filename => `
+        <a href="#" data-filename="${filename}" class="file-item bg-gray-800 p-3 rounded-lg text-gray-300 hover:bg-blue-600 hover:text-white transition-colors duration-200 truncate flex items-center">
+            <i class="fas fa-file-alt mr-2 text-gray-500"></i>
+            <span class="truncate" title="${filename}">${filename}</span>
+        </a>
+    `).join('');
+    
+    fileListContainer.innerHTML = fileItemsHtml;
+    fileBrowserContainer.classList.remove('hidden');
 }

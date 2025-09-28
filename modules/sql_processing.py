@@ -9,6 +9,7 @@ import shutil
 from cryptography.fernet import Fernet
 import psycopg2
 from psycopg2 import sql as psql
+import json
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -62,37 +63,71 @@ class Ora2PgAICorrector:
                 config_path = temp_config.name
             
             logger.info(f"Generated temporary ora2pg config at: {config_path}")
+            logger.info(f"Config content:\n{config_content}")
 
-            command = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
-            logger.info(f"Executing command: {' '.join(command)}")
-            
-            result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+            cmd = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
+            logger.info(f"Executing command: {' '.join(cmd)}")
 
-            if result.returncode != 0:
-                shutil.rmtree(temp_dir)
-                logger.error(f"Ora2Pg execution failed with exit code {result.returncode}. Stderr: {result.stderr}")
-                return None, result.stderr
-            
-            logger.info("Ora2Pg execution successful.")
-            
+            process = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            stdout = process.stdout.strip()
+            stderr = process.stderr.strip()
+
+            logger.info(f"Raw stdout: {stdout[:500]}...")
+            logger.info(f"Raw stderr: {stderr}")
+
+            if process.returncode != 0:
+                logger.error(f"Ora2Pg failed with exit code {process.returncode}: {stderr}")
+                return {}, stderr
+
+            # Special handling for report types
+            is_report = any(arg in cmd for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
+
+            if is_report:
+                if 'SHOW_VERSION' in cmd:
+                    # SHOW_VERSION outputs plain text, not JSON
+                    shutil.rmtree(temp_dir)
+                    return {'sql_output': stdout}, None
+                else:
+                    # SHOW_REPORT should output JSON
+                    try:
+                        json.loads(stdout)
+                        logger.info("Valid JSON report output")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Invalid JSON output from Ora2Pg: {e}")
+                        shutil.rmtree(temp_dir)
+                        return {}, f"Invalid JSON output: {e}"
+                    
+                    shutil.rmtree(temp_dir)
+                    return {'sql_output': stdout}, None
+
             if file_per_table:
                 files = [f for f in os.listdir(temp_dir) if f.endswith('.sql')]
+                logger.info(f"Generated files: {files}")
                 return {'files': files, 'directory': temp_dir}, None
             else:
                 with open(output_file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                    sql_output = f.read()
+                os.remove(output_file_path)
                 shutil.rmtree(temp_dir)
-                return {'sql_output': content}, None
+                return {'sql_output': sql_output}, None
 
+        except subprocess.TimeoutExpired:
+            logger.error("Ora2Pg execution timed out")
+            return {}, "Ora2Pg execution timed out"
         except Exception as e:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            logger.error(f"An unexpected error occurred during Ora2Pg execution: {e}", exc_info=True)
-            return None, f"An unexpected error occurred: {str(e)}"
+            logger.error(f"Ora2Pg execution failed: {e}", exc_info=True)
+            return {}, str(e)
         finally:
             if config_path and os.path.exists(config_path):
-                os.remove(config_path)
+                os.unlink(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
+
     
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
