@@ -5,7 +5,11 @@ export let state = {
     ora2pgOptions: [],
     appSettings: {},
     currentReportData: null,
-    currentObjectList: []
+    objectList: [],
+    // --- NEW: State for session management ---
+    sessions: [],
+    currentSessionId: null,
+    currentFileId: null
 };
 
 export let editors = {
@@ -22,3 +26,4 @@ export const dom = {
     settingsForm: document.getElementById('settings-form'),
     filePicker: document.getElementById('sql-file-picker')
 };
+

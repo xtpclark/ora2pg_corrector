@@ -239,3 +239,31 @@ export function renderObjectSelector() {
     container.classList.remove('hidden');
 }
 
+
+export function renderSessionHistory() {
+    const container = document.getElementById('session-history-container');
+    const listEl = document.getElementById('session-list');
+    listEl.innerHTML = '';
+
+    if (!state.sessions || state.sessions.length === 0) {
+        listEl.innerHTML = '<p class="text-sm text-gray-500">No previous sessions found for this client.</p>';
+        container.classList.remove('hidden');
+        return;
+    }
+    
+    state.sessions.forEach(session => {
+        const item = document.createElement('a');
+        item.href = '#';
+        item.className = 'session-item block bg-gray-800 p-3 rounded-lg hover:bg-gray-700';
+        item.dataset.sessionId = session.session_id;
+
+        if (session.session_id === state.currentSessionId) {
+            item.classList.add('active-session');
+        }
+
+        item.innerHTML = `
+            <div class="font-semibold text-white">${session.session_name}</div>
+            <div class="text-xs text-gray-400">${new Date(session.created_at).toLocaleString()}</div>
+        `;
+        listEl.appendChild(item);
+    });

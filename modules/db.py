@@ -91,6 +91,26 @@ def init_db():
                 description TEXT,
                 allowed_values TEXT
             )''')
+            
+            # --- NEW: Tables for migration persistence ---
+            execute_query(conn, f'''CREATE TABLE IF NOT EXISTS migration_sessions (
+                session_id {pk_type},
+                client_id INTEGER NOT NULL,
+                session_name TEXT NOT NULL,
+                export_directory TEXT NOT NULL,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+            )''')
+
+            execute_query(conn, f'''CREATE TABLE IF NOT EXISTS migration_files (
+                file_id {pk_type},
+                session_id INTEGER NOT NULL,
+                filename TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'generated',
+                last_modified {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES migration_sessions(session_id) ON DELETE CASCADE
+            )''')
+
         logger.info("Database schema initialized successfully.")
     except Exception as e:
         logger.error(f"Error during DB schema initialization: {e}")
@@ -99,4 +119,3 @@ def init_db_command():
     """Flask command to initialize the database."""
     init_db()
     print("Initialized the database.")
-

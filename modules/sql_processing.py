@@ -134,83 +134,96 @@ class Ora2PgAICorrector:
             logger.error(f"An unexpected error occurred during SQL*Plus execution: {e}", exc_info=True)
             return None, f"An unexpected error occurred: {str(e)}"
 
-    def run_ora2pg_export(self, client_config, extra_args=None):
+    def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None):
         """
-        Generates a temporary ora2pg config file from client settings
-        and executes ora2pg, capturing the output.
-        Handles multi-file export for TABLE type correctly.
+        Executes ora2pg and handles persistence of the migration session and files.
         """
-        temp_dir = tempfile.mkdtemp()
-        logger.info(f"Created temporary directory for ora2pg output: {temp_dir}")
+        # Reports are transient and don't need persistence. Handle them first.
+        is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
+        if is_report:
+            stdout, stderr, returncode = self._run_single_ora2pg_command(client_config, extra_args)
+            if returncode != 0:
+                return {}, stderr
+            return {'sql_output': stdout}, None
 
-        file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
-        export_type = client_config.get('type', 'TABLE').upper()
-
+        # --- All other exports are persistent ---
         try:
-            # Special case: DDL export, one file per table, initiated by the object selector
-            # The ALLOW key will be present from the frontend selection
-            if file_per_table and export_type == 'TABLE' and 'ALLOW' in client_config and not extra_args:
-                logger.info("Handling multi-file TABLE export from selected objects.")
-                
-                # The table list is in the ALLOW key, comma-separated
+            # 1. Create a migration session record
+            session_name = f"Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            placeholder_dir = "pending"
+            
+            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory) VALUES (?, ?, ?)', (client_id, session_name, placeholder_dir))
+                session_id = cursor.lastrowid
+            else:
+                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory) VALUES (%s, %s, %s) RETURNING session_id', (client_id, session_name, placeholder_dir))
+                session_id = cursor.fetchone()['session_id']
+
+            # 2. Create the persistent directory
+            persistent_export_dir = os.path.join('/app/project_data', str(client_id), str(session_id))
+            os.makedirs(persistent_export_dir, exist_ok=True)
+
+            # 3. Update session record with the real directory path
+            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+                execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
+            else:
+                execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = %s WHERE session_id = %s', (persistent_export_dir, session_id))
+            
+            db_conn.commit()
+            logger.info(f"Created persistent session {session_id} at {persistent_export_dir}")
+
+            # 4. Run the actual export(s)
+            file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
+            export_type = client_config.get('type', 'TABLE').upper()
+            generated_files = []
+
+            # Multi-file DDL export from object selector
+            if file_per_table and export_type == 'TABLE' and 'ALLOW' in client_config:
                 tables = [t.strip() for t in client_config['ALLOW'].split(',')]
-                
-                all_files = []
                 for table_name in tables:
-                    logger.info(f"Exporting DDL for table: {table_name}")
                     single_table_config = client_config.copy()
                     single_table_config['ALLOW'] = table_name
-                    output_file_path = os.path.join(temp_dir, f"{table_name}.sql")
-                    single_table_config['OUTPUT'] = output_file_path
-                    single_table_config.pop('OUTPUT_DIR', None)
-
+                    single_table_config['OUTPUT'] = os.path.join(persistent_export_dir, f"{table_name}.sql")
+                    
                     _, error, returncode = self._run_single_ora2pg_command(single_table_config)
-                    if returncode != 0:
-                        logger.warning(f"Skipping table {table_name} due to export error: {error}")
+                    if returncode == 0:
+                        generated_files.append(f"{table_name}.sql")
                     else:
-                        all_files.append(f"{table_name}.sql")
-                
-                return {'files': all_files, 'directory': temp_dir}, None
+                        logger.warning(f"Skipping table {table_name} for session {session_id} due to export error: {error}")
 
-            # This handles all other cases (reports, single-file DDL, COPY/INSERT)
+            # All other export types (single-file DDL, COPY, INSERT)
             else:
-                output_file_path = None
                 if file_per_table:
-                    # This now correctly handles COPY/INSERT with FILE_PER_TABLE
-                    client_config['OUTPUT_DIR'] = temp_dir
-                    client_config.pop('OUTPUT', None)
+                    client_config['OUTPUT_DIR'] = persistent_export_dir
                 else:
-                    output_file_path = os.path.join(temp_dir, 'output.sql')
-                    client_config['OUTPUT'] = output_file_path
-                    client_config.pop('OUTPUT_DIR', None)
-
-                stdout, stderr, returncode = self._run_single_ora2pg_command(client_config, extra_args)
+                    client_config['OUTPUT'] = os.path.join(persistent_export_dir, 'output.sql')
                 
+                _, stderr, returncode = self._run_single_ora2pg_command(client_config)
                 if returncode != 0:
-                    shutil.rmtree(temp_dir)
                     return {}, stderr
+                generated_files = [f for f in os.listdir(persistent_export_dir) if f.endswith('.sql')]
 
-                is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
-                if is_report:
-                    shutil.rmtree(temp_dir)
-                    return {'sql_output': stdout}, None
-
-                if file_per_table:
-                    files = [f for f in os.listdir(temp_dir) if f.endswith('.sql')]
-                    logger.info(f"Generated files: {files}")
-                    return {'files': files, 'directory': temp_dir}, None
+            # 5. Record the generated files in the database
+            for filename in generated_files:
+                if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+                    execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
                 else:
-                    with open(output_file_path, 'r', encoding='utf-8') as f:
-                        sql_output = f.read()
-                    shutil.rmtree(temp_dir)
-                    return {'sql_output': sql_output}, None
+                    execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (%s, %s)', (session_id, filename))
+            db_conn.commit()
+
+            # 6. Return the session info to the frontend
+            if not file_per_table:
+                 with open(os.path.join(persistent_export_dir, 'output.sql'), 'r', encoding='utf-8') as f:
+                    sql_output = f.read()
+                 return {'sql_output': sql_output, 'session_id': session_id}, None
+            else:
+                return {'files': generated_files, 'session_id': session_id, 'directory': persistent_export_dir}, None
+
 
         except Exception as e:
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir)
-            logger.error(f"An unexpected error occurred during Ora2Pg execution: {e}", exc_info=True)
+            logger.error(f"An unexpected error occurred during Ora2Pg persistence execution: {e}", exc_info=True)
             return {}, f"An unexpected error occurred: {str(e)}"
-    
+
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)

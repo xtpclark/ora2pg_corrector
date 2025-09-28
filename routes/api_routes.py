@@ -166,6 +166,79 @@ def manage_config(client_id):
         except Exception as e:
             return jsonify({'error': f'Failed to save config: {str(e)}'}), 500
 
+# --- NEW: Endpoint to update the status of a migration file ---
+@api_bp.route('/file/<int:file_id>/status', methods=['POST'])
+def update_file_status(file_id):
+    data = request.get_json()
+    new_status = data.get('status')
+
+    if not new_status:
+        return jsonify({'error': 'New status is required.'}), 400
+
+    allowed_statuses = ['generated', 'corrected', 'validated', 'failed']
+    if new_status not in allowed_statuses:
+        return jsonify({'error': f'Invalid status. Must be one of: {", ".join(allowed_statuses)}'}), 400
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        with conn:
+            query = 'UPDATE migration_files SET status = ? WHERE file_id = ?'
+            params = (new_status, file_id)
+            if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                query = query.replace('?', '%s')
+            
+            cursor = execute_query(conn, query, params)
+            
+            if cursor.rowcount == 0:
+                return jsonify({'error': 'File not found.'}), 404
+            
+            conn.commit()
+            return jsonify({'message': f'Status for file {file_id} updated to {new_status}.'})
+    except Exception as e:
+        logger.error(f"Failed to update status for file {file_id}: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to update file status.'}), 500
+
+
+@api_bp.route('/client/<int:client_id>/sessions', methods=['GET'])
+def get_sessions(client_id):
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        query = 'SELECT session_id, session_name, created_at FROM migration_sessions WHERE client_id = ? ORDER BY created_at DESC'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        
+        cursor = execute_query(conn, query, params)
+        sessions = [dict(row) for row in cursor.fetchall()]
+        return jsonify(sessions)
+    except Exception as e:
+        logger.error(f"Failed to fetch sessions for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to fetch sessions.'}), 500
+
+@api_bp.route('/session/<int:session_id>/files', methods=['GET'])
+def get_session_files(session_id):
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        query = 'SELECT file_id, filename, status, last_modified FROM migration_files WHERE session_id = ? ORDER BY filename'
+        params = (session_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+
+        cursor = execute_query(conn, query, params)
+        files = [dict(row) for row in cursor.fetchall()]
+        return jsonify(files)
+    except Exception as e:
+        logger.error(f"Failed to fetch files for session {session_id}: {e}", exc_info=True)
+        return jsonify({'error': 'Failed to fetch session files.'}), 500
+
+
 @api_bp.route('/client/<int:client_id>/test_ora2pg_connection', methods=['POST'])
 def test_ora2pg_connection(client_id):
     config = request.get_json(force=True)
@@ -182,7 +255,7 @@ def test_ora2pg_connection(client_id):
         
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         report_args = ['-t', 'SHOW_VERSION']
-        version_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
+        version_output, error_output = corrector.run_ora2pg_export(client_id, get_db(), config, extra_args=report_args)
 
         if error_output:
             log_audit(client_id, 'test_oracle_connection', f'Failed: {error_output}')
@@ -252,7 +325,7 @@ def generate_report(client_id):
         
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         report_args = ['-t', 'SHOW_REPORT', '--estimate_cost', '--dump_as_json']
-        report_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
+        report_output, error_output = corrector.run_ora2pg_export(client_id, conn, config, extra_args=report_args)
 
         if error_output:
             log_audit(client_id, 'generate_report', f'Failed: {error_output}')
@@ -284,7 +357,7 @@ def run_ora2pg(client_id):
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
         
-        request_data = request.get_json(force=True) # Use force=True to handle potential header issues
+        request_data = request.get_json(force=True)
         if request_data and 'selected_objects' in request_data:
             selected_objects = request_data['selected_objects']
             if selected_objects:
@@ -303,7 +376,7 @@ def run_ora2pg(client_id):
                     pass
         
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        result_data, error_output = corrector.run_ora2pg_export(config)
+        result_data, error_output = corrector.run_ora2pg_export(client_id, conn, config)
 
         if error_output:
             log_audit(client_id, 'run_ora2pg', f'Failed: {error_output}')
@@ -311,9 +384,6 @@ def run_ora2pg(client_id):
         
         log_audit(client_id, 'run_ora2pg', 'Successfully executed Ora2Pg export.')
 
-        if 'files' in result_data:
-            session['export_dir'] = result_data['directory']
-        
         return jsonify(result_data)
 
     except Exception as e:
@@ -322,35 +392,42 @@ def run_ora2pg(client_id):
 
 @api_bp.route('/get_exported_file', methods=['POST'])
 def get_exported_file():
-    # --- THIS IS THE FIX ---
     file_path = None
     try:
         data = request.json
-        filename = data.get('filename')
-        export_dir = session.get('export_dir')
+        file_id = data.get('file_id')
+        if not file_id:
+            return jsonify({'error': 'File ID is required.'}), 400
 
-        logger.info(f"Attempting to get file: {filename} from dir in session: {export_dir}")
+        conn = get_db()
+        file_query = """
+            SELECT mf.filename, ms.export_directory 
+            FROM migration_files mf
+            JOIN migration_sessions ms ON mf.session_id = ms.session_id
+            WHERE mf.file_id = ?
+        """
+        params = (file_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            file_query = file_query.replace('?', '%s')
 
-        if not filename or not export_dir:
-            logger.error(f"Filename or export directory not found in session. Filename: {filename}, Dir: {export_dir}")
-            return jsonify({'error': 'File or export session not found. Please try the export again.'}), 400
-        
-        if '..' in filename or filename.startswith('/'):
-            logger.error(f"Invalid filename detected: {filename}")
-            return jsonify({'error': 'Invalid filename.'}), 400
+        cursor = execute_query(conn, file_query, params)
+        file_info = cursor.fetchone()
 
+        if not file_info:
+            return jsonify({'error': 'File record not found in database.'}), 404
+
+        filename = file_info['filename']
+        export_dir = file_info['export_directory']
         file_path = os.path.join(export_dir, filename)
-        logger.info(f"Constructed file path: {file_path}")
-
+        
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        logger.info(f"Successfully read content for {filename}.")
         return jsonify({'content': content})
 
     except FileNotFoundError:
-        logger.error(f"File not found at path: {file_path}")
-        return jsonify({'error': f'File not found: {filename}'}), 404
+        logger.error(f"File not found at persistent path: {file_path}")
+        return jsonify({'error': f'File not found on the server filesystem.'}), 404
     except Exception as e:
         logger.error(f"Error reading exported file {file_path}: {e}", exc_info=True)
         return jsonify({'error': 'An unexpected error occurred while reading the file content.'}), 500

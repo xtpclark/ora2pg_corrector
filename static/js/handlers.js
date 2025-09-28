@@ -1,6 +1,6 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector, renderSessionHistory } from './ui.js';
 
 async function log_audit(clientId, action, details) {
     if (!clientId) return;
@@ -38,6 +38,26 @@ async function fetchAndRenderAuditLogs() {
     }
 }
 
+async function selectSession(sessionId) {
+    if (!sessionId) {
+        state.currentSessionId = null;
+        document.getElementById('file-browser-container').classList.add('hidden');
+        renderSessionHistory();
+        return;
+    }
+    
+    state.currentSessionId = sessionId;
+    renderSessionHistory(); 
+    
+    try {
+        const files = await apiFetch(`/api/session/${sessionId}/files`);
+        renderFileBrowser(files);
+    } catch (error) {
+        showToast("Failed to load files for this session.", true);
+    }
+}
+
+
 export async function selectClient(clientId) {
     state.currentClientId = clientId;
     if (!clientId) {
@@ -56,29 +76,33 @@ export async function selectClient(clientId) {
     dom.welcomeMessageEl.classList.add('hidden');
     switchTab('migration');
 
-    const reportContainer = document.getElementById('report-container');
-    if (reportContainer) reportContainer.classList.add('hidden');
-    
-    const fileBrowserContainer = document.getElementById('file-browser-container');
-    if (fileBrowserContainer) fileBrowserContainer.classList.add('hidden');
-
-    const objectSelectorContainer = document.getElementById('object-selector-container');
-    if (objectSelectorContainer) objectSelectorContainer.classList.add('hidden');
-
+    document.getElementById('report-container').classList.add('hidden');
+    document.getElementById('file-browser-container').classList.add('hidden');
+    document.getElementById('object-selector-container').classList.add('hidden');
+    document.getElementById('session-history-container').classList.add('hidden');
     const exportReportBtn = document.getElementById('export-report-btn');
     if (exportReportBtn) exportReportBtn.disabled = true;
 
     state.currentReportData = null;
     state.objectList = [];
-
+    state.sessions = [];
+    state.currentSessionId = null;
 
     try {
-        const config = await apiFetch(`/api/client/${state.currentClientId}/config`);
+        const [config, sessions] = await Promise.all([
+            apiFetch(`/api/client/${state.currentClientId}/config`),
+            apiFetch(`/api/client/${state.currentClientId}/sessions`)
+        ]);
+        
         renderSettingsForms(config);
+        
+        state.sessions = sessions;
+        renderSessionHistory();
+
         editors.original.setValue('-- Oracle SQL will appear here...');
         editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
     } catch (error) {
-        showToast("Failed to load client configuration.", true);
+        showToast("Failed to load client configuration or sessions.", true);
     }
 }
 
@@ -110,17 +134,16 @@ async function handleRunOra2PgExport(selectedObjects) {
             method: 'POST',
             body: JSON.stringify({ selected_objects: selectedObjects })
         });
-
-        if (data.files) {
-            renderFileBrowser(data.files);
-            showToast(`Ora2Pg export complete! ${data.files.length} files generated.`);
-            log_audit(state.currentClientId, 'run_ora2pg_success', `Multi-file export successful for ${selectedObjects.length} objects.`);
-        } else if (data.sql_output) {
-            editors.original.setValue(data.sql_output);
-            showToast('Ora2Pg export complete! SQL loaded into Workspace.');
-            log_audit(state.currentClientId, 'run_ora2pg_success', 'Single-file export successful.');
-            switchTab('workspace');
+        
+        const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
+        state.sessions = newSessions;
+        renderSessionHistory();
+        
+        if (data.session_id) {
+            await selectSession(data.session_id);
         }
+        
+        showToast(`Ora2Pg export complete! ${data.files ? data.files.length : 0} files generated.`);
         document.getElementById('object-selector-container').classList.add('hidden');
 
     } catch (error) {
@@ -164,19 +187,27 @@ async function handleGetObjectList() {
 }
 
 async function handleRunSingleFileExport() {
+    if (!state.currentClientId) return;
     const button = document.getElementById('run-ora2pg-btn');
     toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
     try {
         showToast('Ora2Pg single-file export in progress...');
         const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { method: 'POST' });
         
+        const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
+        state.sessions = newSessions;
+        renderSessionHistory();
+
+        if (data.session_id) {
+            await selectSession(data.session_id);
+        }
+
         if (data.sql_output) {
             editors.original.setValue(data.sql_output);
             showToast('Ora2Pg export complete! SQL loaded into Workspace.');
-            log_audit(state.currentClientId, 'run_ora2pg_success', 'Single-file export successful.');
             switchTab('workspace');
         } else {
-            throw new Error("No SQL output received from single-file export.");
+            showToast('Ora2Pg export complete!');
         }
     } catch (error) {
         showToast(error.message, true);
@@ -187,16 +218,15 @@ async function handleRunSingleFileExport() {
 }
 
 
-async function handleFileClick(filename) {
-    if (!filename) return;
+async function handleFileClick(fileId) {
+    if (!fileId) return;
+    state.currentFileId = fileId; 
 
-    showToast(`Loading ${filename}...`);
+    showToast(`Loading file...`);
     try {
-        // --- THIS IS THE FIX ---
-        // Added the required /api prefix to the URL.
         const data = await apiFetch('/api/get_exported_file', {
             method: 'POST',
-            body: JSON.stringify({ filename: filename })
+            body: JSON.stringify({ file_id: fileId })
         });
 
         editors.original.setValue(data.content || '');
@@ -275,45 +305,71 @@ function convertReportToAsciiDoc(data) {
 }
 
 export async function handleCorrectWithAI() {
-    if (!state.currentClientId) return;
+    if (!state.currentClientId || !state.currentFileId) {
+        showToast('Please select a file from a session first.', true);
+        return;
+    }
+
     const originalSql = editors.original.getValue();
     if (!originalSql || originalSql.trim() === '' || originalSql.startsWith('-- Oracle SQL')) {
         showToast('No original SQL to correct.', true);
         return;
     }
+
     const button = document.getElementById('correct-ai-btn');
     toggleButtonLoading(button, true, 'Correct with AI');
+    
     try {
         showToast('AI correction in progress...');
-        // --- THIS IS THE FIX ---
-        const data = await apiFetch(`/api/correct_sql`, {
+        const correctionData = await apiFetch(`/api/correct_sql`, {
             method: 'POST',
             body: JSON.stringify({ sql: originalSql, client_id: state.currentClientId })
         });
-        editors.corrected.setValue(data.corrected_sql || '');
-        showToast(`AI correction complete. Tokens used: ${data.metrics.tokens_used}`);
-    } catch(error) {
+        
+        editors.corrected.setValue(correctionData.corrected_sql || '');
+        
+        await apiFetch(`/api/file/${state.currentFileId}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ status: 'corrected' })
+        });
+        
+        if (state.currentSessionId) {
+            await selectSession(state.currentSessionId);
+        }
+        
+        showToast(`AI correction complete. Tokens used: ${correctionData.metrics.tokens_used}`);
+        log_audit(state.currentClientId, 'correct_sql_success', `File ID ${state.currentFileId} corrected.`);
+
+    } catch (error) {
         showToast(error.message, true);
+        log_audit(state.currentClientId, 'correct_sql_failed', `Failed to correct File ID ${state.currentFileId}: ${error.message}`);
     } finally {
         toggleButtonLoading(button, false);
     }
 }
 
+// --- UPDATED: Full implementation with persistence ---
 export async function handleValidateSql() {
-    if (!state.currentClientId) return;
+    if (!state.currentClientId || !state.currentFileId) {
+        showToast('Please select a corrected file to validate.', true);
+        return;
+    }
+
     const correctedSql = editors.corrected.getValue();
     if (!correctedSql || correctedSql.trim() === '' || correctedSql.startsWith('-- AI-corrected')) {
         showToast('No corrected SQL to validate.', true);
         return;
     }
+
     const button = document.getElementById('validate-btn');
     toggleButtonLoading(button, true, 'Validate');
+    
     try {
         showToast('Validation in progress...');
         const isCleanSlate = document.getElementById('clean-slate-checkbox').checked;
         const isAutoCreateDdl = document.getElementById('auto-create-ddl-checkbox').checked;
-        // --- THIS IS THE FIX ---
-        const data = await apiFetch(`/api/validate`, {
+        
+        const validationData = await apiFetch(`/api/validate`, {
             method: 'POST',
             body: JSON.stringify({ 
                 sql: correctedSql, 
@@ -322,49 +378,35 @@ export async function handleValidateSql() {
                 auto_create_ddl: isAutoCreateDdl
             })
         });
-        if (data.corrected_sql) {
-            editors.corrected.setValue(data.corrected_sql);
+
+        const newStatus = validationData.status === 'success' ? 'validated' : 'failed';
+        
+        await apiFetch(`/api/file/${state.currentFileId}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ status: newStatus })
+        });
+
+        if (validationData.corrected_sql) {
+            editors.corrected.setValue(validationData.corrected_sql);
         }
-        showToast(data.message, data.status !== 'success');
+
+        if (state.currentSessionId) {
+            await selectSession(state.currentSessionId);
+        }
+        
+        showToast(validationData.message, newStatus !== 'validated');
+        log_audit(state.currentClientId, 'validate_sql', `Validation for file ID ${state.currentFileId}: ${newStatus}.`);
+
     } catch (error) {
         showToast(error.message, true);
-    } finally {
-        toggleButtonLoading(button, false);
-    }
-}
-
-export async function handleSaveSql() {
-    if (!state.currentClientId) return;
-    const filenameInput = document.getElementById('save-filename-input');
-    const filename = filenameInput.value.trim();
-    if (!filename) {
-        showToast('Filename cannot be empty.', true);
-        return;
-    }
-    const button = document.getElementById('save-btn');
-    toggleButtonLoading(button, true, 'Save');
-    try {
-        const originalSql = editors.original.getValue();
-        const correctedSql = editors.corrected.getValue();
-        // --- THIS IS THE FIX ---
-        const data = await apiFetch(`/api/save`, {
-            method: 'POST',
-            body: JSON.stringify({ 
-                original_sql: originalSql, 
-                corrected_sql: correctedSql, 
-                client_id: state.currentClientId,
-                filename: filename 
-            })
-        });
-        showToast(data.message);
-    } catch(error) {
-        showToast(error.message, true);
+        log_audit(state.currentClientId, 'validate_sql_failed', `Validation failed for file ID ${state.currentFileId}: ${error.message}`);
     } finally {
         toggleButtonLoading(button, false);
     }
 }
 
 export async function handleTestPgConnection() {
+    if (!state.currentClientId) return;
     const pgDsn = document.getElementById('validation_pg_dsn').value;
     if (!pgDsn) {
         showToast('PostgreSQL DSN is required.', true);
@@ -523,17 +565,24 @@ export function initEventListeners() {
     });
     
     document.addEventListener('click', e => {
-        const button = e.target.closest('button, a.file-item');
-        if (!button) return;
+        const target = e.target.closest('button, a.file-item, a.session-item');
+        if (!target) return;
         
-        if (button.classList.contains('file-item')) {
+        if (target.classList.contains('file-item')) {
             e.preventDefault();
-            const filename = button.dataset.filename;
-            handleFileClick(filename);
+            const fileId = target.dataset.fileId;
+            handleFileClick(parseInt(fileId));
+            return;
+        }
+        
+        if (target.classList.contains('session-item')) {
+            e.preventDefault();
+            const sessionId = target.dataset.sessionId;
+            selectSession(parseInt(sessionId));
             return;
         }
 
-        switch (button.id) {
+        switch (target.id) {
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;
             case 'run-ora2pg-btn': handleGetObjectList(); break; 
@@ -558,7 +607,7 @@ export function initEventListeners() {
             case 'load-file-proxy-btn': dom.filePicker.click(); break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
-            case 'save-btn': handleSaveSql(); break;
+            // --- UPDATED: Removed the save button handler ---
         }
     });
     
