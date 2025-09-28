@@ -4,7 +4,8 @@ export let state = {
     aiProviders: [],
     ora2pgOptions: [],
     appSettings: {},
-    currentReportData: null
+    currentReportData: null,
+    currentObjectList: []
 };
 
 export let editors = {

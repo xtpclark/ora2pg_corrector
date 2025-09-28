@@ -1,13 +1,12 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector } from './ui.js';
 
 async function log_audit(clientId, action, details) {
     if (!clientId) return;
     try {
         await apiFetch(`/api/client/${clientId}/log_audit`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action, details })
         });
     } catch (error) {
@@ -57,10 +56,21 @@ export async function selectClient(clientId) {
     dom.welcomeMessageEl.classList.add('hidden');
     switchTab('migration');
 
-    document.getElementById('report-container').classList.add('hidden');
-    document.getElementById('file-browser-container').classList.add('hidden');
-    document.getElementById('export-report-btn').disabled = true;
+    const reportContainer = document.getElementById('report-container');
+    if (reportContainer) reportContainer.classList.add('hidden');
+    
+    const fileBrowserContainer = document.getElementById('file-browser-container');
+    if (fileBrowserContainer) fileBrowserContainer.classList.add('hidden');
+
+    const objectSelectorContainer = document.getElementById('object-selector-container');
+    if (objectSelectorContainer) objectSelectorContainer.classList.add('hidden');
+
+    const exportReportBtn = document.getElementById('export-report-btn');
+    if (exportReportBtn) exportReportBtn.disabled = true;
+
     state.currentReportData = null;
+    state.objectList = [];
+
 
     try {
         const config = await apiFetch(`/api/client/${state.currentClientId}/config`);
@@ -88,27 +98,30 @@ export function handleFileSelect(event) {
     reader.readAsText(file);
 }
 
-export async function handleRunOra2Pg() {
+async function handleRunOra2PgExport(selectedObjects) {
     if (!state.currentClientId) return;
-    const button = document.getElementById('run-ora2pg-btn');
-    toggleButtonLoading(button, true, 'Run Ora2Pg Export');
-    
-    document.getElementById('file-browser-container').classList.add('hidden');
-    
+
+    const button = document.getElementById('export-selected-btn');
+    toggleButtonLoading(button, true, 'Export Selected');
+
     try {
         showToast('Ora2Pg export in progress...');
-        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { method: 'POST' });
-        
+        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
+            method: 'POST',
+            body: JSON.stringify({ selected_objects: selectedObjects })
+        });
+
         if (data.files) {
             renderFileBrowser(data.files);
             showToast(`Ora2Pg export complete! ${data.files.length} files generated.`);
-            log_audit(state.currentClientId, 'run_ora2pg_success', `Multi-file export successful.`);
+            log_audit(state.currentClientId, 'run_ora2pg_success', `Multi-file export successful for ${selectedObjects.length} objects.`);
         } else if (data.sql_output) {
             editors.original.setValue(data.sql_output);
             showToast('Ora2Pg export complete! SQL loaded into Workspace.');
             log_audit(state.currentClientId, 'run_ora2pg_success', 'Single-file export successful.');
             switchTab('workspace');
         }
+        document.getElementById('object-selector-container').classList.add('hidden');
 
     } catch (error) {
         showToast(error.message, true);
@@ -118,14 +131,71 @@ export async function handleRunOra2Pg() {
     }
 }
 
+
+async function handleGetObjectList() {
+    if (!state.currentClientId) return;
+    
+    const filePerTableCheckbox = document.getElementById('file_per_table');
+    if (!filePerTableCheckbox || !filePerTableCheckbox.checked) {
+        await handleRunSingleFileExport();
+        return;
+    }
+    
+    const button = document.getElementById('run-ora2pg-btn');
+    toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
+    
+    document.getElementById('file-browser-container').classList.add('hidden');
+    document.getElementById('report-container').classList.add('hidden');
+
+    try {
+        showToast('Fetching object list from Oracle schema...');
+        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        state.objectList = objectList;
+        renderObjectSelector();
+        showToast('Object list loaded. Please make your selection.');
+        log_audit(state.currentClientId, 'get_object_list_success', `Fetched ${objectList.length} objects.`);
+
+    } catch (error) {
+        showToast(error.message, true);
+        log_audit(state.currentClientId, 'get_object_list_failed', `Failed to fetch object list: ${error.message}`);
+    } finally {
+        toggleButtonLoading(button, false);
+    }
+}
+
+async function handleRunSingleFileExport() {
+    const button = document.getElementById('run-ora2pg-btn');
+    toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
+    try {
+        showToast('Ora2Pg single-file export in progress...');
+        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { method: 'POST' });
+        
+        if (data.sql_output) {
+            editors.original.setValue(data.sql_output);
+            showToast('Ora2Pg export complete! SQL loaded into Workspace.');
+            log_audit(state.currentClientId, 'run_ora2pg_success', 'Single-file export successful.');
+            switchTab('workspace');
+        } else {
+            throw new Error("No SQL output received from single-file export.");
+        }
+    } catch (error) {
+        showToast(error.message, true);
+        log_audit(state.currentClientId, 'run_ora2pg_failed', `Single-file export failed: ${error.message}`);
+    } finally {
+        toggleButtonLoading(button, false);
+    }
+}
+
+
 async function handleFileClick(filename) {
     if (!filename) return;
 
     showToast(`Loading ${filename}...`);
     try {
-        const data = await apiFetch('/get_exported_file', {
+        // --- THIS IS THE FIX ---
+        // Added the required /api prefix to the URL.
+        const data = await apiFetch('/api/get_exported_file', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ filename: filename })
         });
 
@@ -138,36 +208,23 @@ async function handleFileClick(filename) {
     }
 }
 
+
 async function handleGenerateReport() {
     if (!state.currentClientId) {
         showToast('Please select a client first.', true);
         return;
     }
     const button = document.getElementById('run-report-btn');
-    toggleButtonLoading(button, true, button.innerHTML);
+    toggleButtonLoading(button, true, '<span>Generate Assessment Report</span>');
     try {
         const response = await apiFetch(`/api/client/${state.currentClientId}/generate_report`, {
             method: 'POST'
         });
-
-        if (response.error) {
-            await log_audit(state.currentClientId, 'generate_report_failed', `Report generation failed: ${response.error}`);
-            showToast(`Failed to generate report: ${response.error}`, true);
-            return;
-        }
-
-        if (!response || typeof response.objects === 'undefined') {
-            await log_audit(state.currentClientId, 'generate_report_failed', 'Report generation failed: Invalid data structure in response.');
-            showToast('Failed to generate report: Invalid data received.', true);
-            return;
-        }
-
-        state.currentReportData = response;
-        renderReportTable(response); // This function will now handle showing the container
         
+        state.currentReportData = response;
+        renderReportTable(response);
         await log_audit(state.currentClientId, 'generate_report', 'Report generated successfully.');
         showToast('Report generated successfully!');
-
     } catch (error) {
         await log_audit(state.currentClientId, 'generate_report_failed', `Report generation failed: ${error.message}`);
         showToast(`Failed to generate report: ${error.message}`, true);
@@ -175,6 +232,7 @@ async function handleGenerateReport() {
         toggleButtonLoading(button, false);
     }
 }
+
 
 export function handleExportReport() {
     if (!state.currentReportData) {
@@ -227,9 +285,9 @@ export async function handleCorrectWithAI() {
     toggleButtonLoading(button, true, 'Correct with AI');
     try {
         showToast('AI correction in progress...');
+        // --- THIS IS THE FIX ---
         const data = await apiFetch(`/api/correct_sql`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sql: originalSql, client_id: state.currentClientId })
         });
         editors.corrected.setValue(data.corrected_sql || '');
@@ -254,9 +312,9 @@ export async function handleValidateSql() {
         showToast('Validation in progress...');
         const isCleanSlate = document.getElementById('clean-slate-checkbox').checked;
         const isAutoCreateDdl = document.getElementById('auto-create-ddl-checkbox').checked;
+        // --- THIS IS THE FIX ---
         const data = await apiFetch(`/api/validate`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 sql: correctedSql, 
                 client_id: state.currentClientId,
@@ -288,9 +346,9 @@ export async function handleSaveSql() {
     try {
         const originalSql = editors.original.getValue();
         const correctedSql = editors.corrected.getValue();
+        // --- THIS IS THE FIX ---
         const data = await apiFetch(`/api/save`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 original_sql: originalSql, 
                 corrected_sql: correctedSql, 
@@ -317,7 +375,6 @@ export async function handleTestPgConnection() {
     try {
         const data = await apiFetch('/api/test_pg_connection', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ pg_dsn: pgDsn })
         });
         if (data) {
@@ -334,9 +391,22 @@ export async function handleTestOra2PgConnection() {
     if (!state.currentClientId) return;
     const button = document.getElementById('test-ora-conn-btn');
     toggleButtonLoading(button, true, 'Test Oracle Connection');
+    
+    const formData = new FormData(dom.settingsForm);
+    const config = {};
+    for (let [key, value] of formData.entries()) {
+        const input = dom.settingsForm.querySelector(`[name="${key}"]`);
+        if (input.type === 'checkbox') {
+            config[key] = input.checked;
+        } else {
+            config[key] = value;
+        }
+    }
+
     try {
         const data = await apiFetch(`/api/client/${state.currentClientId}/test_ora2pg_connection`, {
-            method: 'POST'
+            method: 'POST',
+            body: JSON.stringify(config)
         });
         if (data) {
             showToast(data.message, data.status !== 'success');
@@ -364,7 +434,6 @@ export async function handleSaveSettings(e) {
     try {
         await apiFetch(`/api/client/${state.currentClientId}/config`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(config)
         });
         showToast('Settings saved successfully.');
@@ -379,7 +448,6 @@ export async function handleAddClient() {
         try {
             const newClient = await apiFetch('/api/clients', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ client_name: clientName.trim() })
             });
             state.clients.push(newClient);
@@ -453,7 +521,7 @@ export function initEventListeners() {
             showToast('Failed to copy text.', true);
         });
     });
-
+    
     document.addEventListener('click', e => {
         const button = e.target.closest('button, a.file-item');
         if (!button) return;
@@ -468,7 +536,22 @@ export function initEventListeners() {
         switch (button.id) {
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;
-            case 'run-ora2pg-btn': handleRunOra2Pg(); break;
+            case 'run-ora2pg-btn': handleGetObjectList(); break; 
+            case 'export-selected-btn': {
+                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => el.value);
+                if (selected.length > 0) {
+                    handleRunOra2PgExport(selected);
+                } else {
+                    showToast('Please select at least one object to export.', true);
+                }
+                break;
+            }
+            case 'select-all-objects':
+                document.querySelectorAll('#object-list input[type="checkbox"]').forEach(cb => cb.checked = true);
+                break;
+            case 'select-none-objects':
+                 document.querySelectorAll('#object-list input[type="checkbox"]').forEach(cb => cb.checked = false);
+                break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
             case 'add-client-btn': handleAddClient(); break;
@@ -479,6 +562,23 @@ export function initEventListeners() {
         }
     });
     
+    document.addEventListener('input', e => {
+        if (e.target.id === 'object-filter-input') {
+            const filterValue = e.target.value.toLowerCase();
+            const labels = document.querySelectorAll('#object-list label');
+            labels.forEach(label => {
+                const objectName = label.textContent.toLowerCase();
+                const parentDiv = label.parentElement;
+                if (objectName.includes(filterValue)) {
+                    parentDiv.style.display = '';
+                } else {
+                    parentDiv.style.display = 'none';
+                }
+            });
+        }
+    });
+    
     dom.filePicker.addEventListener('change', handleFileSelect);
     dom.settingsForm.addEventListener('submit', handleSaveSettings);
 }
+

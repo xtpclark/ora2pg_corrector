@@ -18,44 +18,40 @@ class Ora2PgAICorrector:
     """Handles the core logic for SQL correction and validation."""
     def __init__(self, output_dir, ai_settings, encryption_key):
         self.ora2pg_path = 'ora2pg'
+        self.sqlplus_path = 'sqlplus'
         self.output_dir = output_dir
         self.ai_settings = ai_settings
         self.encryption_key = encryption_key
         self.fernet = Fernet(encryption_key)
 
-    def run_ora2pg_export(self, client_config, extra_args=None):
-        """
-        Generates a temporary ora2pg config file from client settings
-        and executes ora2pg, capturing the output.
-        """
-        temp_dir = tempfile.mkdtemp()
-        logger.info(f"Created temporary directory for ora2pg output: {temp_dir}")
+    def _parse_dsn(self, dsn_string):
+        """Parses a DBI-style DSN string into a dictionary."""
+        # Remove the 'dbi:Oracle:' prefix
+        dsn_string = dsn_string.replace('dbi:Oracle:', '')
         
-        file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
-        output_file_path = None
+        # Split into key-value pairs
+        pairs = dsn_string.split(';')
+        dsn_dict = {}
+        for pair in pairs:
+            if '=' in pair:
+                key, value = pair.split('=', 1)
+                dsn_dict[key.lower()] = value
+        return dsn_dict
 
-        if file_per_table:
-            client_config['output_dir'] = temp_dir
-            client_config.pop('output', None)
-        else:
-            output_file_path = os.path.join(temp_dir, 'output.sql')
-            client_config['output'] = output_file_path
-            client_config.pop('output_dir', None)
-
+    def _run_single_ora2pg_command(self, config, extra_args=None):
+        """Internal helper to run a single ora2pg command with a given config."""
         config_content = ""
-        if 'pg_version' not in client_config:
-            client_config['pg_version'] = '13'
+        if 'pg_version' not in config:
+            config['pg_version'] = '13'
             logger.info("PG_VERSION not set, using default of 13.")
-        
-        for key, value in client_config.items():
+
+        for key, value in config.items():
             if key.startswith('ai_') or key == 'validation_pg_dsn' or value is None:
                 continue
-            
             if isinstance(value, bool):
                 value = 1 if value else 0
-            
             config_content += f"{key.upper()} {value}\n"
-
+        
         config_path = None
         try:
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.conf', dir='/tmp') as temp_config:
@@ -65,69 +61,155 @@ class Ora2PgAICorrector:
             logger.info(f"Generated temporary ora2pg config at: {config_path}")
             logger.info(f"Config content:\n{config_content}")
 
-            cmd = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
-            logger.info(f"Executing command: {' '.join(cmd)}")
+            command = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
+            logger.info(f"Executing command: {' '.join(command)}")
+            
+            result = subprocess.run(command, capture_output=True, text=True, timeout=300)
 
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+            logger.info(f"Raw stdout: {result.stdout[:500]}...")
+            logger.info(f"Raw stderr: {result.stderr}")
+            
+            return result.stdout.strip(), result.stderr.strip(), result.returncode
 
-            stdout = process.stdout.strip()
-            stderr = process.stderr.strip()
-
-            logger.info(f"Raw stdout: {stdout[:500]}...")
-            logger.info(f"Raw stderr: {stderr}")
-
-            if process.returncode != 0:
-                logger.error(f"Ora2Pg failed with exit code {process.returncode}: {stderr}")
-                return {}, stderr
-
-            # Special handling for report types
-            is_report = any(arg in cmd for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
-
-            if is_report:
-                if 'SHOW_VERSION' in cmd:
-                    # SHOW_VERSION outputs plain text, not JSON
-                    shutil.rmtree(temp_dir)
-                    return {'sql_output': stdout}, None
-                else:
-                    # SHOW_REPORT should output JSON
-                    try:
-                        json.loads(stdout)
-                        logger.info("Valid JSON report output")
-                    except json.JSONDecodeError as e:
-                        logger.error(f"Invalid JSON output from Ora2Pg: {e}")
-                        shutil.rmtree(temp_dir)
-                        return {}, f"Invalid JSON output: {e}"
-                    
-                    shutil.rmtree(temp_dir)
-                    return {'sql_output': stdout}, None
-
-            if file_per_table:
-                files = [f for f in os.listdir(temp_dir) if f.endswith('.sql')]
-                logger.info(f"Generated files: {files}")
-                return {'files': files, 'directory': temp_dir}, None
-            else:
-                with open(output_file_path, 'r', encoding='utf-8') as f:
-                    sql_output = f.read()
-                os.remove(output_file_path)
-                shutil.rmtree(temp_dir)
-                return {'sql_output': sql_output}, None
-
-        except subprocess.TimeoutExpired:
-            logger.error("Ora2Pg execution timed out")
-            return {}, "Ora2Pg execution timed out"
         except Exception as e:
-            logger.error(f"Ora2Pg execution failed: {e}", exc_info=True)
-            return {}, str(e)
+            logger.error(f"An unexpected error occurred during single Ora2Pg command execution: {e}", exc_info=True)
+            return None, str(e), 1
         finally:
             if config_path and os.path.exists(config_path):
-                os.unlink(config_path)
+                os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
 
+    def _get_table_list(self, client_config):
+        """Fetches the list of tables from the Oracle schema using SQL*Plus."""
+        logger.info("Fetching table list from Oracle schema using SQL*Plus.")
+        
+        dsn_string = client_config.get('oracle_dsn')
+        user = client_config.get('oracle_user')
+        password = client_config.get('oracle_pwd')
+        schema = client_config.get('schema')
+
+        if not all([dsn_string, user, password, schema]):
+            return None, "Oracle connection details (DSN, user, password, schema) are incomplete."
+        
+        dsn_params = self._parse_dsn(dsn_string)
+        host = dsn_params.get('host')
+        port = dsn_params.get('port')
+        service_name = dsn_params.get('service_name')
+
+        if not all([host, port, service_name]):
+            return None, "Oracle DSN must include host, port, and service_name."
+            
+        connect_string = f"{user}/{password}@{host}:{port}/{service_name}"
+        
+        sql_query = f"""
+            SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TERMOUT OFF;
+            SELECT object_name FROM all_objects WHERE owner = '{schema.upper()}' AND object_type = 'TABLE' ORDER BY object_name;
+            EXIT;
+        """
+        
+        command = [self.sqlplus_path, '-S', connect_string]
+        
+        try:
+            process = subprocess.run(
+                command, 
+                input=sql_query, 
+                capture_output=True, 
+                text=True, 
+                timeout=60
+            )
+
+            if process.returncode != 0:
+                error_message = process.stderr.strip() or process.stdout.strip()
+                logger.error(f"SQL*Plus failed with exit code {process.returncode}: {error_message}")
+                return None, f"SQL*Plus connection failed: {error_message}"
+            
+            # Clean up the output
+            tables = [line.strip() for line in process.stdout.strip().split('\n') if line.strip()]
+            logger.info(f"Found {len(tables)} tables in schema '{schema}' via SQL*Plus.")
+            return tables, None
+
+        except subprocess.TimeoutExpired:
+            return None, "SQL*Plus connection timed out."
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during SQL*Plus execution: {e}", exc_info=True)
+            return None, f"An unexpected error occurred: {str(e)}"
+
+    def run_ora2pg_export(self, client_config, extra_args=None):
+        """
+        Generates a temporary ora2pg config file from client settings
+        and executes ora2pg, capturing the output.
+        Handles multi-file export for TABLE type correctly.
+        """
+        temp_dir = tempfile.mkdtemp()
+        logger.info(f"Created temporary directory for ora2pg output: {temp_dir}")
+
+        file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
+        export_type = client_config.get('type', 'TABLE').upper()
+
+        try:
+            # Special case: DDL export, one file per table, initiated by the object selector
+            # The ALLOW key will be present from the frontend selection
+            if file_per_table and export_type == 'TABLE' and 'ALLOW' in client_config and not extra_args:
+                logger.info("Handling multi-file TABLE export from selected objects.")
+                
+                # The table list is in the ALLOW key, comma-separated
+                tables = [t.strip() for t in client_config['ALLOW'].split(',')]
+                
+                all_files = []
+                for table_name in tables:
+                    logger.info(f"Exporting DDL for table: {table_name}")
+                    single_table_config = client_config.copy()
+                    single_table_config['ALLOW'] = table_name
+                    output_file_path = os.path.join(temp_dir, f"{table_name}.sql")
+                    single_table_config['OUTPUT'] = output_file_path
+                    single_table_config.pop('OUTPUT_DIR', None)
+
+                    _, error, returncode = self._run_single_ora2pg_command(single_table_config)
+                    if returncode != 0:
+                        logger.warning(f"Skipping table {table_name} due to export error: {error}")
+                    else:
+                        all_files.append(f"{table_name}.sql")
+                
+                return {'files': all_files, 'directory': temp_dir}, None
+
+            # This handles all other cases (reports, single-file DDL, COPY/INSERT)
+            else:
+                output_file_path = None
+                if file_per_table:
+                    # This now correctly handles COPY/INSERT with FILE_PER_TABLE
+                    client_config['OUTPUT_DIR'] = temp_dir
+                    client_config.pop('OUTPUT', None)
+                else:
+                    output_file_path = os.path.join(temp_dir, 'output.sql')
+                    client_config['OUTPUT'] = output_file_path
+                    client_config.pop('OUTPUT_DIR', None)
+
+                stdout, stderr, returncode = self._run_single_ora2pg_command(client_config, extra_args)
+                
+                if returncode != 0:
+                    shutil.rmtree(temp_dir)
+                    return {}, stderr
+
+                is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
+                if is_report:
+                    shutil.rmtree(temp_dir)
+                    return {'sql_output': stdout}, None
+
+                if file_per_table:
+                    files = [f for f in os.listdir(temp_dir) if f.endswith('.sql')]
+                    logger.info(f"Generated files: {files}")
+                    return {'files': files, 'directory': temp_dir}, None
+                else:
+                    with open(output_file_path, 'r', encoding='utf-8') as f:
+                        sql_output = f.read()
+                    shutil.rmtree(temp_dir)
+                    return {'sql_output': sql_output}, None
+
+        except Exception as e:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            logger.error(f"An unexpected error occurred during Ora2Pg execution: {e}", exc_info=True)
+            return {}, f"An unexpected error occurred: {str(e)}"
     
     def _extract_table_names(self, sql):
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
@@ -384,3 +466,4 @@ Failed Query:
         except Exception as e:
             logger.error(f"Failed to save corrected SQL to {output_path}: {e}")
             raise
+

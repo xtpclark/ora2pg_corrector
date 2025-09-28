@@ -12,19 +12,29 @@ export function showToast(message, isError = false) {
 export function toggleButtonLoading(button, isLoading, originalContent = null) {
     if (!button) return;
     const textSpan = button.querySelector('span');
+    const icon = button.querySelector('i');
+
     if (isLoading) {
         button.disabled = true;
         if (textSpan) {
-             if (originalContent) button.dataset.originalContent = originalContent;
-             textSpan.innerHTML = '<i class="fas fa-spinner spinner"></i>';
+            if (originalContent) button.dataset.originalContent = originalContent;
+            textSpan.textContent = 'Processing...';
+        }
+        if (icon) {
+            button.dataset.originalIcon = icon.className;
+            icon.className = 'fas fa-spinner spinner mr-2';
         }
     } else {
         button.disabled = false;
         if (textSpan && button.dataset.originalContent) {
             textSpan.innerHTML = button.dataset.originalContent;
         }
+        if (icon && button.dataset.originalIcon) {
+            icon.className = button.dataset.originalIcon;
+        }
     }
 }
+
 
 export function renderClients() {
     dom.clientListEl.innerHTML = '';
@@ -95,7 +105,12 @@ export function renderSettingsForms(config) {
         let inputHtml = '';
 
         if (option.option_type === 'checkbox') {
-            inputHtml = `<input type="checkbox" name="${key}" class="form-input rounded mt-1" ${value ? 'checked' : ''}>`;
+            // --- THIS IS THE FIX ---
+            // A value from config will be a boolean (true/false).
+            // A default_value from the DB will be a string ('0' or '1').
+            // This handles both cases correctly by converting to a string for comparison.
+            const isChecked = String(value) === 'true' || String(value) === '1';
+            inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-input rounded mt-1" ${isChecked ? 'checked' : ''}>`;
         } else if (option.option_type === 'dropdown') {
             const optionsArray = option.allowed_values ? option.allowed_values.split(',') : [];
             const optionsHtml = optionsArray.map(choice =>
@@ -104,7 +119,7 @@ export function renderSettingsForms(config) {
             inputHtml = `<select name="${key}" id="${key}" class="form-input w-full rounded-md">${optionsHtml}</select>`;
         } else {
              const inputType = option.option_type === 'password' ? 'password' : 'text';
-             inputHtml = `<input type="${inputType}" name="${key}" class="form-input w-full rounded-md" value="${value || ''}">`;
+             inputHtml = `<input type="${inputType}" name="${key}" id="${key}" class="form-input w-full rounded-md" value="${value || ''}">`;
         }
         
         gridItemsHtml.push(`
@@ -124,14 +139,9 @@ export function renderSettingsForms(config) {
 
 export function renderReportTable(reportData) {
     const reportContainer = document.getElementById('report-container');
-    const exportButton = document.getElementById('export-report-btn');
-
-    if (!reportContainer) {
-        console.error('Report container not found');
-        showToast('Failed to render report: Container not found.', true);
-        return;
-    }
-
+    reportContainer.classList.remove('hidden');
+    document.getElementById('export-report-btn').disabled = false;
+    
     let headerHtml = `
         <div class="mb-4">
             <h2 class="text-xl font-semibold text-gray-200">Migration Assessment Report</h2>
@@ -179,60 +189,7 @@ export function renderReportTable(reportData) {
     tableHtml += `</tbody></table>`;
     
     reportContainer.innerHTML = headerHtml + tableHtml;
-    reportContainer.classList.remove('hidden');
-    exportButton.disabled = false;
 }
-
-
-
-// --- CHANGE: Reworked to add header and fix the cost bug ---
-export function old_renderReportTable(reportData) {
-    const reportContainer = document.getElementById('report-container');
-    
-    // Build the header section
-    let headerHtml = `
-        <div class="mb-4 p-4 border border-gray-700 rounded-lg bg-gray-800">
-            <h3 class="text-lg font-bold text-white mb-2">Migration Summary</h3>
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
-                <div><span class="font-semibold text-gray-400">Schema:</span> <span class="text-gray-200">${reportData.Schema || 'N/A'}</span></div>
-                <div><span class="font-semibold text-gray-400">Size:</span> <span class="text-gray-200">${reportData.Size || 'N/A'}</span></div>
-                <div><span class="font-semibold text-gray-400">Migration Level:</span> <span class="text-gray-200">${reportData['migration level'] || 'N/A'}</span></div>
-                <div><span class="font-semibold text-gray-400">Estimated Cost:</span> <span class="text-gray-200">${reportData['human days cost'] || 'N/A'}</span></div>
-            </div>
-        </div>
-    `;
-
-    // Build the main table
-    let tableHtml = `
-        <table class="min-w-full divide-y divide-gray-700">
-            <thead class="bg-gray-800">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Object</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Number</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Invalid</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Cost</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Comments</th>
-                </tr>
-            </thead>
-            <tbody class="bg-gray-900 divide-y divide-gray-700">
-    `;
-    reportData.objects.forEach(item => {
-        tableHtml += `
-            <tr>
-                <td class="px-6 py-4 whitespace-nowrap text-sm font-semibold text-blue-400">${item.object || ''}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.number || '0'}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item.invalid || '0'}</td>
-                <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${item['cost value'] || '0.00'}</td>
-                <td class="px-6 py-4 text-sm text-gray-400">${item.comment || ''}</td>
-            </tr>
-        `;
-    });
-    tableHtml += `</tbody></table>`;
-    
-    // Combine header and table
-    reportContainer.innerHTML = headerHtml + tableHtml;
-}
-
 
 export function renderFileBrowser(files) {
     const fileListContainer = document.getElementById('migration-file-list');
@@ -244,7 +201,6 @@ export function renderFileBrowser(files) {
         return;
     }
 
-    // Sort files alphabetically
     files.sort();
 
     const fileItemsHtml = files.map(filename => `
@@ -257,3 +213,29 @@ export function renderFileBrowser(files) {
     fileListContainer.innerHTML = fileItemsHtml;
     fileBrowserContainer.classList.remove('hidden');
 }
+
+// --- NEW: Renders the object selection checklist ---
+export function renderObjectSelector() {
+    const container = document.getElementById('object-selector-container');
+    const listEl = document.getElementById('object-list');
+    listEl.innerHTML = ''; // Clear previous list
+
+    if (!state.objectList || state.objectList.length === 0) {
+        listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
+        container.classList.remove('hidden');
+        return;
+    }
+
+    state.objectList.forEach(objectName => {
+        const item = document.createElement('div');
+        item.className = 'flex items-center';
+        item.innerHTML = `
+            <input id="obj-${objectName}" name="object" value="${objectName}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+            <label for="obj-${objectName}" class="ml-3 block text-sm font-medium text-gray-300">${objectName}</label>
+        `;
+        listEl.appendChild(item);
+    });
+
+    container.classList.remove('hidden');
+}
+

@@ -1,4 +1,12 @@
 export async function apiFetch(url, options = {}) {
+    // --- FIX: Automatically add the correct Content-Type header if a body exists ---
+    if (options.body && (!options.headers || !options.headers['Content-Type'])) {
+        options.headers = {
+            ...options.headers,
+            'Content-Type': 'application/json'
+        };
+    }
+
     try {
         const response = await fetch(url, options);
         if (!response.ok) {

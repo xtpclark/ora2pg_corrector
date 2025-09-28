@@ -168,13 +168,43 @@ def manage_config(client_id):
 
 @api_bp.route('/client/<int:client_id>/test_ora2pg_connection', methods=['POST'])
 def test_ora2pg_connection(client_id):
+    config = request.get_json(force=True)
+    if not config:
+        return jsonify({'status': 'error', 'message': 'No configuration data provided for test.'}), 400
+    try:
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    pass
+        
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        report_args = ['-t', 'SHOW_VERSION']
+        version_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
+
+        if error_output:
+            log_audit(client_id, 'test_oracle_connection', f'Failed: {error_output}')
+            return jsonify({'status': 'error', 'message': f'Connection failed: {error_output}'}), 400
+        
+        version_string = version_output.get('sql_output', '').strip()
+        log_audit(client_id, 'test_oracle_connection', f'Success: {version_string}')
+        return jsonify({'status': 'success', 'message': f'Connection successful! {version_string}'})
+
+    except Exception as e:
+        logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
+        return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/get_object_list', methods=['GET'])
+def get_object_list(client_id):
     try:
         conn = get_db()
         query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
-        
+
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
 
@@ -185,24 +215,20 @@ def test_ora2pg_connection(client_id):
                     config[key] = fernet.decrypt(config[key].encode()).decode()
                 except Exception:
                     pass
-        
+
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        
-        report_args = ['-t', 'SHOW_VERSION']
-        version_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
+        object_list, error = corrector._get_table_list(config)
 
-        if error_output:
-            log_audit(client_id, 'test_oracle_connection', f'Failed: {error_output}')
-            return jsonify({'status': 'error', 'message': f'Connection failed: {error_output}'}), 400
-        
-        version_string = version_output.get('sql_output', '').strip()
-        
-        log_audit(client_id, 'test_oracle_connection', f'Success: {version_string}')
-        return jsonify({'status': 'success', 'message': f'Connection successful! {version_string}'})
+        if error:
+            log_audit(client_id, 'get_object_list', f'Failed: {error}')
+            return jsonify({'error': error}), 500
 
+        log_audit(client_id, 'get_object_list', f'Successfully fetched {len(object_list)} objects.')
+        return jsonify(object_list)
+        
     except Exception as e:
-        logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
-        return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
+        logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @api_bp.route('/client/<int:client_id>/generate_report', methods=['POST'])
 def generate_report(client_id):
@@ -212,10 +238,9 @@ def generate_report(client_id):
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
-
+        
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-        logger.info(f"Client {client_id} config: {config}")
 
         fernet = Fernet(ENCRYPTION_KEY)
         for key in ['oracle_pwd']:
@@ -223,85 +248,26 @@ def generate_report(client_id):
                 try:
                     config[key] = fernet.decrypt(config[key].encode()).decode()
                 except Exception:
-                    logger.warning(f"Failed to decrypt {key} for client {client_id}")
                     pass
-
+        
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         report_args = ['-t', 'SHOW_REPORT', '--estimate_cost', '--dump_as_json']
         report_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
 
         if error_output:
-            logger.error(f"Ora2Pg error for client {client_id}: {error_output}")
             log_audit(client_id, 'generate_report', f'Failed: {error_output}')
             return jsonify({'error': error_output}), 500
-
-        logger.info(f"Raw report output for client {client_id}: {report_output}")
+        
         json_string = report_output.get('sql_output', '{}')
-        logger.info(f"JSON string for client {client_id}: {json_string}")
-
-        if not json_string or json_string == '{}':
-            logger.warning(f"No valid JSON data returned for client {client_id}")
-            log_audit(client_id, 'generate_report', 'Failed: Empty or invalid report data')
-            return jsonify({'error': 'No valid report data generated'}), 500
-
         try:
             report_data = json.loads(json_string)
-            if not isinstance(report_data, dict) or 'objects' not in report_data:
-                logger.warning(f"Invalid report data structure for client {client_id}: {report_data}")
-                log_audit(client_id, 'generate_report', 'Failed: Invalid report data structure')
-                return jsonify({'error': 'Invalid report data structure'}), 500
-            logger.info(f"Parsed report data for client {client_id}: {report_data}")
-            log_audit(client_id, 'generate_report', 'Successfully generated assessment report.')
-            return jsonify(report_data)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse Ora2Pg JSON output for client {client_id}: {e}")
-            log_audit(client_id, 'generate_report', f'Failed: Invalid JSON output - {str(e)}')
+        except json.JSONDecodeError:
+            log_audit(client_id, 'generate_report', 'Failed: Invalid JSON from ora2pg report.')
             return jsonify({'error': 'Failed to parse JSON report from Ora2Pg.'}), 500
 
-    except Exception as e:
-        logger.error(f"Failed to generate report for client {client_id}: {e}", exc_info=True)
-        log_audit(client_id, 'generate_report', f'Failed: {str(e)}')
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
-
-@api_bp.route('/client/<int:client_id>/generate_report_old', methods=['POST'])
-def old_generate_report(client_id):
-    try:
-        conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
-        
-        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        
-        report_args = ['-t', 'SHOW_REPORT', '--estimate_cost', '--dump_as_json']
-        report_output, error_output = corrector.run_ora2pg_export(config, extra_args=report_args)
-
-        if error_output:
-            log_audit(client_id, 'generate_report', f'Failed: {error_output}')
-            return jsonify({'error': error_output}), 500
-        
         log_audit(client_id, 'generate_report', 'Successfully generated assessment report.')
-        
-        json_string = report_output.get('sql_output', '{}')
-        report_data = json.loads(json_string)
-        
         return jsonify(report_data)
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse Ora2Pg JSON output: {e}")
-        return jsonify({'error': 'Failed to parse JSON report from Ora2Pg.'}), 500
     except Exception as e:
         logger.error(f"Failed to generate report for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
@@ -318,6 +284,12 @@ def run_ora2pg(client_id):
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
         
+        request_data = request.get_json(force=True) # Use force=True to handle potential header issues
+        if request_data and 'selected_objects' in request_data:
+            selected_objects = request_data['selected_objects']
+            if selected_objects:
+                config['ALLOW'] = ','.join(selected_objects)
+        
         for key in ['file_per_table']:
             if key in config:
                 config[key] = str(config[key]) in ('1', 'true', 'True')
@@ -331,7 +303,6 @@ def run_ora2pg(client_id):
                     pass
         
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        
         result_data, error_output = corrector.run_ora2pg_export(config)
 
         if error_output:
@@ -351,26 +322,39 @@ def run_ora2pg(client_id):
 
 @api_bp.route('/get_exported_file', methods=['POST'])
 def get_exported_file():
-    data = request.json
-    filename = data.get('filename')
-    export_dir = session.get('export_dir')
-
-    if not filename or not export_dir:
-        return jsonify({'error': 'Filename or export directory not found in session.'}), 400
-    
-    if '..' in filename or filename.startswith('/'):
-        return jsonify({'error': 'Invalid filename.'}), 400
-
-    file_path = os.path.join(export_dir, filename)
+    # --- THIS IS THE FIX ---
+    file_path = None
     try:
+        data = request.json
+        filename = data.get('filename')
+        export_dir = session.get('export_dir')
+
+        logger.info(f"Attempting to get file: {filename} from dir in session: {export_dir}")
+
+        if not filename or not export_dir:
+            logger.error(f"Filename or export directory not found in session. Filename: {filename}, Dir: {export_dir}")
+            return jsonify({'error': 'File or export session not found. Please try the export again.'}), 400
+        
+        if '..' in filename or filename.startswith('/'):
+            logger.error(f"Invalid filename detected: {filename}")
+            return jsonify({'error': 'Invalid filename.'}), 400
+
+        file_path = os.path.join(export_dir, filename)
+        logger.info(f"Constructed file path: {file_path}")
+
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
+        
+        logger.info(f"Successfully read content for {filename}.")
         return jsonify({'content': content})
+
     except FileNotFoundError:
+        logger.error(f"File not found at path: {file_path}")
         return jsonify({'error': f'File not found: {filename}'}), 404
     except Exception as e:
-        logger.error(f"Error reading exported file {file_path}: {e}")
-        return jsonify({'error': 'Failed to read file content.'}), 500
+        logger.error(f"Error reading exported file {file_path}: {e}", exc_info=True)
+        return jsonify({'error': 'An unexpected error occurred while reading the file content.'}), 500
+
 
 @api_bp.route('/correct_sql', methods=['POST'])
 def correct_sql_with_ai():
@@ -515,6 +499,7 @@ def get_audit_logs(client_id):
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
+        
         cursor = execute_query(conn, query, params)
         logs = [dict(row) for row in cursor.fetchall()]
         return jsonify(logs)
@@ -551,3 +536,4 @@ def test_pg_connection():
     except Exception as e:
         logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
+
