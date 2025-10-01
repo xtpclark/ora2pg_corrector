@@ -217,6 +217,7 @@ export function renderFileBrowser(files) {
     fileBrowserContainer.classList.remove('hidden');
 }
 
+// --- UPDATED: Add download icon next to each object ---
 export function renderObjectSelector() {
     const container = document.getElementById('object-selector-container');
     const listEl = document.getElementById('object-list');
@@ -230,10 +231,15 @@ export function renderObjectSelector() {
 
     state.objectList.forEach(objectName => {
         const item = document.createElement('div');
-        item.className = 'flex items-center';
+        item.className = 'flex items-center justify-between';
         item.innerHTML = `
-            <input id="obj-${objectName}" name="object" value="${objectName}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
-            <label for="obj-${objectName}" class="ml-3 block text-sm font-medium text-gray-300">${objectName}</label>
+            <div class="flex items-center">
+                <input id="obj-${objectName}" name="object" value="${objectName}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+                <label for="obj-${objectName}" class="ml-3 block text-sm font-medium text-gray-300">${objectName}</label>
+            </div>
+            <button class="download-ddl-btn text-gray-400 hover:text-white" data-object-name="${objectName}" title="Download Original Oracle DDL">
+                <i class="fas fa-download"></i>
+            </button>
         `;
         listEl.appendChild(item);
     });
@@ -241,7 +247,6 @@ export function renderObjectSelector() {
     container.classList.remove('hidden');
 }
 
-// --- UPDATED: Renders the session list with the new export_type ---
 export function renderSessionHistory() {
     const container = document.getElementById('session-history-container');
     const listEl = document.getElementById('session-list');
