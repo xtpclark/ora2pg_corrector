@@ -203,12 +203,10 @@ def update_file_status(file_id):
 
 @api_bp.route('/client/<int:client_id>/sessions', methods=['GET'])
 def get_sessions(client_id):
-    """Fetches all migration sessions for a given client."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
     try:
-        # --- UPDATED: Select the new export_type column ---
         query = 'SELECT session_id, session_name, created_at, export_type FROM migration_sessions WHERE client_id = ? ORDER BY created_at DESC'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
@@ -223,7 +221,6 @@ def get_sessions(client_id):
 
 @api_bp.route('/session/<int:session_id>/files', methods=['GET'])
 def get_session_files(session_id):
-    """Fetches all files and their statuses for a given session."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -303,6 +300,46 @@ def get_object_list(client_id):
         
     except Exception as e:
         logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+
+# --- NEW: Endpoint to fetch the original DDL for a single object ---
+@api_bp.route('/client/<int:client_id>/get_oracle_ddl', methods=['POST'])
+def get_oracle_ddl(client_id):
+    data = request.get_json()
+    object_name = data.get('object_name')
+    object_type = data.get('object_type', 'TABLE') 
+
+    if not object_name:
+        return jsonify({'error': 'Object name is required.'}), 400
+
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    pass
+
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name)
+
+        if error:
+            return jsonify({'error': error}), 500
+
+        return jsonify({'ddl': ddl})
+
+    except Exception as e:
+        logger.error(f"Failed to fetch DDL for {object_name}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @api_bp.route('/client/<int:client_id>/generate_report', methods=['POST'])
