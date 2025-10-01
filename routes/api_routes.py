@@ -268,8 +268,13 @@ def test_ora2pg_connection(client_id):
         logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
 
-@api_bp.route('/client/<int:client_id>/get_object_list', methods=['GET'])
+@api_bp.route('/client/<int:client_id>/get_object_list', methods=['POST'])
 def get_object_list(client_id):
+    data = request.get_json()
+    object_types = data.get('object_types')
+    if not object_types:
+        return jsonify({'error': 'Object types are required.'}), 400
+
     try:
         conn = get_db()
         query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
@@ -289,7 +294,7 @@ def get_object_list(client_id):
                     pass
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        object_list, error = corrector._get_table_list(config)
+        object_list, error = corrector._get_object_list(config, object_types)
 
         if error:
             log_audit(client_id, 'get_object_list', f'Failed: {error}')
@@ -302,7 +307,6 @@ def get_object_list(client_id):
         logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
-# --- NEW: Endpoint to fetch the original DDL for a single object ---
 @api_bp.route('/client/<int:client_id>/get_oracle_ddl', methods=['POST'])
 def get_oracle_ddl(client_id):
     data = request.get_json()
@@ -340,6 +344,48 @@ def get_oracle_ddl(client_id):
 
     except Exception as e:
         logger.error(f"Failed to fetch DDL for {object_name}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+
+# --- NEW: Endpoint for bulk DDL download ---
+@api_bp.route('/client/<int:client_id>/get_bulk_oracle_ddl', methods=['POST'])
+def get_bulk_oracle_ddl(client_id):
+    data = request.get_json()
+    objects = data.get('objects') # Expects a list of {'name': '...', 'type': '...'}
+
+    if not objects:
+        return jsonify({'error': 'A list of objects is required.'}), 400
+
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+        
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try: config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception: pass
+
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        
+        all_ddls = []
+        for obj in objects:
+            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'])
+            if error:
+                logger.warning(f"Could not fetch DDL for {obj['name']}: {error}")
+                all_ddls.append(f"-- FAILED to retrieve DDL for {obj['type']} {obj['name']}: {error}\n\n")
+            else:
+                all_ddls.append(ddl + "\n\n")
+        
+        concatenated_ddl = "".join(all_ddls)
+        return jsonify({'ddl': concatenated_ddl})
+
+    except Exception as e:
+        logger.error(f"Failed to fetch bulk DDL: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @api_bp.route('/client/<int:client_id>/generate_report', methods=['POST'])
