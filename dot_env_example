@@ -28,8 +28,7 @@ DB_BACKEND=sqlite
 #DSN for the staging PostgreSQL database used for validating corrected SQL.
 #This can be the same database or a different one.
 
-#STAGING_PG_DSN="dbname=staging user=postgres password=password host=postgres port=5432"
-
+VALIDATION_PG_DSN="dbname=staging user=postgres password=password host=postgres port=5432"
 #--- Docker Compose Postgres Service Configuration ---
 #These are used by docker-compose.yml to initialize the postgres service.
 
@@ -43,3 +42,7 @@ DB_BACKEND=sqlite
 
 GEMINI_API_KEY=
 OPENAI_API_KEY=
+
+OUTPUT_DIR=/app/project_output
+HOST_UID=1000
+HOST_GID=1000

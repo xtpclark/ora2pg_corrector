@@ -6,6 +6,11 @@
 chown -R appuser:appuser /app/data
 chown -R appuser:appuser /app/output
 chown -R appuser:appuser /app/project_output
+chown -R appuser:appuser /app/project_data 
+
+# Set up Oracle Instant Client environment so sqlplus and other tools are found.
+#export LD_LIBRARY_PATH=/opt/oracle/instantclient_21_19
+#export PATH=$LD_LIBRARY_PATH:$PATH
 
 # Drop privileges and execute the main command (CMD) as the non-root "appuser".
 exec gosu appuser "$@"

@@ -11,6 +11,7 @@ services:
     volumes:
       - ./output:/app/output:z
       - settings_data:/app/data
+      - project_data:/app/project_data
       - ./ora2pg_config:/app/ora2pg_config:z
       - ./ai_config:/app/ai_config:z
       - ./static:/app/static:z
@@ -50,6 +51,7 @@ volumes:
   pgdata:
   settings_data:
   oracle_data:
+  project_data:
 
 networks:
   app-network:

@@ -101,15 +101,14 @@ export function renderSettingsForms(config) {
     const gridItemsHtml = [];
     state.ora2pgOptions.forEach(option => {
         const key = option.option_name.toLowerCase();
-        const value = config[key] ?? option.default_value;
-        let inputHtml = '';
+        let value = config[key];
+        if (value === undefined) {
+             value = option.default_value;
+        }
+        let isChecked = option.option_type === 'checkbox' ? (String(value).toLowerCase() === 'true' || String(value) === '1') : false;
 
+        let inputHtml = '';
         if (option.option_type === 'checkbox') {
-            // --- THIS IS THE FIX ---
-            // A value from config will be a boolean (true/false).
-            // A default_value from the DB will be a string ('0' or '1').
-            // This handles both cases correctly by converting to a string for comparison.
-            const isChecked = String(value) === 'true' || String(value) === '1';
             inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-input rounded mt-1" ${isChecked ? 'checked' : ''}>`;
         } else if (option.option_type === 'dropdown') {
             const optionsArray = option.allowed_values ? option.allowed_values.split(',') : [];
@@ -135,7 +134,6 @@ export function renderSettingsForms(config) {
     
     document.getElementById('validation_pg_dsn').value = config.validation_pg_dsn || state.appSettings.validation_pg_dsn || '';
 }
-
 
 export function renderReportTable(reportData) {
     const reportContainer = document.getElementById('report-container');
@@ -196,17 +194,22 @@ export function renderFileBrowser(files) {
     const fileBrowserContainer = document.getElementById('file-browser-container');
 
     if (!files || files.length === 0) {
-        fileListContainer.innerHTML = '<p class="text-gray-500 col-span-full">No SQL files were generated.</p>';
+        fileListContainer.innerHTML = '<p class="text-gray-500 col-span-full">No SQL files found for this session.</p>';
         fileBrowserContainer.classList.remove('hidden');
         return;
     }
 
-    files.sort();
+    const statusColors = {
+        'generated': 'border-gray-700',
+        'corrected': 'border-blue-500',
+        'validated': 'border-green-500',
+        'failed': 'border-red-500'
+    };
 
-    const fileItemsHtml = files.map(filename => `
-        <a href="#" data-filename="${filename}" class="file-item bg-gray-800 p-3 rounded-lg text-gray-300 hover:bg-blue-600 hover:text-white transition-colors duration-200 truncate flex items-center">
+    const fileItemsHtml = files.map(file => `
+        <a href="#" data-file-id="${file.file_id}" class="file-item bg-gray-800 p-3 rounded-lg text-gray-300 hover:bg-blue-600 hover:text-white transition-colors duration-200 truncate flex items-center border-l-4 ${statusColors[file.status] || 'border-gray-700'}">
             <i class="fas fa-file-alt mr-2 text-gray-500"></i>
-            <span class="truncate" title="${filename}">${filename}</span>
+            <span class="truncate" title="${file.filename}">${file.filename}</span>
         </a>
     `).join('');
     
@@ -214,11 +217,10 @@ export function renderFileBrowser(files) {
     fileBrowserContainer.classList.remove('hidden');
 }
 
-// --- NEW: Renders the object selection checklist ---
 export function renderObjectSelector() {
     const container = document.getElementById('object-selector-container');
     const listEl = document.getElementById('object-list');
-    listEl.innerHTML = ''; // Clear previous list
+    listEl.innerHTML = ''; 
 
     if (!state.objectList || state.objectList.length === 0) {
         listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
@@ -239,7 +241,7 @@ export function renderObjectSelector() {
     container.classList.remove('hidden');
 }
 
-
+// --- UPDATED: Renders the session list with the new export_type ---
 export function renderSessionHistory() {
     const container = document.getElementById('session-history-container');
     const listEl = document.getElementById('session-list');
@@ -262,8 +264,15 @@ export function renderSessionHistory() {
         }
 
         item.innerHTML = `
-            <div class="font-semibold text-white">${session.session_name}</div>
-            <div class="text-xs text-gray-400">${new Date(session.created_at).toLocaleString()}</div>
+            <div class="flex justify-between items-center">
+                <span class="font-semibold text-white">${session.session_name}</span>
+                <span class="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded-full">${session.export_type || 'N/A'}</span>
+            </div>
+            <div class="text-xs text-gray-400 mt-1">${new Date(session.created_at).toLocaleString()}</div>
         `;
         listEl.appendChild(item);
     });
+
+    container.classList.remove('hidden');
+}
+

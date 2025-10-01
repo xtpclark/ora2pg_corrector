@@ -166,7 +166,6 @@ def manage_config(client_id):
         except Exception as e:
             return jsonify({'error': f'Failed to save config: {str(e)}'}), 500
 
-# --- NEW: Endpoint to update the status of a migration file ---
 @api_bp.route('/file/<int:file_id>/status', methods=['POST'])
 def update_file_status(file_id):
     data = request.get_json()
@@ -204,11 +203,13 @@ def update_file_status(file_id):
 
 @api_bp.route('/client/<int:client_id>/sessions', methods=['GET'])
 def get_sessions(client_id):
+    """Fetches all migration sessions for a given client."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
     try:
-        query = 'SELECT session_id, session_name, created_at FROM migration_sessions WHERE client_id = ? ORDER BY created_at DESC'
+        # --- UPDATED: Select the new export_type column ---
+        query = 'SELECT session_id, session_name, created_at, export_type FROM migration_sessions WHERE client_id = ? ORDER BY created_at DESC'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
             query = query.replace('?', '%s')
@@ -222,6 +223,7 @@ def get_sessions(client_id):
 
 @api_bp.route('/session/<int:session_id>/files', methods=['GET'])
 def get_session_files(session_id):
+    """Fetches all files and their statuses for a given session."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -357,8 +359,9 @@ def run_ora2pg(client_id):
         cursor = execute_query(conn, query, params)
         config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
         
-        request_data = request.get_json(force=True)
-        if request_data and 'selected_objects' in request_data:
+        request_data = request.get_json(silent=True) or {}
+        
+        if 'selected_objects' in request_data:
             selected_objects = request_data['selected_objects']
             if selected_objects:
                 config['ALLOW'] = ','.join(selected_objects)

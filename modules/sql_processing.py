@@ -10,6 +10,8 @@ from cryptography.fernet import Fernet
 import psycopg2
 from psycopg2 import sql as psql
 import json
+from datetime import datetime
+from .db import execute_query
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -26,10 +28,8 @@ class Ora2PgAICorrector:
 
     def _parse_dsn(self, dsn_string):
         """Parses a DBI-style DSN string into a dictionary."""
-        # Remove the 'dbi:Oracle:' prefix
+        if not dsn_string: return {}
         dsn_string = dsn_string.replace('dbi:Oracle:', '')
-        
-        # Split into key-value pairs
         pairs = dsn_string.split(';')
         dsn_dict = {}
         for pair in pairs:
@@ -115,7 +115,7 @@ class Ora2PgAICorrector:
                 input=sql_query, 
                 capture_output=True, 
                 text=True, 
-                timeout=60
+                timeout=300
             )
 
             if process.returncode != 0:
@@ -123,7 +123,6 @@ class Ora2PgAICorrector:
                 logger.error(f"SQL*Plus failed with exit code {process.returncode}: {error_message}")
                 return None, f"SQL*Plus connection failed: {error_message}"
             
-            # Clean up the output
             tables = [line.strip() for line in process.stdout.strip().split('\n') if line.strip()]
             logger.info(f"Found {len(tables)} tables in schema '{schema}' via SQL*Plus.")
             return tables, None
@@ -135,35 +134,26 @@ class Ora2PgAICorrector:
             return None, f"An unexpected error occurred: {str(e)}"
 
     def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None):
-        """
-        Executes ora2pg and handles persistence of the migration session and files.
-        """
-        # Reports are transient and don't need persistence. Handle them first.
         is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
         if is_report:
             stdout, stderr, returncode = self._run_single_ora2pg_command(client_config, extra_args)
-            if returncode != 0:
-                return {}, stderr
+            if returncode != 0: return {}, stderr
             return {'sql_output': stdout}, None
 
-        # --- All other exports are persistent ---
         try:
-            # 1. Create a migration session record
             session_name = f"Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            placeholder_dir = "pending"
+            export_type = client_config.get('type', 'TABLE').upper()
             
             if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory) VALUES (?, ?, ?)', (client_id, session_name, placeholder_dir))
+                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory, export_type) VALUES (?, ?, ?, ?)', (client_id, session_name, "pending", export_type))
                 session_id = cursor.lastrowid
             else:
-                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory) VALUES (%s, %s, %s) RETURNING session_id', (client_id, session_name, placeholder_dir))
+                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory, export_type) VALUES (%s, %s, %s, %s) RETURNING session_id', (client_id, session_name, "pending", export_type))
                 session_id = cursor.fetchone()['session_id']
 
-            # 2. Create the persistent directory
             persistent_export_dir = os.path.join('/app/project_data', str(client_id), str(session_id))
             os.makedirs(persistent_export_dir, exist_ok=True)
 
-            # 3. Update session record with the real directory path
             if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
                 execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
             else:
@@ -172,53 +162,64 @@ class Ora2PgAICorrector:
             db_conn.commit()
             logger.info(f"Created persistent session {session_id} at {persistent_export_dir}")
 
-            # 4. Run the actual export(s)
             file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
-            export_type = client_config.get('type', 'TABLE').upper()
-            generated_files = []
-
-            # Multi-file DDL export from object selector
-            if file_per_table and export_type == 'TABLE' and 'ALLOW' in client_config:
-                tables = [t.strip() for t in client_config['ALLOW'].split(',')]
+            run_config = client_config.copy()
+            
+            if file_per_table and export_type == 'TABLE' and 'ALLOW' in run_config:
+                logger.info("Executing multi-file DDL export strategy (looping).")
+                generated_files = []
+                tables = [t.strip() for t in run_config['ALLOW'].split(',')]
                 for table_name in tables:
-                    single_table_config = client_config.copy()
+                    single_table_config = run_config.copy()
                     single_table_config['ALLOW'] = table_name
                     single_table_config['OUTPUT'] = os.path.join(persistent_export_dir, f"{table_name}.sql")
+                    single_table_config.pop('OUTPUT_DIR', None)
                     
                     _, error, returncode = self._run_single_ora2pg_command(single_table_config)
                     if returncode == 0:
                         generated_files.append(f"{table_name}.sql")
                     else:
                         logger.warning(f"Skipping table {table_name} for session {session_id} due to export error: {error}")
-
-            # All other export types (single-file DDL, COPY, INSERT)
             else:
+                logger.info("Executing single-command export strategy.")
+                # --- THIS IS THE FIX ---
                 if file_per_table:
-                    client_config['OUTPUT_DIR'] = persistent_export_dir
+                    # Multi-file data exports (e.g., COPY) need both directives.
+                    # OUTPUT_DIR is the full path, OUTPUT is just the filename.
+                    run_config['OUTPUT_DIR'] = persistent_export_dir
+                    run_config['OUTPUT'] = f"output_{export_type.lower()}.sql"
                 else:
-                    client_config['OUTPUT'] = os.path.join(persistent_export_dir, 'output.sql')
+                    # Single-file exports (any type) just need the full OUTPUT path.
+                    run_config['OUTPUT'] = os.path.join(persistent_export_dir, f"output_{export_type.lower()}.sql")
+                    run_config.pop('OUTPUT_DIR', None)
+
+                _, stderr, returncode = self._run_single_ora2pg_command(run_config)
                 
-                _, stderr, returncode = self._run_single_ora2pg_command(client_config)
                 if returncode != 0:
+                    logger.error(f"Ora2Pg command failed. Rolling back session {session_id}.")
+                    if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+                        execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = ?', (session_id,))
+                    else:
+                        execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = %s', (session_id,))
+                    db_conn.commit()
+                    shutil.rmtree(persistent_export_dir)
                     return {}, stderr
+                
                 generated_files = [f for f in os.listdir(persistent_export_dir) if f.endswith('.sql')]
 
-            # 5. Record the generated files in the database
             for filename in generated_files:
                 if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
                     execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
                 else:
                     execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (%s, %s)', (session_id, filename))
             db_conn.commit()
-
-            # 6. Return the session info to the frontend
-            if not file_per_table:
-                 with open(os.path.join(persistent_export_dir, 'output.sql'), 'r', encoding='utf-8') as f:
+            
+            if not file_per_table and len(generated_files) == 1:
+                 with open(os.path.join(persistent_export_dir, generated_files[0]), 'r', encoding='utf-8') as f:
                     sql_output = f.read()
-                 return {'sql_output': sql_output, 'session_id': session_id}, None
+                 return {'sql_output': sql_output, 'session_id': session_id, 'files': generated_files}, None
             else:
                 return {'files': generated_files, 'session_id': session_id, 'directory': persistent_export_dir}, None
-
 
         except Exception as e:
             logger.error(f"An unexpected error occurred during Ora2Pg persistence execution: {e}", exc_info=True)
@@ -338,7 +339,7 @@ Failed Query:
             payload = { "model": ai_model, "messages": [{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}], "temperature": float(self.ai_settings.get('ai_temperature', 0.2)), "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)) }
         
         try:
-            response = requests.post(api_url, json=payload, headers=headers, timeout=120)
+            response = requests.post(api_url, json=payload, headers=headers, timeout=300)
             response.raise_for_status()
             response_data = response.json()
             generated_text = ""
