@@ -115,7 +115,7 @@ class Ora2PgAICorrector:
                 input=sql_query, 
                 capture_output=True, 
                 text=True, 
-                timeout=300
+                timeout=60
             )
 
             if process.returncode != 0:
@@ -132,6 +132,62 @@ class Ora2PgAICorrector:
         except Exception as e:
             logger.error(f"An unexpected error occurred during SQL*Plus execution: {e}", exc_info=True)
             return None, f"An unexpected error occurred: {str(e)}"
+
+    def get_oracle_ddl(self, client_config, object_type, object_name):
+        """Extracts the original Oracle DDL for a single object using SQL*Plus."""
+        logger.info(f"Fetching Oracle DDL for {object_type} {object_name}.")
+
+        dsn_string = client_config.get('oracle_dsn')
+        user = client_config.get('oracle_user')
+        password = client_config.get('oracle_pwd')
+        schema = client_config.get('schema')
+
+        if not all([dsn_string, user, password, schema]):
+            return None, "Oracle connection details are incomplete."
+
+        dsn_params = self._parse_dsn(dsn_string)
+        host = dsn_params.get('host')
+        port = dsn_params.get('port')
+        service_name = dsn_params.get('service_name')
+
+        if not all([host, port, service_name]):
+            return None, "Oracle DSN must include host, port, and service_name."
+            
+        connect_string = f"{user}/{password}@{host}:{port}/{service_name}"
+        
+        sql_query = f"""
+            SET LONG 2000000
+            SET PAGESIZE 0
+            SET HEADING OFF
+            SET FEEDBACK OFF
+            SET TERMOUT OFF
+            SELECT DBMS_METADATA.GET_DDL('{object_type.upper()}', '{object_name.upper()}', '{schema.upper()}') FROM DUAL;
+            EXIT;
+        """
+        
+        command = [self.sqlplus_path, '-S', connect_string]
+        
+        try:
+            process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
+
+            if process.returncode != 0:
+                error_message = process.stderr.strip() or process.stdout.strip()
+                logger.error(f"SQL*Plus DDL fetch failed: {error_message}")
+                return None, f"SQL*Plus failed: {error_message}"
+            
+            ddl = process.stdout.strip()
+            if not ddl or "ORA-" in ddl:
+                return None, f"Could not retrieve DDL for {object_name}. Reason: {ddl}"
+
+            logger.info(f"Successfully fetched DDL for {object_name}.")
+            return ddl, None
+
+        except subprocess.TimeoutExpired:
+            return None, "SQL*Plus DDL fetch timed out."
+        except Exception as e:
+            logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
+            return None, str(e)
+
 
     def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None):
         is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
@@ -182,14 +238,10 @@ class Ora2PgAICorrector:
                         logger.warning(f"Skipping table {table_name} for session {session_id} due to export error: {error}")
             else:
                 logger.info("Executing single-command export strategy.")
-                # --- THIS IS THE FIX ---
                 if file_per_table:
-                    # Multi-file data exports (e.g., COPY) need both directives.
-                    # OUTPUT_DIR is the full path, OUTPUT is just the filename.
                     run_config['OUTPUT_DIR'] = persistent_export_dir
                     run_config['OUTPUT'] = f"output_{export_type.lower()}.sql"
                 else:
-                    # Single-file exports (any type) just need the full OUTPUT path.
                     run_config['OUTPUT'] = os.path.join(persistent_export_dir, f"output_{export_type.lower()}.sql")
                     run_config.pop('OUTPUT_DIR', None)
 
