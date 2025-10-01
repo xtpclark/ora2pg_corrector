@@ -130,9 +130,13 @@ async function handleRunOra2PgExport(selectedObjects) {
 
     try {
         showToast('Ora2Pg export in progress...');
+        const exportType = document.getElementById('migration-export-type').value;
         const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
             method: 'POST',
-            body: JSON.stringify({ selected_objects: selectedObjects })
+            body: JSON.stringify({ 
+                selected_objects: selectedObjects,
+                type: exportType 
+            })
         });
         
         const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
@@ -195,7 +199,11 @@ async function handleRunSingleFileExport() {
     toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
     try {
         showToast('Ora2Pg single-file export in progress...');
-        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { method: 'POST' });
+        const exportType = document.getElementById('migration-export-type').value;
+        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { 
+            method: 'POST',
+            body: JSON.stringify({ type: exportType })
+        });
         
         const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
         state.sessions = newSessions;

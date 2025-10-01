@@ -59,6 +59,32 @@ export function switchTab(tabName) {
     }
 }
 
+// --- NEW function to populate the dynamic dropdown on the migration pane ---
+export function populateTypeDropdown(currentConfig) {
+    const typeDropdown = document.getElementById('migration-export-type');
+    if (!typeDropdown) return;
+
+    const typeOption = state.ora2pgOptions.find(opt => opt.option_name.toUpperCase() === 'TYPE');
+    if (!typeOption || !typeOption.allowed_values) {
+        console.error("Could not find TYPE options in configuration.");
+        return;
+    }
+
+    const allowedTypes = typeOption.allowed_values.split(',');
+    typeDropdown.innerHTML = ''; // Clear existing options
+
+    allowedTypes.forEach(type => {
+        const option = document.createElement('option');
+        const trimmedType = type.trim();
+        option.value = trimmedType;
+        option.textContent = trimmedType;
+        if (currentConfig.type === trimmedType) {
+            option.selected = true;
+        }
+        typeDropdown.appendChild(option);
+    });
+}
+
 export function renderSettingsForms(config) {
     const aiContainer = document.getElementById('ai-settings-container');
     aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>';
@@ -100,6 +126,8 @@ export function renderSettingsForms(config) {
     
     const gridItemsHtml = [];
     state.ora2pgOptions.forEach(option => {
+        // We will remove the TYPE option from this main settings form in a later step
+        // to avoid duplication. For now, we leave it.
         const key = option.option_name.toLowerCase();
         let value = config[key];
         if (value === undefined) {
@@ -217,7 +245,6 @@ export function renderFileBrowser(files) {
     fileBrowserContainer.classList.remove('hidden');
 }
 
-// --- UPDATED: Add download icon next to each object ---
 export function renderObjectSelector() {
     const container = document.getElementById('object-selector-container');
     const listEl = document.getElementById('object-list');
@@ -229,15 +256,16 @@ export function renderObjectSelector() {
         return;
     }
 
-    state.objectList.forEach(objectName => {
+    state.objectList.forEach(object => {
         const item = document.createElement('div');
         item.className = 'flex items-center justify-between';
         item.innerHTML = `
             <div class="flex items-center">
-                <input id="obj-${objectName}" name="object" value="${objectName}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
-                <label for="obj-${objectName}" class="ml-3 block text-sm font-medium text-gray-300">${objectName}</label>
+                <input id="obj-${object.name}" name="object" value="${object.name}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+                <label for="obj-${object.name}" class="ml-3 block text-sm font-medium text-gray-300">${object.name}</label>
+                <span class="ml-2 text-xs bg-gray-600 text-gray-300 px-2 py-0.5 rounded-full">${object.type}</span>
             </div>
-            <button class="download-ddl-btn text-gray-400 hover:text-white" data-object-name="${objectName}" title="Download Original Oracle DDL">
+            <button class="download-ddl-btn text-gray-400 hover:text-white" data-object-name="${object.name}" data-object-type="${object.type}" title="Download Original Oracle DDL">
                 <i class="fas fa-download"></i>
             </button>
         `;
