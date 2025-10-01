@@ -241,7 +241,6 @@ async function handleFileClick(fileId) {
     }
 }
 
-// --- NEW: Handlers for downloading original Oracle DDL ---
 async function handleDownloadSingleDDL(objectName, objectType) {
     if (!state.currentClientId || !objectName) return;
 
