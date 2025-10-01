@@ -172,7 +172,10 @@ async function handleGetObjectList() {
 
     try {
         showToast('Fetching object list from Oracle schema...');
-        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`, {
+            method: 'POST',
+            body: JSON.stringify({ object_types: ['TABLE'] }) // Defaulting to TABLE for now
+        });
         state.objectList = objectList;
         renderObjectSelector();
         showToast('Object list loaded. Please make your selection.');
@@ -239,14 +242,14 @@ async function handleFileClick(fileId) {
 }
 
 // --- NEW: Handlers for downloading original Oracle DDL ---
-async function handleDownloadSingleDDL(objectName) {
+async function handleDownloadSingleDDL(objectName, objectType) {
     if (!state.currentClientId || !objectName) return;
 
     showToast(`Fetching DDL for ${objectName}...`);
     try {
         const data = await apiFetch(`/api/client/${state.currentClientId}/get_oracle_ddl`, {
             method: 'POST',
-            body: JSON.stringify({ object_name: objectName, object_type: 'TABLE' })
+            body: JSON.stringify({ object_name: objectName, object_type: objectType })
         });
         
         const blob = new Blob([data.ddl], { type: 'application/sql' });
@@ -262,6 +265,37 @@ async function handleDownloadSingleDDL(objectName) {
     } catch (error) {
         showToast(`Failed to download DDL: ${error.message}`, true);
         log_audit(state.currentClientId, 'download_oracle_ddl_failed', `Failed to download DDL for ${objectName}: ${error.message}`);
+    }
+}
+
+async function handleDownloadBulkDDL(selectedObjects) {
+    if (!state.currentClientId || !selectedObjects || selectedObjects.length === 0) return;
+
+    const button = document.getElementById('download-original-ddl-btn');
+    toggleButtonLoading(button, true, 'Download Original DDL');
+    showToast(`Fetching DDL for ${selectedObjects.length} objects...`);
+
+    try {
+        const data = await apiFetch(`/api/client/${state.currentClientId}/get_bulk_oracle_ddl`, {
+            method: 'POST',
+            body: JSON.stringify({ objects: selectedObjects })
+        });
+
+        const blob = new Blob([data.ddl], { type: 'application/sql' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `oracle_ddl_export.sql`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        log_audit(state.currentClientId, 'download_bulk_oracle_ddl', `Downloaded bulk DDL for ${selectedObjects.length} objects.`);
+    } catch (error) {
+        showToast(`Failed to download bulk DDL: ${error.message}`, true);
+        log_audit(state.currentClientId, 'download_bulk_oracle_ddl_failed', `Failed to download bulk DDL: ${error.message}`);
+    } finally {
+        toggleButtonLoading(button, false);
     }
 }
 
@@ -599,7 +633,8 @@ export function initEventListeners() {
         if (target.classList.contains('download-ddl-btn')) {
             e.preventDefault();
             const objectName = target.dataset.objectName;
-            handleDownloadSingleDDL(objectName);
+            const objectType = target.dataset.objectType;
+            handleDownloadSingleDDL(objectName, objectType);
             return;
         }
 
@@ -630,12 +665,14 @@ export function initEventListeners() {
                 }
                 break;
             }
-            // --- NEW: Handler for bulk DDL download ---
             case 'download-original-ddl-btn': {
-                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => el.value);
+                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => {
+                    const parent = el.closest('.flex.items-center.justify-between');
+                    const button = parent.querySelector('.download-ddl-btn');
+                    return { name: el.value, type: button.dataset.objectType };
+                });
                 if (selected.length > 0) {
-                    // This function will be created in a future step.
-                    // handleDownloadBulkDDL(selected); 
+                    handleDownloadBulkDDL(selected); 
                 } else {
                     showToast('Please select at least one object to download.', true);
                 }
@@ -662,9 +699,9 @@ export function initEventListeners() {
             const labels = document.querySelectorAll('#object-list label');
             labels.forEach(label => {
                 const objectName = label.textContent.toLowerCase();
-                const parentDiv = label.parentElement.parentElement; // Target the outer div
+                const parentDiv = label.closest('.flex.items-center.justify-between');
                 if (objectName.includes(filterValue)) {
-                    parentDiv.style.display = '';
+                    parentDiv.style.display = 'flex';
                 } else {
                     parentDiv.style.display = 'none';
                 }
