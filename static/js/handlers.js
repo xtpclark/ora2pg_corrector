@@ -238,6 +238,33 @@ async function handleFileClick(fileId) {
     }
 }
 
+// --- NEW: Handlers for downloading original Oracle DDL ---
+async function handleDownloadSingleDDL(objectName) {
+    if (!state.currentClientId || !objectName) return;
+
+    showToast(`Fetching DDL for ${objectName}...`);
+    try {
+        const data = await apiFetch(`/api/client/${state.currentClientId}/get_oracle_ddl`, {
+            method: 'POST',
+            body: JSON.stringify({ object_name: objectName, object_type: 'TABLE' })
+        });
+        
+        const blob = new Blob([data.ddl], { type: 'application/sql' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${objectName}_oracle.sql`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        log_audit(state.currentClientId, 'download_oracle_ddl', `Downloaded original DDL for ${objectName}.`);
+    } catch (error) {
+        showToast(`Failed to download DDL: ${error.message}`, true);
+        log_audit(state.currentClientId, 'download_oracle_ddl_failed', `Failed to download DDL for ${objectName}: ${error.message}`);
+    }
+}
+
 
 async function handleGenerateReport() {
     if (!state.currentClientId) {
@@ -348,7 +375,6 @@ export async function handleCorrectWithAI() {
     }
 }
 
-// --- UPDATED: Full implementation with persistence ---
 export async function handleValidateSql() {
     if (!state.currentClientId || !state.currentFileId) {
         showToast('Please select a corrected file to validate.', true);
@@ -564,10 +590,19 @@ export function initEventListeners() {
         });
     });
     
+    // --- UPDATED: Event delegation for new buttons and icons ---
     document.addEventListener('click', e => {
         const target = e.target.closest('button, a.file-item, a.session-item');
         if (!target) return;
         
+        // Handle individual DDL download
+        if (target.classList.contains('download-ddl-btn')) {
+            e.preventDefault();
+            const objectName = target.dataset.objectName;
+            handleDownloadSingleDDL(objectName);
+            return;
+        }
+
         if (target.classList.contains('file-item')) {
             e.preventDefault();
             const fileId = target.dataset.fileId;
@@ -595,6 +630,17 @@ export function initEventListeners() {
                 }
                 break;
             }
+            // --- NEW: Handler for bulk DDL download ---
+            case 'download-original-ddl-btn': {
+                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => el.value);
+                if (selected.length > 0) {
+                    // This function will be created in a future step.
+                    // handleDownloadBulkDDL(selected); 
+                } else {
+                    showToast('Please select at least one object to download.', true);
+                }
+                break;
+            }
             case 'select-all-objects':
                 document.querySelectorAll('#object-list input[type="checkbox"]').forEach(cb => cb.checked = true);
                 break;
@@ -607,7 +653,6 @@ export function initEventListeners() {
             case 'load-file-proxy-btn': dom.filePicker.click(); break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
-            // --- UPDATED: Removed the save button handler ---
         }
     });
     
@@ -617,7 +662,7 @@ export function initEventListeners() {
             const labels = document.querySelectorAll('#object-list label');
             labels.forEach(label => {
                 const objectName = label.textContent.toLowerCase();
-                const parentDiv = label.parentElement;
+                const parentDiv = label.parentElement.parentElement; // Target the outer div
                 if (objectName.includes(filterValue)) {
                     parentDiv.style.display = '';
                 } else {
