@@ -1,7 +1,14 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector, renderSessionHistory, populateTypeDropdown } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectTypeTree, renderObjectList, renderSessionHistory, populateTypeDropdown } from './ui.js';
 
+/**
+ * Sends an audit log event to the backend for the current client.
+ * @async
+ * @param {number} clientId - The ID of the client.
+ * @param {string} action - A short code for the action being logged (e.g., 'save_settings').
+ * @param {string} details - A description of the event.
+ */
 async function log_audit(clientId, action, details) {
     if (!clientId) return;
     try {
@@ -14,6 +21,10 @@ async function log_audit(clientId, action, details) {
     }
 }
 
+/**
+ * Fetches and renders the audit log history for the currently selected client.
+ * @async
+ */
 async function fetchAndRenderAuditLogs() {
     if (!state.currentClientId) return;
     try {
@@ -38,6 +49,11 @@ async function fetchAndRenderAuditLogs() {
     }
 }
 
+/**
+ * Selects a migration session, updates the UI, and fetches the files for that session.
+ * @async
+ * @param {number | null} sessionId - The ID of the session to select, or null to deselect.
+ */
 async function selectSession(sessionId) {
     if (!sessionId) {
         state.currentSessionId = null;
@@ -57,25 +73,34 @@ async function selectSession(sessionId) {
     }
 }
 
-
+/**
+ * Selects a client, making it active. Fetches and renders all associated data.
+ * @async
+ * @export
+ * @param {number} clientId - The ID of the client to select.
+ */
 export async function selectClient(clientId) {
     state.currentClientId = clientId;
     if (!clientId) {
         dom.mainContentEl.classList.add('hidden');
         dom.welcomeMessageEl.classList.remove('hidden');
+        document.getElementById('active-config-display').innerHTML = ''; // Clear config display
         state.currentClientId = null;
-        renderClients();
+        renderClients(); // This call is OK here to reset the list on deselect
         return;
     }
     
     const selectedClient = state.clients.find(c => c.client_id === clientId);
     dom.clientNameHeaderEl.textContent = selectedClient.client_name;
     
-    renderClients();
+    // --- REMOVED: This line was unnecessarily rebuilding the dropdown ---
+    // renderClients(); 
+    
     dom.mainContentEl.classList.remove('hidden');
     dom.welcomeMessageEl.classList.add('hidden');
     switchTab('migration');
-
+    
+    // Reset UI sections and state for the new client
     document.getElementById('report-container').classList.add('hidden');
     document.getElementById('file-browser-container').classList.add('hidden');
     document.getElementById('object-selector-container').classList.add('hidden');
@@ -87,6 +112,7 @@ export async function selectClient(clientId) {
     state.objectList = [];
     state.sessions = [];
     state.currentSessionId = null;
+    state.selectedObjects = {};
 
     try {
         const [config, sessions] = await Promise.all([
@@ -94,8 +120,8 @@ export async function selectClient(clientId) {
             apiFetch(`/api/client/${state.currentClientId}/sessions`)
         ]);
         
+        renderActiveConfig(config);
         renderSettingsForms(config);
-        // --- THIS IS THE FIX ---
         populateTypeDropdown(config);
         
         state.sessions = sessions;
@@ -108,6 +134,11 @@ export async function selectClient(clientId) {
     }
 }
 
+/**
+ * Handles the file input change event to load a local SQL file into the editor.
+ * @export
+ * @param {Event} event - The file input change event.
+ */
 export function handleFileSelect(event) {
     const file = event.target.files[0];
     if (!file) return;
@@ -124,70 +155,24 @@ export function handleFileSelect(event) {
     reader.readAsText(file);
 }
 
-async function handleRunOra2PgExport(selectedObjects) {
-    if (!state.currentClientId) return;
-
-    const button = document.getElementById('export-selected-btn');
-    toggleButtonLoading(button, true, 'Export Selected');
-
-    try {
-        showToast('Ora2Pg export in progress...');
-        // --- UPDATED: Read the export type from the new dropdown ---
-        const exportType = document.getElementById('migration-export-type').value;
-        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
-            method: 'POST',
-            body: JSON.stringify({ 
-                selected_objects: selectedObjects,
-                type: exportType 
-            })
-        });
-        
-        const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
-        state.sessions = newSessions;
-        renderSessionHistory();
-        
-        if (data.session_id) {
-            await selectSession(data.session_id);
-        }
-        
-        showToast(`Ora2Pg export complete! ${data.files ? data.files.length : 0} files generated.`);
-        document.getElementById('object-selector-container').classList.add('hidden');
-
-    } catch (error) {
-        showToast(error.message, true);
-        log_audit(state.currentClientId, 'run_ora2pg_failed', `Ora2Pg export failed: ${error.message}`);
-    } finally {
-        toggleButtonLoading(button, false);
-    }
-}
-
-
+/**
+ * Fetches the complete list of objects from the Oracle schema and renders the object selector tree.
+ * @async
+ */
 async function handleGetObjectList() {
     if (!state.currentClientId) return;
     
-    const filePerTableCheckbox = document.getElementById('file_per_table');
-    if (!filePerTableCheckbox || !filePerTableCheckbox.checked) {
-        await handleRunSingleFileExport();
-        return;
-    }
-    
     const button = document.getElementById('run-ora2pg-btn');
-    toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
+    toggleButtonLoading(button, true, '<span>Discover Objects</span>');
     
-    document.getElementById('file-browser-container').classList.add('hidden');
-    document.getElementById('report-container').classList.add('hidden');
-
     try {
-        showToast('Fetching object list from Oracle schema...');
-        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`, {
-            method: 'POST',
-            body: JSON.stringify({ object_types: ['TABLE'] }) // Defaulting to TABLE for now
-        });
+        showToast('Fetching all objects from Oracle schema...');
+        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        
         state.objectList = objectList;
-        renderObjectSelector();
+        renderObjectTypeTree(); // Changed from renderObjectSelector
         showToast('Object list loaded. Please make your selection.');
         log_audit(state.currentClientId, 'get_object_list_success', `Fetched ${objectList.length} objects.`);
-
     } catch (error) {
         showToast(error.message, true);
         log_audit(state.currentClientId, 'get_object_list_failed', `Failed to fetch object list: ${error.message}`);
@@ -196,43 +181,55 @@ async function handleGetObjectList() {
     }
 }
 
-async function handleRunSingleFileExport() {
+/**
+ * Handles the grouped Ora2Pg export process using the centrally tracked selected objects.
+ * @async
+ */
+async function handleRunGroupedOra2PgExport() {
     if (!state.currentClientId) return;
-    const button = document.getElementById('run-ora2pg-btn');
-    toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
+
+    const exportableObjects = Object.entries(state.selectedObjects).filter(([_, names]) => names.length > 0);
+    if (exportableObjects.length === 0) {
+        showToast('No objects selected for export.', true);
+        return;
+    }
+
+    const button = document.getElementById('export-selected-btn');
+    toggleButtonLoading(button, true, 'Export Selected');
+
     try {
-        showToast('Ora2Pg single-file export in progress...');
-        // --- UPDATED: Read the export type from the new dropdown ---
-        const exportType = document.getElementById('migration-export-type').value;
-        const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { 
-            method: 'POST',
-            body: JSON.stringify({ type: exportType })
-        });
+        for (const [type, names] of exportableObjects) {
+            showToast(`Exporting ${names.length} object(s) of type ${type}...`);
+            await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
+                method: 'POST',
+                body: JSON.stringify({ 
+                    selected_objects: names,
+                    type: type 
+                })
+            });
+        }
         
         const newSessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
         state.sessions = newSessions;
         renderSessionHistory();
+        
+        showToast(`All exports complete! Check the new session(s).`);
+        document.getElementById('object-selector-container').classList.add('hidden');
+        state.selectedObjects = {}; // Clear selections after successful export
 
-        if (data.session_id) {
-            await selectSession(data.session_id);
-        }
-
-        if (data.sql_output) {
-            editors.original.setValue(data.sql_output);
-            showToast('Ora2Pg export complete! SQL loaded into Workspace.');
-            switchTab('workspace');
-        } else {
-            showToast('Ora2Pg export complete!');
-        }
     } catch (error) {
         showToast(error.message, true);
-        log_audit(state.currentClientId, 'run_ora2pg_failed', `Single-file export failed: ${error.message}`);
+        log_audit(state.currentClientId, 'run_ora2pg_failed', `Grouped export failed: ${error.message}`);
     } finally {
         toggleButtonLoading(button, false);
     }
 }
 
-
+/**
+ * Handles a click on a file in the file browser. Fetches its content and loads it into the editor.
+ * @async
+ * @param {number} fileId - The ID of the file to load.
+ */
 async function handleFileClick(fileId) {
     if (!fileId) return;
     state.currentFileId = fileId; 
@@ -253,6 +250,12 @@ async function handleFileClick(fileId) {
     }
 }
 
+/**
+ * Fetches and triggers the download of the original Oracle DDL for a single object.
+ * @async
+ * @param {string} objectName - The name of the database object.
+ * @param {string} objectType - The type of the database object (e.g., 'TABLE').
+ */
 async function handleDownloadSingleDDL(objectName, objectType) {
     if (!state.currentClientId || !objectName) return;
 
@@ -279,17 +282,31 @@ async function handleDownloadSingleDDL(objectName, objectType) {
     }
 }
 
-async function handleDownloadBulkDDL(selectedObjects) {
-    if (!state.currentClientId || !selectedObjects || selectedObjects.length === 0) return;
+/**
+ * Fetches and triggers the download of a single SQL file containing the DDL for multiple objects.
+ * Uses the centrally tracked selected objects.
+ * @async
+ */
+async function handleDownloadBulkDDL() {
+    if (!state.currentClientId) return;
+
+    const allSelections = Object.entries(state.selectedObjects).flatMap(([type, names]) => 
+        names.map(name => ({ name, type }))
+    );
+
+    if (allSelections.length === 0) {
+        showToast('Please select at least one object to download.', true);
+        return;
+    }
 
     const button = document.getElementById('download-original-ddl-btn');
     toggleButtonLoading(button, true, 'Download Original DDL');
-    showToast(`Fetching DDL for ${selectedObjects.length} objects...`);
+    showToast(`Fetching DDL for ${allSelections.length} objects...`);
 
     try {
         const data = await apiFetch(`/api/client/${state.currentClientId}/get_bulk_oracle_ddl`, {
             method: 'POST',
-            body: JSON.stringify({ objects: selectedObjects })
+            body: JSON.stringify({ objects: allSelections })
         });
 
         const blob = new Blob([data.ddl], { type: 'application/sql' });
@@ -301,7 +318,7 @@ async function handleDownloadBulkDDL(selectedObjects) {
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        log_audit(state.currentClientId, 'download_bulk_oracle_ddl', `Downloaded bulk DDL for ${selectedObjects.length} objects.`);
+        log_audit(state.currentClientId, 'download_bulk_oracle_ddl', `Downloaded bulk DDL for ${allSelections.length} objects.`);
     } catch (error) {
         showToast(`Failed to download bulk DDL: ${error.message}`, true);
         log_audit(state.currentClientId, 'download_bulk_oracle_ddl_failed', `Failed to download bulk DDL: ${error.message}`);
@@ -310,7 +327,10 @@ async function handleDownloadBulkDDL(selectedObjects) {
     }
 }
 
-
+/**
+ * Triggers the generation of an Ora2Pg assessment report on the backend.
+ * @async
+ */
 async function handleGenerateReport() {
     if (!state.currentClientId) {
         showToast('Please select a client first.', true);
@@ -336,6 +356,10 @@ async function handleGenerateReport() {
 }
 
 
+/**
+ * Exports the currently stored report data as an AsciiDoc file.
+ * @export
+ */
 export function handleExportReport() {
     if (!state.currentReportData) {
         showToast('No report data to export. Please generate a report first.', true);
@@ -353,6 +377,11 @@ export function handleExportReport() {
     URL.revokeObjectURL(url);
 }
 
+/**
+ * Converts the JSON report data from Ora2Pg into a formatted AsciiDoc string.
+ * @param {object} data - The JSON report data.
+ * @returns {string} The formatted AsciiDoc string.
+ */
 function convertReportToAsciiDoc(data) {
     let adoc = `= Ora2Pg Migration Assessment Report\n`;
     adoc += `Schema: ${data.Schema} | Version: ${data.Version} | Size: ${data.Size}\n`;
@@ -376,6 +405,11 @@ function convertReportToAsciiDoc(data) {
     return adoc;
 }
 
+/**
+ * Sends the SQL from the "Original" editor to the AI for correction.
+ * @async
+ * @export
+ */
 export async function handleCorrectWithAI() {
     if (!state.currentClientId || !state.currentFileId) {
         showToast('Please select a file from a session first.', true);
@@ -420,6 +454,11 @@ export async function handleCorrectWithAI() {
     }
 }
 
+/**
+ * Sends the SQL from the "Corrected" editor to the backend for validation against a PostgreSQL database.
+ * @async
+ * @export
+ */
 export async function handleValidateSql() {
     if (!state.currentClientId || !state.currentFileId) {
         showToast('Please select a corrected file to validate.', true);
@@ -476,6 +515,11 @@ export async function handleValidateSql() {
     }
 }
 
+/**
+ * Tests the connection to the validation PostgreSQL database.
+ * @async
+ * @export
+ */
 export async function handleTestPgConnection() {
     if (!state.currentClientId) return;
     const pgDsn = document.getElementById('validation_pg_dsn').value;
@@ -500,6 +544,11 @@ export async function handleTestPgConnection() {
     }
 }
 
+/**
+ * Tests the connection to the source Oracle database using Ora2Pg.
+ * @async
+ * @export
+ */
 export async function handleTestOra2PgConnection() {
     if (!state.currentClientId) return;
     const button = document.getElementById('test-ora-conn-btn');
@@ -531,6 +580,12 @@ export async function handleTestOra2PgConnection() {
     }
 }
 
+/**
+ * Handles the submission of the main settings form, saving all configuration.
+ * @async
+ * @export
+ * @param {Event} e - The form submission event.
+ */
 export async function handleSaveSettings(e) {
     e.preventDefault();
     if (!state.currentClientId) return;
@@ -555,6 +610,11 @@ export async function handleSaveSettings(e) {
     }
 }
 
+/**
+ * Prompts the user for a new client name and creates the client.
+ * @async
+ * @export
+ */
 export async function handleAddClient() {
     const clientName = prompt('Enter the new client name:');
     if (clientName && clientName.trim()) {
@@ -572,7 +632,13 @@ export async function handleAddClient() {
     }
 }
 
+/**
+ * Initializes the application by fetching initial data like clients, providers, and config options.
+ * @async
+ * @export
+ */
 export async function initializeApp() {
+    console.log("Checkpoint 3: initializeApp() has started.");
     try {
         const results = await Promise.all([
             apiFetch('/api/clients'),
@@ -595,14 +661,28 @@ export async function initializeApp() {
     }
 }
 
+/**
+ * Initializes all the main event listeners for the application.
+ * @export
+ */
 export function initEventListeners() {
-    dom.clientListEl.addEventListener('click', e => {
-        if (e.target && e.target.matches('.sidebar-item')) {
-            e.preventDefault();
-            selectClient(parseInt(e.target.dataset.clientId));
+    // --- NEW: Listener for the new client selector dropdown ---
+    document.getElementById('client-selector').addEventListener('change', e => {
+        const selectedValue = e.target.value;
+        if (selectedValue === '--new--') {
+            handleAddClient();
+            // Reset selector if user cancels prompt, by checking if a client was actually created and selected.
+            if (!state.currentClientId) {
+                 e.target.value = '';
+            }
+        } else if (selectedValue) {
+            selectClient(parseInt(selectedValue));
         }
     });
 
+
+
+    // Listener for the main tab bar
     dom.tabsEl.addEventListener('click', e => {
         if (e.target && e.target.matches('.tab-button')) {
             const tabName = e.target.dataset.tab;
@@ -612,7 +692,19 @@ export function initEventListeners() {
             }
         }
     });
+    
 
+    // --- NEW: Listener for the "Edit Settings" link in the sidebar ---
+    document.querySelector('body').addEventListener('click', e => {
+         if (e.target && e.target.matches('.sidebar .tab-button')) {
+            const tabName = e.target.dataset.tab;
+            switchTab(tabName);
+         }
+    });
+    
+
+
+    // Listener for AI provider dropdown to auto-fill model and endpoint
     dom.settingsForm.addEventListener('change', e => {
         if (e.target.id === 'ai_provider') {
             const selectedProviderName = e.target.value;
@@ -626,6 +718,7 @@ export function initEventListeners() {
         }
     });
 
+    // Listener for copy button in the workspace
     document.getElementById('copy-btn').addEventListener('click', () => {
         const correctedSql = editors.corrected.getValue();
         navigator.clipboard.writeText(correctedSql).then(() => {
@@ -635,10 +728,22 @@ export function initEventListeners() {
         });
     });
     
+    
+    // Main event delegation for various buttons and links
     document.addEventListener('click', e => {
-        const target = e.target.closest('button, a.file-item, a.session-item');
+        const target = e.target.closest('button, a.file-item, a.session-item, a.object-type-link');
         if (!target) return;
         
+        if (target.classList.contains('object-type-link')) {
+            e.preventDefault();
+            const objectType = target.dataset.objectType;
+            renderObjectList(objectType);
+            
+            document.querySelectorAll('.object-type-link').forEach(link => link.classList.remove('bg-indigo-600', 'text-white'));
+            target.classList.add('bg-indigo-600', 'text-white');
+            return;
+        }
+
         if (target.classList.contains('download-ddl-btn')) {
             e.preventDefault();
             const objectName = target.dataset.objectName;
@@ -661,58 +766,64 @@ export function initEventListeners() {
             return;
         }
 
+        // Switch for all buttons with IDs
         switch (target.id) {
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;
             case 'run-ora2pg-btn': handleGetObjectList(); break; 
-            case 'export-selected-btn': {
-                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => el.value);
-                if (selected.length > 0) {
-                    handleRunOra2PgExport(selected);
-                } else {
-                    showToast('Please select at least one object to export.', true);
-                }
-                break;
-            }
-            case 'download-original-ddl-btn': {
-                const selected = Array.from(document.querySelectorAll('#object-list input:checked')).map(el => {
-                    const parent = el.closest('.flex.items-center.justify-between');
-                    const button = parent.querySelector('.download-ddl-btn');
-                    return { name: el.value, type: button.dataset.objectType };
-                });
-                if (selected.length > 0) {
-                    handleDownloadBulkDDL(selected); 
-                } else {
-                    showToast('Please select at least one object to download.', true);
-                }
-                break;
-            }
+            case 'export-selected-btn': handleRunGroupedOra2PgExport(); break;
+            case 'download-original-ddl-btn': handleDownloadBulkDDL(); break;
             case 'select-all-objects':
-                document.querySelectorAll('#object-list input[type="checkbox"]').forEach(cb => cb.checked = true);
+                document.querySelectorAll('#object-list input[type="checkbox"]:not([disabled])').forEach(cb => {
+                    if (!cb.checked) cb.click();
+                });
                 break;
             case 'select-none-objects':
-                 document.querySelectorAll('#object-list input[type="checkbox"]').forEach(cb => cb.checked = false);
+                 document.querySelectorAll('#object-list input[type="checkbox"]:checked').forEach(cb => {
+                    if (cb.checked) cb.click();
+                 });
                 break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
-            case 'add-client-btn': handleAddClient(); break;
+            // The 'add-client-btn' is gone, handled by the select dropdown now
             case 'load-file-proxy-btn': dom.filePicker.click(); break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
         }
     });
     
+    document.getElementById('object-list').addEventListener('change', e => {
+        if (e.target.matches('input[type="checkbox"]')) {
+            const objectName = e.target.value;
+            const objectType = e.target.dataset.objectType;
+
+            if (!state.selectedObjects[objectType]) {
+                state.selectedObjects[objectType] = [];
+            }
+
+            if (e.target.checked) {
+                if (!state.selectedObjects[objectType].includes(objectName)) {
+                    state.selectedObjects[objectType].push(objectName);
+                }
+            } else {
+                state.selectedObjects[objectType] = state.selectedObjects[objectType].filter(name => name !== objectName);
+            }
+        }
+    });
+    
     document.addEventListener('input', e => {
         if (e.target.id === 'object-filter-input') {
             const filterValue = e.target.value.toLowerCase();
-            const labels = document.querySelectorAll('#object-list label');
-            labels.forEach(label => {
-                const objectName = label.textContent.toLowerCase();
-                const parentDiv = label.closest('.flex.items-center.justify-between');
-                if (objectName.includes(filterValue)) {
-                    parentDiv.style.display = 'flex';
-                } else {
-                    parentDiv.style.display = 'none';
+            const items = document.querySelectorAll('#object-list > div'); 
+            items.forEach(item => {
+                const label = item.querySelector('label');
+                if (label) {
+                    const objectName = label.textContent.toLowerCase();
+                    if (objectName.includes(filterValue)) {
+                        item.style.display = 'flex';
+                    } else {
+                        item.style.display = 'none';
+                    }
                 }
             });
         }
@@ -721,4 +832,3 @@ export function initEventListeners() {
     dom.filePicker.addEventListener('change', handleFileSelect);
     dom.settingsForm.addEventListener('submit', handleSaveSettings);
 }
-

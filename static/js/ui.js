@@ -1,5 +1,11 @@
 import { state, dom } from './state.js';
 
+/**
+ * Displays a toast notification at the bottom of the screen.
+ * @export
+ * @param {string} message - The message to display in the toast.
+ * @param {boolean} [isError=false] - If true, the toast will have a red error style.
+ */
 export function showToast(message, isError = false) {
     const toast = document.getElementById('toast');
     const toastMessage = document.getElementById('toast-message');
@@ -9,6 +15,13 @@ export function showToast(message, isError = false) {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
+/**
+ * Toggles the loading state of a button, showing a spinner and disabling it.
+ * @export
+ * @param {HTMLElement} button - The button element to toggle.
+ * @param {boolean} isLoading - If true, sets the button to a loading state.
+ * @param {string} [originalContent=null] - The original text/HTML of the button to restore.
+ */
 export function toggleButtonLoading(button, isLoading, originalContent = null) {
     if (!button) return;
     const textSpan = button.querySelector('span');
@@ -36,30 +49,108 @@ export function toggleButtonLoading(button, isLoading, originalContent = null) {
 }
 
 
+/**
+ * Renders the list of clients into the new dropdown selector.
+ * @export
+ */
 export function renderClients() {
-    dom.clientListEl.innerHTML = '';
-    state.clients.forEach(client => {
-        const clientItem = document.createElement('a');
-        clientItem.href = '#';
-        clientItem.className = 'sidebar-item block text-gray-300 hover:bg-gray-700 hover:text-white rounded-md px-3 py-2 text-sm font-medium';
-        clientItem.textContent = client.client_name;
-        clientItem.dataset.clientId = client.client_id;
-        if (client.client_id === state.currentClientId) {
-            clientItem.classList.add('active');
-        }
-        dom.clientListEl.appendChild(clientItem);
-    });
-}
+    const selector = document.getElementById('client-selector');
+    if (!selector) return;
 
-export function switchTab(tabName) {
-    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
-    document.querySelectorAll('#tab-content .tab-pane').forEach(pane => pane.classList.toggle('hidden', pane.id !== `${tabName}-tab`));
-    if (tabName === 'audit') {
-        // This is handled by an event listener in handlers.js
+    selector.innerHTML = ''; // Clear existing options
+
+    // Add a default, disabled placeholder option
+    const placeholder = document.createElement('option');
+    placeholder.textContent = 'Select a Client...';
+    placeholder.value = '';
+    placeholder.disabled = true;
+    selector.appendChild(placeholder);
+
+    // Populate with clients
+    state.clients.forEach(client => {
+        const option = document.createElement('option');
+        option.value = client.client_id;
+        option.textContent = client.client_name;
+        if (client.client_id === state.currentClientId) {
+            option.selected = true;
+        }
+        selector.appendChild(option);
+    });
+
+    // Add a separator and the "New Client" option
+    const separator = document.createElement('option');
+    separator.disabled = true;
+    separator.textContent = '──────────';
+    selector.appendChild(separator);
+
+    const newClientOption = document.createElement('option');
+    newClientOption.value = '--new--';
+    newClientOption.textContent = 'Create New Client...';
+    selector.appendChild(newClientOption);
+
+    // If no client is selected, make the placeholder selected
+    if (!state.currentClientId) {
+        placeholder.selected = true;
     }
 }
 
-// --- NEW function to populate the dynamic dropdown on the migration pane ---
+/**
+ * Renders key-value pairs of the active client's configuration in the sidebar.
+ * @export
+ * @param {object} config - The client's configuration object.
+ */
+export function renderActiveConfig(config) {
+    const container = document.getElementById('active-config-display');
+    if (!container) return;
+
+    // A list of key configuration items we want to display in the sidebar
+    const keyConfigs = [
+        { key: 'oracle_dsn', label: 'Oracle DSN' },
+        { key: 'schema', label: 'Oracle Schema' },
+        { key: 'validation_pg_dsn', label: 'Validation DSN' },
+        { key: 'ai_provider', label: 'AI Provider' },
+    ];
+
+    let content = `
+        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Active Configuration</h3>
+        <div class="space-y-3 bg-gray-800 p-3 rounded-md text-xs">
+    `;
+
+    keyConfigs.forEach(item => {
+        const value = config[item.key] || 'Not set';
+        content += `
+            <div>
+                <label class="block font-medium text-gray-500">${item.label}</label>
+                <p class="text-gray-300 truncate" title="${value}">${value}</p>
+            </div>
+        `;
+    });
+
+    content += `
+        </div>
+        <button data-tab="settings" class="tab-button mt-4 text-sm w-full text-center text-blue-400 hover:underline">
+            Edit Full Settings...
+        </button>
+    `;
+
+    container.innerHTML = content;
+}
+
+/**
+ * Switches the visible tab in the main content area.
+ * @export
+ * @param {string} tabName - The name of the tab to switch to (e.g., 'migration', 'workspace').
+ */
+export function switchTab(tabName) {
+    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
+    document.querySelectorAll('#tab-content .tab-pane').forEach(pane => pane.classList.toggle('hidden', pane.id !== `${tabName}-tab`));
+}
+
+/**
+ * Populates the 'Export Type' dropdown on the migration pane based on available Ora2Pg options.
+ * @export
+ * @param {object} currentConfig - The current client's configuration object.
+ */
 export function populateTypeDropdown(currentConfig) {
     const typeDropdown = document.getElementById('migration-export-type');
     if (!typeDropdown) return;
@@ -85,7 +176,14 @@ export function populateTypeDropdown(currentConfig) {
     });
 }
 
+/**
+ * Renders the dynamic settings forms for AI Provider and Ora2Pg options.
+ * @export
+ * @param {object} config - The client's current configuration object.
+ */
 export function renderSettingsForms(config) {
+    console.log(`renderSettingsForms called. Number of options to render: ${state.ora2pgOptions.length}`);
+    console.log("Checkpoint 5: renderSettingsForms() has started.");
     const aiContainer = document.getElementById('ai-settings-container');
     aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>';
     let providerOptionsHtml = state.aiProviders.map(p => `<option value="${p.name}" ${config.ai_provider === p.name ? 'selected' : ''}>${p.name}</option>`).join('');
@@ -126,8 +224,9 @@ export function renderSettingsForms(config) {
     
     const gridItemsHtml = [];
     state.ora2pgOptions.forEach(option => {
-        // We will remove the TYPE option from this main settings form in a later step
-        // to avoid duplication. For now, we leave it.
+        if (option.option_name.toUpperCase() === 'TYPE') {
+            return; // Skip this iteration
+        }
         const key = option.option_name.toLowerCase();
         let value = config[key];
         if (value === undefined) {
@@ -163,6 +262,11 @@ export function renderSettingsForms(config) {
     document.getElementById('validation_pg_dsn').value = config.validation_pg_dsn || state.appSettings.validation_pg_dsn || '';
 }
 
+/**
+ * Renders the Ora2Pg assessment report into a table.
+ * @export
+ * @param {object} reportData - The JSON data returned from the Ora2Pg report.
+ */
 export function renderReportTable(reportData) {
     const reportContainer = document.getElementById('report-container');
     reportContainer.classList.remove('hidden');
@@ -217,6 +321,11 @@ export function renderReportTable(reportData) {
     reportContainer.innerHTML = headerHtml + tableHtml;
 }
 
+/**
+ * Renders the list of files for a given session in the file browser.
+ * @export
+ * @param {Array<object>} files - An array of file objects for the session.
+ */
 export function renderFileBrowser(files) {
     const fileListContainer = document.getElementById('migration-file-list');
     const fileBrowserContainer = document.getElementById('file-browser-container');
@@ -245,36 +354,10 @@ export function renderFileBrowser(files) {
     fileBrowserContainer.classList.remove('hidden');
 }
 
-export function renderObjectSelector() {
-    const container = document.getElementById('object-selector-container');
-    const listEl = document.getElementById('object-list');
-    listEl.innerHTML = ''; 
-
-    if (!state.objectList || state.objectList.length === 0) {
-        listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
-        container.classList.remove('hidden');
-        return;
-    }
-
-    state.objectList.forEach(object => {
-        const item = document.createElement('div');
-        item.className = 'flex items-center justify-between';
-        item.innerHTML = `
-            <div class="flex items-center">
-                <input id="obj-${object.name}" name="object" value="${object.name}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
-                <label for="obj-${object.name}" class="ml-3 block text-sm font-medium text-gray-300">${object.name}</label>
-                <span class="ml-2 text-xs bg-gray-600 text-gray-300 px-2 py-0.5 rounded-full">${object.type}</span>
-            </div>
-            <button class="download-ddl-btn text-gray-400 hover:text-white" data-object-name="${object.name}" data-object-type="${object.type}" title="Download Original Oracle DDL">
-                <i class="fas fa-download"></i>
-            </button>
-        `;
-        listEl.appendChild(item);
-    });
-
-    container.classList.remove('hidden');
-}
-
+/**
+ * Renders the session history list for the current client.
+ * @export
+ */
 export function renderSessionHistory() {
     const container = document.getElementById('session-history-container');
     const listEl = document.getElementById('session-list');
@@ -309,3 +392,124 @@ export function renderSessionHistory() {
     container.classList.remove('hidden');
 }
 
+// --- REWRITTEN AND NEW FUNCTIONS FOR OBJECT SELECTOR ---
+
+/**
+ * Renders the list of objects for a specific type in the right-hand pane of the master-detail view.
+ * @export
+ * @param {string} objectType - The type of objects to render (e.g., 'TABLE').
+ */
+export function renderObjectList(objectType) {
+    const listEl = document.getElementById('object-list');
+    listEl.innerHTML = '';
+
+    const objectsOfType = state.objectList.filter(obj => obj.type === objectType);
+
+    if (objectsOfType.length === 0) {
+        listEl.innerHTML = `<p class="text-gray-500 text-center py-16">No objects of type '${objectType}' found.</p>`;
+        return;
+    }
+
+    const previouslySelected = state.selectedObjects[objectType] || [];
+
+    objectsOfType.forEach(obj => {
+        const isSupported = obj.supported;
+        const isChecked = previouslySelected.includes(obj.name);
+        const item = document.createElement('div');
+        
+        const disabledClass = !isSupported ? 'opacity-50 cursor-not-allowed' : '';
+        const disabledTooltip = !isSupported ? `Object type '${obj.type}' is not supported for direct export by Ora2Pg.` : '';
+        const checkboxDisabled = !isSupported ? 'disabled' : '';
+
+        item.className = `flex items-center justify-between hover:bg-gray-700 rounded ${disabledClass}`;
+        if(disabledTooltip) {
+            item.setAttribute('title', disabledTooltip);
+        }
+        
+        item.innerHTML = `
+            <label class="flex items-center space-x-3 p-2 flex-grow ${isSupported ? 'cursor-pointer' : ''}">
+                <input name="object" value="${obj.name}" type="checkbox" ${checkboxDisabled} ${isChecked ? 'checked' : ''}
+                       data-object-type="${obj.type}"
+                       class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+                <span class="text-sm font-medium text-gray-300">${obj.name}</span>
+            </label>
+            <button class="download-ddl-btn text-gray-400 hover:text-white p-2" 
+                    data-object-name="${obj.name}" 
+                    data-object-type="${obj.type}" 
+                    title="Download Original Oracle DDL for ${obj.name}">
+                <i class="fas fa-download"></i>
+            </button>
+        `;
+        listEl.appendChild(item);
+    });
+}
+
+/**
+ * Renders the collapsible object type tree in the left-hand pane of the master-detail view.
+ * Replaces the old renderObjectSelector function.
+ * @export
+ */
+export function renderObjectTypeTree() {
+    const container = document.getElementById('object-selector-container');
+    const treeEl = document.getElementById('object-type-tree');
+    const listEl = document.getElementById('object-list');
+    treeEl.innerHTML = ''; 
+    state.selectedObjects = {}; // Clear previous selections when re-discovering
+
+    if (!state.objectList || state.objectList.length === 0) {
+        listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
+        container.classList.remove('hidden');
+        return;
+    }
+
+    const groupedObjects = state.objectList.reduce((acc, obj) => {
+        const type = obj.type;
+        if (!acc[type]) {
+            acc[type] = { count: 0, supportedCount: 0 };
+        }
+        acc[type].count++;
+        if (obj.supported) {
+            acc[type].supportedCount++;
+        }
+        return acc;
+    }, {});
+
+    const sortedTypes = Object.keys(groupedObjects).sort();
+    
+    // Create root node for the schema
+    const schemaName = document.querySelector('#ora2pg-settings-container #schema').value || 'Schema';
+    const rootDetails = document.createElement('details');
+    rootDetails.open = true;
+    
+    const rootSummary = document.createElement('summary');
+    rootSummary.className = 'text-lg font-bold text-white cursor-pointer';
+    rootSummary.innerHTML = `<i class="fas fa-database mr-2"></i> ${schemaName}`;
+    rootDetails.appendChild(rootSummary);
+
+    // Create list for types
+    const typeList = document.createElement('ul');
+    typeList.className = 'ml-4 mt-2 space-y-1';
+    
+    sortedTypes.forEach(type => {
+        const typeData = groupedObjects[type];
+        const listItem = document.createElement('li');
+        const typeLink = document.createElement('a');
+        typeLink.href = '#';
+        typeLink.className = 'object-type-link block p-1 rounded hover:bg-gray-700';
+        typeLink.dataset.objectType = type;
+        
+        const supportedBadge = typeData.supportedCount > 0 ? `<span class="text-xs text-green-400 ml-2">(${typeData.supportedCount} supported)</span>` : '';
+        
+        typeLink.innerHTML = `${type} <span class="text-xs text-gray-500">(${typeData.count})</span> ${supportedBadge}`;
+        
+        listItem.appendChild(typeLink);
+        typeList.appendChild(listItem);
+    });
+    
+    rootDetails.appendChild(typeList);
+    treeEl.appendChild(rootDetails);
+    
+    // Reset the right-hand pane
+    listEl.innerHTML = `<p class="text-gray-500 text-center py-16">Select an object type from the tree to see the list of objects.</p>`;
+    container.classList.remove('hidden');
+}
