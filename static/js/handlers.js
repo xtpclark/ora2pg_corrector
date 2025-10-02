@@ -96,7 +96,6 @@ export async function selectClient(clientId) {
         
         renderSettingsForms(config);
         // --- THIS IS THE FIX ---
-        // Populate the new dropdown on the migration tab.
         populateTypeDropdown(config);
         
         state.sessions = sessions;
@@ -133,6 +132,7 @@ async function handleRunOra2PgExport(selectedObjects) {
 
     try {
         showToast('Ora2Pg export in progress...');
+        // --- UPDATED: Read the export type from the new dropdown ---
         const exportType = document.getElementById('migration-export-type').value;
         const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
             method: 'POST',
@@ -202,6 +202,7 @@ async function handleRunSingleFileExport() {
     toggleButtonLoading(button, true, '<span>Run Ora2Pg Export</span>');
     try {
         showToast('Ora2Pg single-file export in progress...');
+        // --- UPDATED: Read the export type from the new dropdown ---
         const exportType = document.getElementById('migration-export-type').value;
         const data = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, { 
             method: 'POST',
@@ -634,12 +635,10 @@ export function initEventListeners() {
         });
     });
     
-    // --- UPDATED: Event delegation for new buttons and icons ---
     document.addEventListener('click', e => {
         const target = e.target.closest('button, a.file-item, a.session-item');
         if (!target) return;
         
-        // Handle individual DDL download
         if (target.classList.contains('download-ddl-btn')) {
             e.preventDefault();
             const objectName = target.dataset.objectName;
