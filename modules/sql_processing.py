@@ -79,7 +79,7 @@ class Ora2PgAICorrector:
                 os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
 
-    def _get_table_list(self, client_config):
+    def _get_object_list(self, client_config):
         """Fetches the list of tables from the Oracle schema using SQL*Plus."""
         logger.info("Fetching table list from Oracle schema using SQL*Plus.")
         
