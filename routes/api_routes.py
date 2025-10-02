@@ -346,11 +346,10 @@ def get_oracle_ddl(client_id):
         logger.error(f"Failed to fetch DDL for {object_name}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
-# --- NEW: Endpoint for bulk DDL download ---
 @api_bp.route('/client/<int:client_id>/get_bulk_oracle_ddl', methods=['POST'])
 def get_bulk_oracle_ddl(client_id):
     data = request.get_json()
-    objects = data.get('objects') # Expects a list of {'name': '...', 'type': '...'}
+    objects = data.get('objects') 
 
     if not objects:
         return jsonify({'error': 'A list of objects is required.'}), 400
@@ -444,6 +443,11 @@ def run_ora2pg(client_id):
         
         request_data = request.get_json(silent=True) or {}
         
+        # --- THIS IS THE FIX ---
+        # Check for and apply the 'type' override from the new dropdown.
+        if 'type' in request_data:
+            config['type'] = request_data['type']
+
         if 'selected_objects' in request_data:
             selected_objects = request_data['selected_objects']
             if selected_objects:

@@ -12,5 +12,8 @@ chown -R appuser:appuser /app/project_data
 #export LD_LIBRARY_PATH=/opt/oracle/instantclient_21_19
 #export PATH=$LD_LIBRARY_PATH:$PATH
 
+# --- NEW: Run the database initialization command AS the appuser ---
+# gosu appuser flask init-db
+
 # Drop privileges and execute the main command (CMD) as the non-root "appuser".
 exec gosu appuser "$@"

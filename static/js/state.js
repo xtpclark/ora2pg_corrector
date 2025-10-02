@@ -28,19 +28,6 @@ export let editors = {
 };
 
 /**
- * Holds references to key DOM elements.
+ * Holds references to key DOM elements. This object is populated in app.js after the DOM is loaded.
  */
-
 export const dom = {};
-
-/* 
-export const dom = {
-    // clientListEl is removed as the element no longer exists
-    mainContentEl: document.getElementById('main-content'),
-    welcomeMessageEl: document.getElementById('welcome-message'),
-    clientNameHeaderEl: document.getElementById('client-name-header'),
-    tabsEl: document.getElementById('main-tabs'),
-    settingsForm: document.getElementById('settings-form'),
-    filePicker: document.getElementById('sql-file-picker')
-};
-*/
