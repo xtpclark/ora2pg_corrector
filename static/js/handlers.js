@@ -1,6 +1,6 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector, renderSessionHistory } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectSelector, renderSessionHistory, populateTypeDropdown } from './ui.js';
 
 async function log_audit(clientId, action, details) {
     if (!clientId) return;
@@ -95,6 +95,9 @@ export async function selectClient(clientId) {
         ]);
         
         renderSettingsForms(config);
+        // --- THIS IS THE FIX ---
+        // Populate the new dropdown on the migration tab.
+        populateTypeDropdown(config);
         
         state.sessions = sessions;
         renderSessionHistory();
