@@ -200,7 +200,6 @@ def update_file_status(file_id):
         logger.error(f"Failed to update status for file {file_id}: {e}", exc_info=True)
         return jsonify({'error': 'Failed to update file status.'}), 500
 
-
 @api_bp.route('/client/<int:client_id>/sessions', methods=['GET'])
 def get_sessions(client_id):
     conn = get_db()
@@ -237,7 +236,6 @@ def get_session_files(session_id):
         logger.error(f"Failed to fetch files for session {session_id}: {e}", exc_info=True)
         return jsonify({'error': 'Failed to fetch session files.'}), 500
 
-
 @api_bp.route('/client/<int:client_id>/test_ora2pg_connection', methods=['POST'])
 def test_ora2pg_connection(client_id):
     config = request.get_json(force=True)
@@ -268,12 +266,10 @@ def test_ora2pg_connection(client_id):
         logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
 
-# In api_routes.py
 @api_bp.route('/client/<int:client_id>/get_object_list', methods=['GET'])
 def get_object_list(client_id):
     try:
         conn = get_db()
-        # Fetch the client's config to connect to their Oracle DB
         query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
@@ -290,9 +286,7 @@ def get_object_list(client_id):
                 except Exception:
                     pass
 
-        # Call the new, refactored sql_processing method
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        # Note: We pass the app's DB connection 'conn' now
         object_list, error = corrector._get_object_list(conn, config)
 
         if error:
@@ -311,7 +305,7 @@ def get_oracle_ddl(client_id):
     data = request.get_json()
     object_name = data.get('object_name')
     object_type = data.get('object_type', 'TABLE')
-    pretty = data.get('pretty', False)  # Add this line
+    pretty = data.get('pretty', False)
 
     if not object_name:
         return jsonify({'error': 'Object name is required.'}), 400
@@ -335,7 +329,7 @@ def get_oracle_ddl(client_id):
                     pass
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name, pretty=pretty)  # Update this line
+        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name, pretty=pretty)
 
         if error:
             return jsonify({'error': error}), 500
@@ -350,7 +344,7 @@ def get_oracle_ddl(client_id):
 def get_bulk_oracle_ddl(client_id):
     data = request.get_json()
     objects = data.get('objects')
-    pretty = data.get('pretty', False)  # Add this line
+    pretty = data.get('pretty', False)
 
     if not objects:
         return jsonify({'error': 'A list of objects is required.'}), 400
@@ -374,7 +368,7 @@ def get_bulk_oracle_ddl(client_id):
         
         all_ddls = []
         for obj in objects:
-            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'], pretty=pretty)  # Update this line
+            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'], pretty=pretty)
             if error:
                 logger.warning(f"Could not fetch DDL for {obj['name']}: {error}")
                 all_ddls.append(f"-- FAILED to retrieve DDL for {obj['type']} {obj['name']}: {error}\n\n")
@@ -444,9 +438,7 @@ def run_ora2pg(client_id):
         
         request_data = request.get_json(silent=True) or {}
         
-        
-        # --- THIS IS THE FIX ---
-        # Check for and apply the 'type' override from the new dropdown.
+        # Check for and apply the 'type' override from the dropdown
         if 'type' in request_data:
             config['type'] = request_data['type']
 
@@ -475,7 +467,6 @@ def run_ora2pg(client_id):
             return jsonify({'error': error_output}), 500
         
         log_audit(client_id, 'run_ora2pg', 'Successfully executed Ora2Pg export.')
-
         return jsonify(result_data)
 
     except Exception as e:
@@ -515,7 +506,7 @@ def get_exported_file():
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        return jsonify({'content': content})
+        return jsonify({'content': content, 'filename': filename})
 
     except FileNotFoundError:
         logger.error(f"File not found at persistent path: {file_path}")
@@ -524,11 +515,13 @@ def get_exported_file():
         logger.error(f"Error reading exported file {file_path}: {e}", exc_info=True)
         return jsonify({'error': 'An unexpected error occurred while reading the file content.'}), 500
 
-
 @api_bp.route('/correct_sql', methods=['POST'])
 def correct_sql_with_ai():
     data = request.json
-    sql, client_id = data.get('sql'), data.get('client_id')
+    sql = data.get('sql')
+    client_id = data.get('client_id')
+    source_dialect = data.get('source_dialect', 'oracle')  # NEW: Get source dialect
+    
     if not sql or not client_id:
         return jsonify({'error': 'SQL content and client ID are required'}), 400
 
@@ -563,13 +556,16 @@ def correct_sql_with_ai():
             encryption_key=ENCRYPTION_KEY
         )
         
-        corrected_sql, metrics = corrector.ai_correct_sql(sql)
-        log_audit(client_id, 'correct_sql_with_ai', f'AI correction performed.')
+        # Pass source_dialect to the AI correction method
+        corrected_sql, metrics = corrector.ai_correct_sql(sql, source_dialect=source_dialect)
+        
+        log_audit(client_id, 'correct_sql_with_ai', f'AI conversion from {source_dialect} to PostgreSQL performed.')
         return jsonify({
             'corrected_sql': corrected_sql,
             'metrics': metrics
         })
     except Exception as e:
+        logger.error(f"Failed to correct SQL with AI: {e}", exc_info=True)
         return jsonify({'error': f'Failed to correct SQL with AI: {str(e)}'}), 500
 
 @api_bp.route('/validate', methods=['POST'])
@@ -634,6 +630,7 @@ def validate_sql():
         
         return jsonify({'message': message, 'status': 'success' if is_valid else 'error', 'corrected_sql': new_sql})
     except Exception as e:
+        logger.error(f"Failed to validate SQL: {e}", exc_info=True)
         return jsonify({'error': f'Failed to validate SQL: {str(e)}'}), 500
 
 @api_bp.route('/save', methods=['POST'])
@@ -705,4 +702,3 @@ def test_pg_connection():
     except Exception as e:
         logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
-
