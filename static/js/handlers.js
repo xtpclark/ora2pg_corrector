@@ -22,6 +22,74 @@ async function log_audit(clientId, action, details) {
 }
 
 /**
+ * Updates the workspace file status display.
+ * @param {string|null} filename - The name of the loaded file, or null to clear.
+ */
+function updateWorkspaceStatus(filename = null) {
+    const statusEl = document.getElementById('workspace-file-status');
+    if (statusEl) {
+        statusEl.textContent = filename ? `File: ${filename}` : '';
+    }
+}
+
+/**
+ * Clears both editors in the workspace.
+ */
+function handleClearWorkspace() {
+    if (editors.original?.setValue) {
+        editors.original.setValue('-- Paste or load your source SQL here...');
+    }
+    if (editors.corrected?.setValue) {
+        editors.corrected.setValue('-- PostgreSQL-converted SQL will appear here...');
+    }
+    state.currentFileId = null;
+    updateWorkspaceStatus();
+    
+    // Clear validation result
+    const resultDiv = document.getElementById('validation-result');
+    if (resultDiv) resultDiv.classList.add('hidden');
+    
+    showToast('Workspace cleared');
+}
+
+/**
+ * Copies content from source editor to target editor.
+ */
+function handleCopyToTarget() {
+    const sourceContent = editors.original?.getValue() || '';
+    if (!sourceContent || sourceContent.trim() === '' || sourceContent.startsWith('--')) {
+        showToast('No SQL to copy', true);
+        return;
+    }
+    if (editors.corrected?.setValue) {
+        editors.corrected.setValue(sourceContent);
+        showToast('Copied to target editor');
+    }
+}
+
+/**
+ * Updates the source dialect label when selector changes.
+ */
+function handleDialectChange() {
+    const selector = document.getElementById('source-dialect-selector');
+    if (!selector) return;
+    
+    const dialectNames = {
+        'oracle': 'Oracle',
+        'mysql': 'MySQL',
+        'sqlserver': 'SQL Server',
+        'postgres': 'PostgreSQL',
+        'generic': 'Generic SQL'
+    };
+    
+    // Update any dialect label if it exists
+    const label = document.getElementById('source-dialect-label');
+    if (label) {
+        label.textContent = dialectNames[selector.value] || selector.value;
+    }
+}
+
+/**
  * Fetches and renders the audit log history for the currently selected client.
  * @async
  */
@@ -32,15 +100,15 @@ async function fetchAndRenderAuditLogs() {
         const tbody = document.getElementById('audit-log-body');
         tbody.innerHTML = '';
         if (logs.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-500">No audit history for this client.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="3" class="text-center py-4 text-gray-500 dark:text-gray-400">No audit history for this client.</td></tr>';
             return;
         }
         logs.forEach(log => {
             const row = `
                 <tr>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-400">${new Date(log.timestamp).toLocaleString()}</td>
-                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-300">${log.action}</td>
-                    <td class="px-6 py-4 whitespace-normal text-sm text-gray-400">${log.details}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-400">${new Date(log.timestamp).toLocaleString()}</td>
+                    <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-300">${log.action}</td>
+                    <td class="px-6 py-4 whitespace-normal text-sm text-gray-600 dark:text-gray-400">${log.details}</td>
                 </tr>`;
             tbody.innerHTML += row;
         });
@@ -133,10 +201,10 @@ export async function selectClient(clientId) {
 
         // Safe editor value setting with CodeMirror
         if (editors.original?.setValue) {
-            editors.original.setValue('-- Oracle SQL will appear here...');
+            editors.original.setValue('-- Paste or load your source SQL here...');
         }
         if (editors.corrected?.setValue) {
-            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+            editors.corrected.setValue('-- PostgreSQL-converted SQL will appear here...');
         }
     } catch (error) {
         showToast("Failed to load client configuration or sessions.", true);
@@ -164,10 +232,11 @@ export function handleFileSelect(event) {
         }
         
         if (editors.corrected?.setValue) {
-            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+            editors.corrected.setValue('-- PostgreSQL-converted SQL will appear here...');
         }
         
-        showToast(`Loaded ${file.name} successfully.`);
+        updateWorkspaceStatus(file.name);
+        showToast(`Loaded ${file.name}`);
         log_audit(state.currentClientId, 'load_sql_file', `Loaded SQL from file: ${file.name}`);
         event.target.value = '';
     };
@@ -267,16 +336,16 @@ async function handleFileClick(fileId) {
             editors.original.setValue(data.content || '');
         }
         if (editors.corrected?.setValue) {
-            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+            editors.corrected.setValue('-- PostgreSQL-converted SQL will appear here...');
         }
         
+        updateWorkspaceStatus(data.filename || 'Exported file');
         switchTab('workspace');
 
     } catch (error) {
         showToast(`Failed to load file: ${error.message}`, true);
     }
 }
-
 
 /**
  * Fetches and triggers the download of the original Oracle DDL for a single object.
@@ -387,7 +456,6 @@ async function handleGenerateReport() {
     }
 }
 
-
 /**
  * Exports the currently stored report data as an AsciiDoc file.
  * @export
@@ -438,75 +506,85 @@ function convertReportToAsciiDoc(data) {
 }
 
 /**
- * Sends the SQL from the "Original" editor to the AI for correction.
+ * Sends the SQL from the source editor to the AI for conversion to PostgreSQL.
+ * Now works with any source dialect and doesn't require a loaded file.
  * @async
  * @export
  */
 export async function handleCorrectWithAI() {
-    if (!state.currentClientId || !state.currentFileId) {
-        showToast('Please select a file from a session first.', true);
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
         return;
     }
 
-    // Safe getValue with null check
     const originalSql = editors.original?.getValue ? editors.original.getValue() : '';
     
-    if (!originalSql || originalSql.trim() === '' || originalSql.startsWith('-- Oracle SQL')) {
-        showToast('No original SQL to correct.', true);
+    if (!originalSql || originalSql.trim() === '' || originalSql.startsWith('--')) {
+        showToast('No SQL to convert.', true);
         return;
     }
 
+    // Get source dialect
+    const dialectSelector = document.getElementById('source-dialect-selector');
+    const sourceDialect = dialectSelector ? dialectSelector.value : 'oracle';
+
     const button = document.getElementById('correct-ai-btn');
-    toggleButtonLoading(button, true, 'Correct with AI');
+    toggleButtonLoading(button, true, 'Convert');
     
     try {
-        showToast('AI correction in progress...');
+        showToast('Converting SQL with AI...');
         const correctionData = await apiFetch(`/api/correct_sql`, {
             method: 'POST',
-            body: JSON.stringify({ sql: originalSql, client_id: state.currentClientId })
+            body: JSON.stringify({ 
+                sql: originalSql, 
+                client_id: state.currentClientId,
+                source_dialect: sourceDialect
+            })
         });
         
-        // Safe setValue with null check
         if (editors.corrected?.setValue) {
             editors.corrected.setValue(correctionData.corrected_sql || '');
         }
         
-        await apiFetch(`/api/file/${state.currentFileId}/status`, {
-            method: 'POST',
-            body: JSON.stringify({ status: 'corrected' })
-        });
-        
-        if (state.currentSessionId) {
-            await selectSession(state.currentSessionId);
+        // Only update file status if we're working with a loaded file
+        if (state.currentFileId) {
+            await apiFetch(`/api/file/${state.currentFileId}/status`, {
+                method: 'POST',
+                body: JSON.stringify({ status: 'corrected' })
+            });
+            
+            if (state.currentSessionId) {
+                await selectSession(state.currentSessionId);
+            }
         }
         
-        showToast(`AI correction complete. Tokens used: ${correctionData.metrics.tokens_used}`);
-        log_audit(state.currentClientId, 'correct_sql_success', `File ID ${state.currentFileId} corrected.`);
+        showToast(`Conversion complete. Tokens: ${correctionData.metrics.tokens_used}`);
+        log_audit(state.currentClientId, 'convert_sql', `Converted ${sourceDialect} to PostgreSQL`);
 
     } catch (error) {
         showToast(error.message, true);
-        log_audit(state.currentClientId, 'correct_sql_failed', `Failed to correct File ID ${state.currentFileId}: ${error.message}`);
+        log_audit(state.currentClientId, 'convert_sql_failed', `Conversion failed: ${error.message}`);
     } finally {
         toggleButtonLoading(button, false);
     }
 }
 
 /**
- * Sends the SQL from the "Corrected" editor to the backend for validation against a PostgreSQL database.
+ * Sends the SQL from the target editor to the backend for validation against a PostgreSQL database.
+ * Now works without requiring a loaded file.
  * @async
  * @export
  */
 export async function handleValidateSql() {
-    if (!state.currentClientId || !state.currentFileId) {
-        showToast('Please select a corrected file to validate.', true);
+    if (!state.currentClientId) {
+        showToast('Please configure a client first.', true);
         return;
     }
 
-    // Safe getValue with null check
     const correctedSql = editors.corrected?.getValue ? editors.corrected.getValue() : '';
     
-    if (!correctedSql || correctedSql.trim() === '' || correctedSql.startsWith('-- AI-corrected')) {
-        showToast('No corrected SQL to validate.', true);
+    if (!correctedSql || correctedSql.trim() === '' || correctedSql.startsWith('--')) {
+        showToast('No SQL to validate.', true);
         return;
     }
 
@@ -514,9 +592,9 @@ export async function handleValidateSql() {
     toggleButtonLoading(button, true, 'Validate');
     
     try {
-        showToast('Validation in progress...');
-        const isCleanSlate = document.getElementById('clean-slate-checkbox').checked;
-        const isAutoCreateDdl = document.getElementById('auto-create-ddl-checkbox').checked;
+        showToast('Validating SQL...');
+        const isCleanSlate = document.getElementById('clean-slate-checkbox')?.checked || false;
+        const isAutoCreateDdl = document.getElementById('auto-create-ddl-checkbox')?.checked || false;
         
         const validationData = await apiFetch(`/api/validate`, {
             method: 'POST',
@@ -530,25 +608,46 @@ export async function handleValidateSql() {
 
         const newStatus = validationData.status === 'success' ? 'validated' : 'failed';
         
-        await apiFetch(`/api/file/${state.currentFileId}/status`, {
-            method: 'POST',
-            body: JSON.stringify({ status: newStatus })
-        });
+        // Only update file status if working with a loaded file
+        if (state.currentFileId) {
+            await apiFetch(`/api/file/${state.currentFileId}/status`, {
+                method: 'POST',
+                body: JSON.stringify({ status: newStatus })
+            });
+            
+            if (state.currentSessionId) {
+                await selectSession(state.currentSessionId);
+            }
+        }
 
+        // Update editor if SQL was modified during validation
         if (validationData.corrected_sql && editors.corrected?.setValue) {
             editors.corrected.setValue(validationData.corrected_sql);
         }
 
-        if (state.currentSessionId) {
-            await selectSession(state.currentSessionId);
+        // Show inline validation result
+        const resultDiv = document.getElementById('validation-result');
+        const titleDiv = document.getElementById('validation-result-title');
+        const messageDiv = document.getElementById('validation-result-message');
+        
+        if (resultDiv && titleDiv && messageDiv) {
+            resultDiv.classList.remove('hidden');
+            if (newStatus === 'validated') {
+                titleDiv.innerHTML = '<i class="fas fa-check-circle text-green-500 mr-2"></i>Validation Successful';
+                resultDiv.className = 'mt-2 p-2 rounded text-sm bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800';
+            } else {
+                titleDiv.innerHTML = '<i class="fas fa-exclamation-circle text-red-500 mr-2"></i>Validation Failed';
+                resultDiv.className = 'mt-2 p-2 rounded text-sm bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800';
+            }
+            messageDiv.textContent = validationData.message;
         }
         
         showToast(validationData.message, newStatus !== 'validated');
-        log_audit(state.currentClientId, 'validate_sql', `Validation for file ID ${state.currentFileId}: ${newStatus}.`);
+        log_audit(state.currentClientId, 'validate_sql', `Validation: ${newStatus}`);
 
     } catch (error) {
         showToast(error.message, true);
-        log_audit(state.currentClientId, 'validate_sql_failed', `Validation failed for file ID ${state.currentFileId}: ${error.message}`);
+        log_audit(state.currentClientId, 'validate_sql_failed', `Validation error: ${error.message}`);
     } finally {
         toggleButtonLoading(button, false);
     }
@@ -677,7 +776,7 @@ export async function handleAddClient() {
  * @export
  */
 export async function initializeApp() {
-    console.log("Checkpoint 3: initializeApp() has started.");
+    console.log("Initializing Ora2Pg AI Corrector...");
     try {
         const results = await Promise.all([
             apiFetch('/api/clients'),
@@ -691,10 +790,10 @@ export async function initializeApp() {
         state.appSettings = results[3];
         renderClients();
     } catch (error) {
-        dom.welcomeMessageEl.innerHTML = `<div class="text-center text-red-400">
+        dom.welcomeMessageEl.innerHTML = `<div class="text-center text-red-400 dark:text-red-500">
             <i class="fas fa-exclamation-triangle text-5xl mb-4"></i>
             <h2 class="text-2xl">Failed to initialize application</h2>
-            <p class="text-red-500 mt-2">Could not connect to the backend. Please ensure the server is running and accessible.</p>
+            <p class="text-red-600 dark:text-red-400 mt-2">Could not connect to the backend. Please ensure the server is running and accessible.</p>
         </div>`;
         showToast(error.message, true);
     }
@@ -717,6 +816,12 @@ export function initEventListeners() {
             selectClient(parseInt(selectedValue));
         }
     });
+
+    // Listener for source dialect selector
+    const dialectSelector = document.getElementById('source-dialect-selector');
+    if (dialectSelector) {
+        dialectSelector.addEventListener('change', handleDialectChange);
+    }
 
     // Listener for the main tab bar
     dom.tabsEl.addEventListener('click', e => {
@@ -752,14 +857,21 @@ export function initEventListeners() {
     });
 
     // Listener for copy button in the workspace
-    document.getElementById('copy-btn').addEventListener('click', () => {
-        const correctedSql = editors.corrected.getValue();
-        navigator.clipboard.writeText(correctedSql).then(() => {
-            showToast('Copied to clipboard!');
-        }, () => {
-            showToast('Failed to copy text.', true);
+    const copyBtn = document.getElementById('copy-btn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+            const correctedSql = editors.corrected?.getValue ? editors.corrected.getValue() : '';
+            if (!correctedSql || correctedSql.startsWith('--')) {
+                showToast('No SQL to copy', true);
+                return;
+            }
+            navigator.clipboard.writeText(correctedSql).then(() => {
+                showToast('Copied to clipboard!');
+            }, () => {
+                showToast('Failed to copy text.', true);
+            });
         });
-    });
+    }
     
     // Main event delegation for various buttons and links
     document.addEventListener('click', e => {
@@ -771,8 +883,12 @@ export function initEventListeners() {
             const objectType = target.dataset.objectType;
             renderObjectList(objectType);
             
-            document.querySelectorAll('.object-type-link').forEach(link => link.classList.remove('bg-indigo-600', 'text-white'));
-            target.classList.add('bg-indigo-600', 'text-white');
+            document.querySelectorAll('.object-type-link').forEach(link => {
+                link.classList.remove('bg-indigo-600', 'dark:bg-indigo-500', 'text-white');
+                link.classList.add('text-gray-700', 'dark:text-gray-300');
+            });
+            target.classList.remove('text-gray-700', 'dark:text-gray-300');
+            target.classList.add('bg-indigo-600', 'dark:bg-indigo-500', 'text-white');
             return;
         }
 
@@ -815,6 +931,8 @@ export function initEventListeners() {
                     if (cb.checked) cb.click();
                  });
                 break;
+            case 'copy-to-target-btn': handleCopyToTarget(); break;
+            case 'clear-workspace-btn': handleClearWorkspace(); break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
             case 'load-file-proxy-btn': dom.filePicker.click(); break;
