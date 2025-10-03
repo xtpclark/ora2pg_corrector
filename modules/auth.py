@@ -76,38 +76,118 @@ class TokenAuth:
                 'mode': self.auth_mode,
                 'hint': 'Add X-Auth-Token header or ?token= parameter'
             }), 401
+        
+        # Debug endpoint to check token status
+        @app.route('/api/auth/debug', methods=['GET'])
+        def auth_debug():
+            """Debug endpoint to troubleshoot auth issues"""
+
+            provided_token = (
+                request.headers.get('X-Auth-Token') or
+                self._extract_bearer_token(request) or
+                request.args.get('token') or
+                (request.form.get('token') if request.form else None)
+            )
+            
+            # Additional debug info
+            query_token = request.args.get('token')
+            header_token = request.headers.get('X-Auth-Token')
+            
+            # Only show partial tokens for security
+            def mask_token(t):
+                if t and len(t) > 8:
+                    return f"{t[:4]}...{t[-4:]}"
+                return t
+            
+            return jsonify({
+                'auth_mode': self.auth_mode,
+                'token_file_path': str(self.token_file_path) if self.token_file_path else None,
+                'token_loaded': mask_token(self.token) if self.token else 'None',
+                'provided_token': mask_token(provided_token) if provided_token else 'None',
+                'query_token': mask_token(query_token) if query_token else 'None',
+                'header_token': mask_token(header_token) if header_token else 'None',
+                'tokens_match': provided_token == self.token if self.token else False,
+                'request_url': request.url,
+                'request_args': dict(request.args),
+                'request_headers': list(request.headers.keys())
+            })
     
     def _load_or_generate_token(self):
-        """Load existing token or generate new one"""
-        # Check environment variable first
+        """Load existing token or generate new one (thread-safe for multiple workers)"""
+        # Check environment variable first and prioritize it
         env_token = os.environ.get('ACCESS_TOKEN')
         if env_token:
             logger.info("Using ACCESS_TOKEN from environment")
+            
+            # Update the token file to match the environment variable
+            # This ensures all workers use the same token
+            if self.token_file_path:
+                try:
+                    self.token_file_path.parent.mkdir(parents=True, exist_ok=True)
+                    self.token_file_path.write_text(env_token)
+                    # Set restrictive permissions (owner read/write only)
+                    if os.name != 'nt':  # Unix-like systems
+                        os.chmod(self.token_file_path, 0o600)
+                    logger.info(f"Updated token file to match ACCESS_TOKEN environment variable")
+                except Exception as e:
+                    logger.error(f"Failed to update token file with env token: {e}")
+            
             return env_token
         
-        # Try to load from file
+        # Try to load from file if no env token
         if self.token_file_path and self.token_file_path.exists():
             try:
                 token = self.token_file_path.read_text().strip()
-                logger.info(f"Loaded existing token from {self.token_file_path}")
-                return token
+                if token:  # Make sure it's not empty
+                    logger.info(f"Loaded existing token from {self.token_file_path}")
+                    return token
             except Exception as e:
                 logger.error(f"Failed to read token file: {e}")
         
-        # Generate new token
-        token = secrets.token_urlsafe(32)
+        # Generate new token with file locking to prevent race conditions
+        import fcntl
+        token = None
         
-        # Save to file if possible
         if self.token_file_path:
             try:
                 self.token_file_path.parent.mkdir(parents=True, exist_ok=True)
-                self.token_file_path.write_text(token)
-                # Set restrictive permissions (owner read/write only)
-                if os.name != 'nt':  # Unix-like systems
-                    os.chmod(self.token_file_path, 0o600)
-                logger.info(f"Generated new token and saved to {self.token_file_path}")
+                
+                # Use a lock file to ensure only one worker generates the token
+                lock_file = self.token_file_path.with_suffix('.lock')
+                
+                with open(lock_file, 'a+') as lock:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                    
+                    # Check again if token was created by another worker
+                    if self.token_file_path.exists():
+                        try:
+                            token = self.token_file_path.read_text().strip()
+                            if token:
+                                logger.info(f"Token was created by another worker, loaded from {self.token_file_path}")
+                                return token
+                        except:
+                            pass
+                    
+                    # Generate new token since no valid token exists
+                    token = secrets.token_urlsafe(32)
+                    self.token_file_path.write_text(token)
+                    
+                    # Set restrictive permissions (owner read/write only)
+                    if os.name != 'nt':  # Unix-like systems
+                        os.chmod(self.token_file_path, 0o600)
+                    
+                    logger.info(f"Generated new token and saved to {self.token_file_path}")
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    
             except Exception as e:
                 logger.error(f"Failed to save token file: {e}")
+                # If file operations fail, generate a token anyway
+                if not token:
+                    token = secrets.token_urlsafe(32)
+        else:
+            # No file path configured, just generate a token
+            token = secrets.token_urlsafe(32)
+            logger.warning("No token file path configured, using in-memory token only")
         
         # Log token for initial setup (only in development)
         if os.environ.get('FLASK_ENV') == 'development' or os.environ.get('DEBUG'):
@@ -130,6 +210,13 @@ class TokenAuth:
         if self.auth_mode == 'none':
             return True
         
+        # *** ADD THESE DEBUG LINES ***
+        logger.info(f"DEBUG: request.path = {request.path}")
+        logger.info(f"DEBUG: request.args = {dict(request.args)}")
+        logger.info(f"DEBUG: request.query_string = {request.query_string}")
+        logger.info(f"DEBUG: self.token = {self.token}")
+        # *** END DEBUG ***
+        
         # Check for token in multiple places
         provided_token = (
             # Standard header
@@ -139,15 +226,26 @@ class TokenAuth:
             # Query parameter (useful for downloads)
             request.args.get('token') or
             # Form data (for POST requests)
-            request.form.get('token') if request.form else None
+            (request.form.get('token') if request.form else None)
         )
         
+
+        # *** ADD THIS DEBUG LINE ***
+        logger.info(f"DEBUG: provided_token = {provided_token}")
+        # *** END DEBUG ***
+
         # For JSON requests, check body too
         if not provided_token and request.is_json:
             try:
                 provided_token = request.get_json().get('token')
             except:
                 pass
+        
+        # Debug logging
+        logger.debug(f"Auth check - Path: {request.path}, Method: {request.method}")
+        logger.debug(f"Auth check - Token loaded: {self.token[:8] + '...' if self.token else 'None'}")
+        logger.debug(f"Auth check - Token provided: {provided_token[:8] + '...' if provided_token else 'None'}")
+        logger.debug(f"Auth check - Headers: {dict(request.headers)}")
         
         return provided_token == self.token if self.token else False
     
@@ -164,8 +262,17 @@ class TokenAuth:
         if request.path.startswith('/static/') or request.path == '/favicon.ico':
             return None
         
+            
+        # *** ADD THIS LINE ***
+        if request.path == '/':
+            return None
+
         # Allow health check endpoint without auth
         if request.path == '/health':
+            return None
+        
+        # Allow debug endpoint without auth for troubleshooting
+        if request.path == '/api/auth/debug':
             return None
         
         # Allow OPTIONS requests (for CORS)

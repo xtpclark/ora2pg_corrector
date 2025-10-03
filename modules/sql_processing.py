@@ -36,6 +36,57 @@ class Ora2PgAICorrector:
         self.encryption_key = encryption_key
         self.fernet = Fernet(encryption_key)
 
+    def _validate_oracle_identifier(self, identifier, identifier_type="identifier"):
+        """
+        Validates Oracle identifiers to prevent SQL injection.
+        Oracle identifiers can contain alphanumeric characters, underscore, dollar sign, and hash.
+        They must start with a letter (or underscore/dollar in some cases).
+        Maximum length is 128 characters (as of Oracle 12.2).
+        
+        :param str identifier: The identifier to validate
+        :param str identifier_type: Type of identifier for error messages
+        :return: The validated identifier
+        :raises ValueError: If the identifier is invalid
+        """
+        if not identifier:
+            raise ValueError(f"Oracle {identifier_type} cannot be empty")
+        
+        # Check length
+        if len(identifier) > 128:
+            raise ValueError(f"Oracle {identifier_type} exceeds maximum length of 128 characters")
+        
+        # Check for valid Oracle identifier pattern
+        # Allows alphanumeric, underscore, dollar sign, and hash
+        # Must start with letter or underscore (we'll be more permissive and allow $ and #)
+        oracle_identifier_pattern = re.compile(r'^[A-Za-z_$#][A-Za-z0-9_$#]*$')
+        
+        if not oracle_identifier_pattern.match(identifier):
+            raise ValueError(
+                f"Invalid Oracle {identifier_type}: '{identifier}'. "
+                f"Must contain only alphanumeric characters, underscore, dollar sign, or hash, "
+                f"and start with a letter, underscore, dollar sign, or hash."
+            )
+        
+        # Check for SQL injection attempts (additional safety)
+        dangerous_patterns = [
+            r';\s*--',  # Comment after semicolon
+            r';\s*/',   # Start of multi-line comment
+            r'union\s+select',  # UNION SELECT
+            r'drop\s+',  # DROP statements
+            r'delete\s+from',  # DELETE statements
+            r'update\s+.*\s+set',  # UPDATE statements
+            r'insert\s+into',  # INSERT statements
+            r'exec\s*\(',  # EXEC calls
+            r'execute\s+immediate',  # Dynamic SQL
+        ]
+        
+        identifier_lower = identifier.lower()
+        for pattern in dangerous_patterns:
+            if re.search(pattern, identifier_lower):
+                raise ValueError(f"Potential SQL injection detected in {identifier_type}: '{identifier}'")
+        
+        return identifier
+
     def _parse_dsn(self, dsn_string):
         """
         Parses a DBI-style DSN string into a dictionary.
@@ -163,17 +214,40 @@ class Ora2PgAICorrector:
         if not schema:
             return None, "Oracle schema is not configured."
 
+        # SECURITY FIX: Validate schema name to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+        except ValueError as e:
+            logger.error(f"Schema validation failed: {e}")
+            return None, str(e)
+
         # --- REFACTORED: Use the central helper method ---
         connect_string, error = self._build_sqlplus_connect_string(client_config)
         if error:
             return None, error
 
+        # Use bind variable syntax for SQL*Plus (using DEFINE)
+#        sql_query = f"""
+#            DEFINE owner_name = '{validated_schema.upper()}'
+#            SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TERMOUT OFF;
+#            SELECT object_type, object_name FROM all_objects WHERE owner = '&owner_name' ORDER BY object_type, object_name;
+#            EXIT;
+#        """
+
         sql_query = f"""
-            SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TERMOUT OFF;
-            SELECT object_type, object_name FROM all_objects WHERE owner = '{schema.upper()}' ORDER BY object_type, object_name;
+            SET PAGESIZE 0
+            SET LINESIZE 32767
+            SET FEEDBACK OFF
+            SET HEADING OFF
+            SET TRIMOUT ON
+            SET TRIMSPOOL ON
+            SET SERVEROUTPUT OFF
+            SET VERIFY OFF
+            SET ECHO OFF
+            SELECT object_type || ' ' || object_name FROM all_objects WHERE owner = '{validated_schema.upper()}' ORDER BY object_type, object_name;
             EXIT;
         """
-        
+
         command = [self.sqlplus_path, '-S', connect_string]
         
         try:
@@ -198,7 +272,7 @@ class Ora2PgAICorrector:
                         'supported': is_supported
                     })
 
-            logger.info(f"Discovered {len(enriched_objects)} total objects in schema '{schema}'.")
+            logger.info(f"Discovered {len(enriched_objects)} total objects in schema '{validated_schema}'.")
             return enriched_objects, None
 
         except subprocess.TimeoutExpired:
@@ -218,18 +292,31 @@ class Ora2PgAICorrector:
         if not schema:
             return None, "Oracle schema is not configured."
 
+        # SECURITY FIX: Validate all identifiers to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+            validated_object_type = self._validate_oracle_identifier(object_type, "object type")
+            validated_object_name = self._validate_oracle_identifier(object_name, "object name")
+        except ValueError as e:
+            logger.error(f"Identifier validation failed: {e}")
+            return None, str(e)
+
         # --- REFACTORED: Use the central helper method ---
         connect_string, error = self._build_sqlplus_connect_string(client_config)
         if error:
             return None, error
         
+        # Use bind variables with DEFINE for SQL*Plus
         sql_query = f"""
+            DEFINE obj_type = '{validated_object_type.upper()}'
+            DEFINE obj_name = '{validated_object_name.upper()}'
+            DEFINE obj_owner = '{validated_schema.upper()}'
             SET LONG 2000000
             SET PAGESIZE 0
             SET HEADING OFF
             SET FEEDBACK OFF
             SET TERMOUT OFF
-            SELECT DBMS_METADATA.GET_DDL('{object_type.upper()}', '{object_name.upper()}', '{schema.upper()}') FROM DUAL;
+            SELECT DBMS_METADATA.GET_DDL('&obj_type', '&obj_name', '&obj_owner') FROM DUAL;
             EXIT;
         """
         
