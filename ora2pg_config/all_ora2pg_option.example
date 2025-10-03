@@ -1,0 +1,1223 @@
+#------------------------------------------------------------------------------
+# INPUT SECTION - Oracle Connection
+#------------------------------------------------------------------------------
+
+[ORACLE_HOME]
+option_type=text
+default_value=/lib/oracle/19.28/client64
+description=Oracle home directory path
+allowed_values=
+
+[ORACLE_DSN]
+option_type=text
+default_value=dbi:Oracle:host=localhost;service_name=xepdb1;port=1521
+description=Oracle database connection string
+allowed_values=
+
+[ORACLE_USER]
+option_type=text
+default_value=username
+description=Oracle database username
+allowed_values=
+
+[ORACLE_PWD]
+option_type=password
+default_value=password
+description=Oracle database password
+allowed_values=
+
+[INPUT_FILE]
+option_type=text
+default_value=
+description=Input file containing PL/SQL code (optional)
+allowed_values=
+
+[USER_GRANTS]
+option_type=checkbox
+default_value=0
+description=Connect as simple user without DBA access
+allowed_values=
+
+[DEBUG]
+option_type=checkbox
+default_value=0
+description=Enable debug logging for Ora2Pg
+allowed_values=
+
+[ORA_INITIAL_COMMAND]
+option_type=text
+default_value=
+description=Initial command to send to Oracle after connection
+allowed_values=
+
+#------------------------------------------------------------------------------
+# SCHEMA SECTION
+#------------------------------------------------------------------------------
+
+[EXPORT_SCHEMA]
+option_type=checkbox
+default_value=0
+description=Export Oracle schema to PostgreSQL schema
+allowed_values=
+
+[SCHEMA]
+option_type=text
+default_value=
+description=Oracle schema/owner to export
+allowed_values=
+
+[CREATE_SCHEMA]
+option_type=checkbox
+default_value=1
+description=Include CREATE SCHEMA statement in output
+allowed_values=
+
+[COMPILE_SCHEMA]
+option_type=checkbox
+default_value=1
+description=Force Oracle to compile schema before export
+allowed_values=
+
+[PG_SCHEMA]
+option_type=text
+default_value=
+description=PostgreSQL schema to use (comma-separated list)
+allowed_values=
+
+[POSTGIS_SCHEMA]
+option_type=text
+default_value=
+description=Schema to search for PostGIS functions
+allowed_values=
+
+[SYSUSERS]
+option_type=text
+default_value=
+description=Additional system users to exclude (comma-separated)
+allowed_values=
+
+[LOOK_FORWARD_FUNCTION]
+option_type=text
+default_value=
+description=Schemas for forward function lookup (comma-separated)
+allowed_values=
+
+[NO_FUNCTION_METADATA]
+option_type=checkbox
+default_value=0
+description=Force no function metadata lookup
+allowed_values=
+
+#------------------------------------------------------------------------------
+# ENCODING SECTION
+#------------------------------------------------------------------------------
+
+[NLS_LANG]
+option_type=text
+default_value=AMERICAN_AMERICA.AL32UTF8
+description=Oracle NLS_LANG environment setting
+allowed_values=
+
+[NLS_NCHAR]
+option_type=text
+default_value=AL32UTF8
+description=Oracle NLS_NCHAR environment setting
+allowed_values=
+
+[CLIENT_ENCODING]
+option_type=text
+default_value=UTF8
+description=PostgreSQL client encoding
+allowed_values=
+
+[FORCE_PLSQL_ENCODING]
+option_type=checkbox
+default_value=0
+description=Force UTF8 encoding of PL/SQL code
+allowed_values=
+
+#------------------------------------------------------------------------------
+# EXPORT TYPE SECTION
+#------------------------------------------------------------------------------
+
+[TYPE]
+option_type=dropdown
+default_value=TABLE
+description=Type of export to perform
+allowed_values=TABLE,PACKAGE,INSERT,COPY,VIEW,GRANT,SEQUENCE,TRIGGER,FUNCTION,PROCEDURE,TABLESPACE,TYPE,PARTITION,FDW,MVIEW,QUERY,KETTLE,DBLINK,SYNONYM,DIRECTORY,LOAD,TEST,TEST_COUNT,TEST_VIEW,TEST_DATA,SEQUENCE_VALUES,SHOW_VERSION,SHOW_REPORT,SHOW_SCHEMA,SHOW_TABLE,SHOW_COLUMN,SHOW_ENCODING
+
+[DISABLE_COMMENT]
+option_type=checkbox
+default_value=0
+description=Do not export comments on tables and columns
+allowed_values=
+
+[ALLOW]
+option_type=text
+default_value=
+description=Objects to export (space-separated, can use regex)
+allowed_values=
+
+[EXCLUDE]
+option_type=text
+default_value=
+description=Objects to exclude from export (space-separated, can use regex)
+allowed_values=
+
+[NO_EXCLUDED_TABLE]
+option_type=checkbox
+default_value=0
+description=Disable automatic exclusion of Oracle garbage tables
+allowed_values=
+
+[VIEW_AS_TABLE]
+option_type=text
+default_value=
+description=Views to export as tables (space-separated)
+allowed_values=
+
+[MVIEW_AS_TABLE]
+option_type=text
+default_value=
+description=Materialized views to export as tables (space-separated)
+allowed_values=
+
+[NO_VIEW_ORDERING]
+option_type=checkbox
+default_value=0
+description=Disable view dependency ordering
+allowed_values=
+
+[GRANT_OBJECT]
+option_type=dropdown
+default_value=
+description=Object type to export grants for
+allowed_values=TABLE,VIEW,MATERIALIZED VIEW,SEQUENCE,PROCEDURE,FUNCTION,PACKAGE BODY,TYPE,SYNONYM,DIRECTORY,USER
+
+[EXTERNAL_TO_FDW]
+option_type=checkbox
+default_value=1
+description=Export external tables as file_fdw tables
+allowed_values=
+
+[TRUNCATE_TABLE]
+option_type=checkbox
+default_value=0
+description=Add TRUNCATE TABLE before COPY/INSERT
+allowed_values=
+
+[DELETE]
+option_type=text
+default_value=
+description=DELETE clause before import (e.g. TABLE[WHERE_CLAUSE])
+allowed_values=
+
+[USE_TABLESPACE]
+option_type=checkbox
+default_value=0
+description=Use Oracle tablespace names in PostgreSQL
+allowed_values=
+
+[REORDERING_COLUMNS]
+option_type=checkbox
+default_value=0
+description=Reorder columns to minimize disk footprint
+allowed_values=
+
+[WHERE]
+option_type=text
+default_value=
+description=WHERE clause filter for data export
+allowed_values=
+
+[REPLACE_QUERY]
+option_type=text
+default_value=
+description=Custom query to replace default SELECT (TABLE[QUERY])
+allowed_values=
+
+[DROP_IF_EXISTS]
+option_type=checkbox
+default_value=0
+description=Add DROP IF EXISTS before creating objects
+allowed_values=
+
+[EXPORT_GTT]
+option_type=checkbox
+default_value=0
+description=Export global temporary tables
+allowed_values=
+
+[PGTT_NOSUPERUSER]
+option_type=checkbox
+default_value=0
+description=Use non-superuser for pgtt extension
+allowed_values=
+
+#------------------------------------------------------------------------------
+# FULL TEXT SEARCH SECTION
+#------------------------------------------------------------------------------
+
+[CONTEXT_AS_TRGM]
+option_type=checkbox
+default_value=0
+description=Translate Oracle Text CONTEXT indexes to pg_trgm
+allowed_values=
+
+[FTS_INDEX_ONLY]
+option_type=checkbox
+default_value=1
+description=Use function-based index for FTS
+allowed_values=
+
+[FTS_CONFIG]
+option_type=text
+default_value=pg_catalog.english
+description=Text search configuration to use
+allowed_values=
+
+[USE_UNACCENT]
+option_type=checkbox
+default_value=0
+description=Use unaccent for accent-insensitive search
+allowed_values=
+
+[USE_LOWER_UNACCENT]
+option_type=checkbox
+default_value=0
+description=Use lower(unaccent()) for searches
+allowed_values=
+
+#------------------------------------------------------------------------------
+# DATA DIFF SECTION
+#------------------------------------------------------------------------------
+
+[DATADIFF]
+option_type=checkbox
+default_value=0
+description=Enable data diff functionality
+allowed_values=
+
+[DATADIFF_UPDATE_BY_PKEY]
+option_type=checkbox
+default_value=0
+description=Use UPDATE for changed rows matched by primary key
+allowed_values=
+
+[DATADIFF_DEL_SUFFIX]
+option_type=text
+default_value=_del
+description=Suffix for temporary delete table
+allowed_values=
+
+[DATADIFF_UPD_SUFFIX]
+option_type=text
+default_value=_upd
+description=Suffix for temporary update table
+allowed_values=
+
+[DATADIFF_INS_SUFFIX]
+option_type=text
+default_value=_ins
+description=Suffix for temporary insert table
+allowed_values=
+
+[DATADIFF_WORK_MEM]
+option_type=text
+default_value=256 MB
+description=Work memory for data diff operations
+allowed_values=
+
+[DATADIFF_TEMP_BUFFERS]
+option_type=text
+default_value=512 MB
+description=Temporary buffers for data diff operations
+allowed_values=
+
+[DATADIFF_BEFORE]
+option_type=text
+default_value=
+description=Function called before DELETE/INSERT per table
+allowed_values=
+
+[DATADIFF_AFTER]
+option_type=text
+default_value=
+description=Function called after DELETE/INSERT per table
+allowed_values=
+
+[DATADIFF_AFTER_ALL]
+option_type=text
+default_value=
+description=Function called after all tables processed
+allowed_values=
+
+#------------------------------------------------------------------------------
+# CONSTRAINT SECTION
+#------------------------------------------------------------------------------
+
+[SKIP]
+option_type=text
+default_value=
+description=Features to skip (space-separated: fkeys pkeys ukeys indexes checks)
+allowed_values=
+
+[KEEP_PKEY_NAMES]
+option_type=checkbox
+default_value=0
+description=Preserve Oracle primary/unique key names
+allowed_values=
+
+[PKEY_IN_CREATE]
+option_type=checkbox
+default_value=0
+description=Add primary key definition in CREATE TABLE
+allowed_values=
+
+[FKEY_ADD_UPDATE]
+option_type=dropdown
+default_value=never
+description=Add ON UPDATE CASCADE to foreign keys
+allowed_values=never,delete,always
+
+[FKEY_DEFERRABLE]
+option_type=checkbox
+default_value=0
+description=Export all foreign keys as deferrable
+allowed_values=
+
+[DEFER_FKEY]
+option_type=checkbox
+default_value=0
+description=Defer foreign keys during data import
+allowed_values=
+
+[DROP_FKEY]
+option_type=checkbox
+default_value=0
+description=Drop and recreate foreign keys during import
+allowed_values=
+
+#------------------------------------------------------------------------------
+# TRIGGERS AND SEQUENCES SECTION
+#------------------------------------------------------------------------------
+
+[DISABLE_SEQUENCE]
+option_type=checkbox
+default_value=0
+description=Disable sequence updates during data migration
+allowed_values=
+
+[DISABLE_TRIGGERS]
+option_type=dropdown
+default_value=0
+description=Disable triggers during data migration
+allowed_values=0,USER,ALL
+
+#------------------------------------------------------------------------------
+# OBJECT MODIFICATION SECTION
+#------------------------------------------------------------------------------
+
+[MODIFY_STRUCT]
+option_type=text
+default_value=
+description=Tables and columns to extract (TABLE(col1,col2))
+allowed_values=
+
+[EXCLUDE_COLUMNS]
+option_type=text
+default_value=
+description=Columns to exclude from data export (TABLE(col1,col2))
+allowed_values=
+
+[REPLACE_TABLES]
+option_type=text
+default_value=
+description=Table name replacements (OLD:NEW OLD2:NEW2)
+allowed_values=
+
+[REPLACE_COLS]
+option_type=text
+default_value=
+description=Column name replacements (TABLE(OLD:NEW,OLD2:NEW2))
+allowed_values=
+
+[PRESERVE_CASE]
+option_type=checkbox
+default_value=0
+description=Preserve Oracle object name case
+allowed_values=
+
+[INDEXES_SUFFIX]
+option_type=text
+default_value=
+description=Suffix to add to all index names
+allowed_values=
+
+[INDEXES_RENAMING]
+option_type=checkbox
+default_value=0
+description=Rename indexes using tablename_columns pattern
+allowed_values=
+
+[USE_INDEX_OPCLASS]
+option_type=text
+default_value=0
+description=Use pattern operator classes for indexes (0=disabled, N=min column size)
+allowed_values=
+
+[RENAME_PARTITION]
+option_type=checkbox
+default_value=0
+description=Rename partition tables to ensure uniqueness
+allowed_values=
+
+[DISABLE_PARTITION]
+option_type=checkbox
+default_value=0
+description=Disable partitioning and export to main table
+allowed_values=
+
+[PARTITION_BY_REFERENCE]
+option_type=dropdown
+default_value=none
+description=How to export partition by reference
+allowed_values=none,duplicate
+
+[WITH_OID]
+option_type=checkbox
+default_value=0
+description=Add WITH (OIDS) to table creation
+allowed_values=
+
+[ORA_RESERVED_WORDS]
+option_type=text
+default_value=audit,comment,references
+description=Oracle reserved words to escape (comma-separated)
+allowed_values=
+
+[USE_RESERVED_WORDS]
+option_type=checkbox
+default_value=0
+description=Quote PostgreSQL reserved words
+allowed_values=
+
+[DISABLE_UNLOGGED]
+option_type=checkbox
+default_value=0
+description=Disable UNLOGGED tables for NOLOGGING tables
+allowed_values=
+
+[DOUBLE_MAX_VARCHAR]
+option_type=checkbox
+default_value=0
+description=Double varchar constraints for multibyte support
+allowed_values=
+
+#------------------------------------------------------------------------------
+# OUTPUT SECTION
+#------------------------------------------------------------------------------
+
+[PG_DSN]
+option_type=text
+default_value=
+description=PostgreSQL connection for direct import
+allowed_values=
+
+[PG_USER]
+option_type=text
+default_value=
+description=PostgreSQL username for direct import
+allowed_values=
+
+[PG_PWD]
+option_type=password
+default_value=
+description=PostgreSQL password for direct import
+allowed_values=
+
+[OUTPUT]
+option_type=text
+default_value=output.sql
+description=Output filename (.gz or .bz2 for compression)
+allowed_values=
+
+[OUTPUT_DIR]
+option_type=text
+default_value=
+description=Base directory for output files
+allowed_values=
+
+[BZIP2]
+option_type=text
+default_value=/usr/bin/bzip2
+description=Path to bzip2 program
+allowed_values=
+
+[FILE_PER_CONSTRAINT]
+option_type=checkbox
+default_value=0
+description=Save constraints in separate file
+allowed_values=
+
+[FILE_PER_INDEX]
+option_type=checkbox
+default_value=0
+description=Save indexes in separate file
+allowed_values=
+
+[FILE_PER_FKEYS]
+option_type=checkbox
+default_value=0
+description=Save foreign keys in separate file
+allowed_values=
+
+[FILE_PER_TABLE]
+option_type=checkbox
+default_value=0
+description=Save each table in separate file
+allowed_values=
+
+[FILE_PER_FUNCTION]
+option_type=checkbox
+default_value=0
+description=Save each function in separate file
+allowed_values=
+
+[BINMODE]
+option_type=text
+default_value=utf8
+description=Perl I/O encoding mode
+allowed_values=
+
+[STOP_ON_ERROR]
+option_type=checkbox
+default_value=1
+description=Include ON_ERROR_STOP in SQL scripts
+allowed_values=
+
+[COPY_FREEZE]
+option_type=checkbox
+default_value=0
+description=Use COPY FREEZE for initial data loading
+allowed_values=
+
+[CREATE_OR_REPLACE]
+option_type=checkbox
+default_value=1
+description=Use CREATE OR REPLACE in functions and views DDL
+allowed_values=
+
+[PG_INITIAL_COMMAND]
+option_type=text
+default_value=
+description=Initial command to send to PostgreSQL after connection
+allowed_values=
+
+[INSERT_ON_CONFLICT]
+option_type=checkbox
+default_value=0
+description=Add ON CONFLICT DO NOTHING to INSERT statements
+allowed_values=
+
+#------------------------------------------------------------------------------
+# TYPE SECTION
+#------------------------------------------------------------------------------
+
+[DATA_TYPE]
+option_type=text
+default_value=
+description=Custom data type mappings (Oracle:PostgreSQL)
+allowed_values=
+
+[PG_NUMERIC_TYPE]
+option_type=checkbox
+default_value=1
+description=Replace NUMBER(p,s) with real/float
+allowed_values=
+
+[PG_INTEGER_TYPE]
+option_type=checkbox
+default_value=1
+description=Replace NUMBER(p) with smallint/integer/bigint
+allowed_values=
+
+[DEFAULT_NUMERIC]
+option_type=text
+default_value=bigint
+description=Default type for NUMBER without precision
+allowed_values=
+
+[ENABLE_MICROSECOND]
+option_type=checkbox
+default_value=1
+description=Export milliseconds from Oracle timestamp columns
+allowed_values=
+
+[REPLACE_AS_BOOLEAN]
+option_type=text
+default_value=
+description=Columns to replace as boolean (TABLE:COLUMN or TYPE:PRECISION)
+allowed_values=
+
+[BOOLEAN_VALUES]
+option_type=text
+default_value=yes:no y:n 1:0 true:false enabled:disabled
+description=Boolean value mappings (TRUE:FALSE space-separated)
+allowed_values=
+
+[REPLACE_ZERO_DATE]
+option_type=text
+default_value=
+description=Replacement for zero dates (e.g. 1970-01-01 00:00:00)
+allowed_values=
+
+[MODIFY_TYPE]
+option_type=text
+default_value=
+description=Force destination types (TABLE:COLUMN:TYPE comma-separated)
+allowed_values=
+
+[TO_NUMBER_CONVERSION]
+option_type=text
+default_value=numeric
+description=TO_NUMBER cast type (numeric, integer, bigint, or format)
+allowed_values=
+
+[VARCHAR_TO_TEXT]
+option_type=checkbox
+default_value=1
+description=Convert VARCHAR2 without size to text
+allowed_values=
+
+[FORCE_IDENTITY_BIGINT]
+option_type=checkbox
+default_value=1
+description=Force identity columns to be bigint
+allowed_values=
+
+[TO_CHAR_NOTIMEZONE]
+option_type=checkbox
+default_value=1
+description=Remove timezone from TO_CHAR format
+allowed_values=
+
+#------------------------------------------------------------------------------
+# GRANT SECTION
+#------------------------------------------------------------------------------
+
+[GEN_USER_PWD]
+option_type=checkbox
+default_value=0
+description=Replace default password for all extracted users
+allowed_values=
+
+[FORCE_OWNER]
+option_type=text
+default_value=0
+description=Force object owner (0=disabled, 1=Oracle owner, or username)
+allowed_values=
+
+[FORCE_SECURITY_INVOKER]
+option_type=checkbox
+default_value=0
+description=Override all functions to use SECURITY INVOKER
+allowed_values=
+
+#------------------------------------------------------------------------------
+# DATA SECTION
+#------------------------------------------------------------------------------
+
+[DATA_LIMIT]
+option_type=text
+default_value=10000
+description=Extract data by bulk of N tuples
+allowed_values=
+
+[BLOB_LIMIT]
+option_type=text
+default_value=500
+description=Maximum BLOB tuples per batch
+allowed_values=
+
+[CLOB_AS_BLOB]
+option_type=checkbox
+default_value=1
+description=Apply same behavior on CLOB as BLOB with BLOB_LIMIT
+allowed_values=
+
+[NOESCAPE]
+option_type=checkbox
+default_value=0
+description=Disable escaping for non-date/time data in COPY
+allowed_values=
+
+[TRANSACTION]
+option_type=dropdown
+default_value=serializable
+description=Isolation level for data export transaction
+allowed_values=readonly,readwrite,serializable,committed
+
+[STANDARD_CONFORMING_STRINGS]
+option_type=checkbox
+default_value=1
+description=Use standard conforming strings (E'...')
+allowed_values=
+
+[LONGREADLEN]
+option_type=text
+default_value=1047552
+description=Maximum LOB size to read (bytes)
+allowed_values=
+
+[LONGTRUNCOK]
+option_type=checkbox
+default_value=0
+description=Bypass truncation error by truncating data
+allowed_values=
+
+[USE_LOB_LOCATOR]
+option_type=checkbox
+default_value=1
+description=Use LOB locators instead of full content
+allowed_values=
+
+[LOB_CHUNK_SIZE]
+option_type=text
+default_value=512000
+description=LOB chunk size in bytes (e.g. 512000, 4194304)
+allowed_values=
+
+[XML_PRETTY]
+option_type=checkbox
+default_value=0
+description=Use getStringVal() for XML data export
+allowed_values=
+
+[LOG_ON_ERROR]
+option_type=checkbox
+default_value=0
+description=Continue direct data import on error
+allowed_values=
+
+[TRIM_TYPE]
+option_type=dropdown
+default_value=BOTH
+description=Trim character whitespace on CHAR(n) conversion
+allowed_values=BOTH,LEADING,TRAILING
+
+[TRIM_CHAR]
+option_type=text
+default_value=
+description=Character to trim (default is space)
+allowed_values=
+
+[INTERNAL_DATE_MAX]
+option_type=text
+default_value=49
+description=Century cutoff for internal timestamp format
+allowed_values=
+
+[FUNCTION_CHECK]
+option_type=checkbox
+default_value=1
+description=Enable check_function_bodies
+allowed_values=
+
+[ENABLE_BLOB_EXPORT]
+option_type=checkbox
+default_value=1
+description=Include BLOB columns in data export
+allowed_values=
+
+[ENABLE_CLOB_EXPORT]
+option_type=checkbox
+default_value=1
+description=Include CLOB columns in data export
+allowed_values=
+
+[DATA_EXPORT_ORDER]
+option_type=dropdown
+default_value=name
+description=Data export sort order
+allowed_values=name,size
+
+[PSQL_RELATIVE_PATH]
+option_type=checkbox
+default_value=0
+description=Use \ir instead of \i in psql scripts
+allowed_values=
+
+[DATA_VALIDATION_ROWS]
+option_type=text
+default_value=10000
+description=Number of rows for data validation
+allowed_values=
+
+[DATA_VALIDATION_ORDERING]
+option_type=checkbox
+default_value=1
+description=Order rows by primary key during validation
+allowed_values=
+
+[DATA_VALIDATION_ERROR]
+option_type=text
+default_value=10
+description=Stop validation after N row mismatches
+allowed_values=
+
+[TRANSFORM_VALUE]
+option_type=text
+default_value=
+description=Column transformations (TABLE[COLUMN,expression])
+allowed_values=
+
+#------------------------------------------------------------------------------
+# PERFORMANCES SECTION
+#------------------------------------------------------------------------------
+
+[JOBS]
+option_type=text
+default_value=1
+description=Number of parallel processes for export
+allowed_values=
+
+[ORACLE_COPIES]
+option_type=text
+default_value=1
+description=Number of parallel Oracle connections for data extraction
+allowed_values=
+
+[PARALLEL_TABLES]
+option_type=text
+default_value=1
+description=Number of tables to extract in parallel
+allowed_values=
+
+[DEFAULT_PARALLELISM_DEGREE]
+option_type=text
+default_value=0
+description=Oracle PARALLEL hint degree (0=disabled)
+allowed_values=
+
+[PARALLEL_MIN_ROWS]
+option_type=text
+default_value=100000
+description=Minimum rows for parallel mode activation
+allowed_values=
+
+[DEFINED_PK]
+option_type=text
+default_value=
+description=Numeric columns for MOD split (TABLE:COLUMN space-separated)
+allowed_values=
+
+[DROP_INDEXES]
+option_type=checkbox
+default_value=0
+description=Drop and recreate indexes during data import
+allowed_values=
+
+[SYNCHRONOUS_COMMIT]
+option_type=checkbox
+default_value=0
+description=Enable synchronous commit for data writes
+allowed_values=
+
+#------------------------------------------------------------------------------
+# PLSQL SECTION
+#------------------------------------------------------------------------------
+
+[EXPORT_INVALID]
+option_type=checkbox
+default_value=0
+description=Export PL/SQL code marked as invalid
+allowed_values=
+
+[PLSQL_PGSQL]
+option_type=checkbox
+default_value=1
+description=Enable PLSQL to PLPGSQL conversion
+allowed_values=
+
+[NULL_EQUAL_EMPTY]
+option_type=checkbox
+default_value=0
+description=Replace NULL tests with coalesce() calls
+allowed_values=
+
+[EMPTY_LOB_NULL]
+option_type=checkbox
+default_value=1
+description=Export empty_clob() and empty_blob() as NULL
+allowed_values=
+
+[PACKAGE_AS_SCHEMA]
+option_type=checkbox
+default_value=1
+description=Export packages as schemas
+allowed_values=
+
+[REWRITE_OUTER_JOIN]
+option_type=checkbox
+default_value=1
+description=Rewrite Oracle (+) outer join syntax
+allowed_values=
+
+[FUNCTION_STABLE]
+option_type=checkbox
+default_value=1
+description=Mark Oracle functions as STABLE
+allowed_values=
+
+[COMMENT_COMMIT_ROLLBACK]
+option_type=checkbox
+default_value=0
+description=Comment out COMMIT/ROLLBACK calls
+allowed_values=
+
+[COMMENT_SAVEPOINT]
+option_type=checkbox
+default_value=0
+description=Comment out SAVEPOINT calls
+allowed_values=
+
+[STRING_CONSTANT_REGEXP]
+option_type=text
+default_value=
+description=Regexp to protect string placeholders (semicolon-separated)
+allowed_values=
+
+[ALTERNATIVE_QUOTING_REGEXP]
+option_type=text
+default_value=
+description=Regexp for Alternative Quoting Mechanism (e.g. q'{(.*)}')
+allowed_values=
+
+[USE_ORAFCE]
+option_type=checkbox
+default_value=0
+description=Use Orafce library functions
+allowed_values=
+
+[AUTONOMOUS_TRANSACTION]
+option_type=checkbox
+default_value=1
+description=Translate autonomous transactions using dblink/pg_background
+allowed_values=
+
+#------------------------------------------------------------------------------
+# ASSESSMENT SECTION
+#------------------------------------------------------------------------------
+
+[ESTIMATE_COST]
+option_type=checkbox
+default_value=0
+description=Activate migration cost evaluation
+allowed_values=
+
+[COST_UNIT_VALUE]
+option_type=text
+default_value=5
+description=Migration cost evaluation unit in minutes
+allowed_values=
+
+[DUMP_AS_HTML]
+option_type=checkbox
+default_value=0
+description=Generate migration report in HTML format
+allowed_values=
+
+[TOP_MAX]
+option_type=text
+default_value=10
+description=Number of tables in Top N lists
+allowed_values=
+
+[HUMAN_DAYS_LIMIT]
+option_type=text
+default_value=5
+description=Human-days limit for B to C assessment level
+allowed_values=
+
+[AUDIT_USER]
+option_type=text
+default_value=
+description=Usernames to filter queries from DBA_AUDIT_TRAIL (comma-separated)
+allowed_values=
+
+[UUID_FUNCTION]
+option_type=text
+default_value=uuid_generate_v4
+description=PostgreSQL UUID function to use
+allowed_values=
+
+#------------------------------------------------------------------------------
+# POSTGRESQL FEATURE SECTION
+#------------------------------------------------------------------------------
+
+[PG_VERSION]
+option_type=text
+default_value=15
+description=PostgreSQL major version number of target database
+allowed_values=
+
+[BITMAP_AS_GIN]
+option_type=checkbox
+default_value=1
+description=Create bitmap-like index using btree_gin extension
+allowed_values=
+
+[PG_BACKGROUND]
+option_type=checkbox
+default_value=0
+description=Use pg_background for autonomous transactions
+allowed_values=
+
+[DBLINK_CONN]
+option_type=text
+default_value=
+description=Connection string for dblink autonomous transactions
+allowed_values=
+
+[PG_SUPPORTS_SUBSTR]
+option_type=checkbox
+default_value=1
+description=PostgreSQL supports substr() function
+allowed_values=
+
+#------------------------------------------------------------------------------
+# SPATIAL SECTION
+#------------------------------------------------------------------------------
+
+[AUTODETECT_SPATIAL_TYPE]
+option_type=text
+default_value=1
+description=Detect spatial type and dimensions (0=disabled, N=sample size)
+allowed_values=
+
+[CONVERT_SRID]
+option_type=text
+default_value=1
+description=Convert SRID to EPSG (0=disabled, 1=auto, N=force value)
+allowed_values=
+
+[DEFAULT_SRID]
+option_type=text
+default_value=4326
+description=Default EPSG SRID to use
+allowed_values=
+
+[GEOMETRY_EXTRACT_TYPE]
+option_type=dropdown
+default_value=INTERNAL
+description=Geometry extraction method
+allowed_values=WKT,WKB,INTERNAL
+
+[ST_SRID_FUNCTION]
+option_type=text
+default_value=ST_SRID
+description=Oracle function to extract SRID from ST_Geometry
+allowed_values=
+
+[ST_DIMENSION_FUNCTION]
+option_type=text
+default_value=ST_DIMENSION
+description=Oracle function to extract dimension from ST_Geometry
+allowed_values=
+
+[ST_ASBINARY_FUNCTION]
+option_type=text
+default_value=ST_ASBINARY
+description=Oracle function to convert ST_Geometry to WKB
+allowed_values=
+
+[ST_ASTEXT_FUNCTION]
+option_type=text
+default_value=ST_ASTEXT
+description=Oracle function to convert ST_Geometry to WKT
+allowed_values=
+
+[ST_GEOMETRYTYPE_FUNCTION]
+option_type=text
+default_value=ST_GEOMETRYTYPE
+description=Oracle function to extract geometry type from ST_Geometry
+allowed_values=
+
+#------------------------------------------------------------------------------
+# FDW SECTION
+#------------------------------------------------------------------------------
+
+[FDW_SERVER]
+option_type=text
+default_value=orcl
+description=Foreign data server name for oracle_fdw
+allowed_values=
+
+[FDW_IMPORT_SCHEMA]
+option_type=text
+default_value=ora2pg_fdw_import
+description=Schema for foreign tables during data migration
+allowed_values=
+
+[ORACLE_FDW_PREFETCH]
+option_type=text
+default_value=1000
+description=Prefetch value for oracle_fdw
+allowed_values=
+
+[ORACLE_FDW_COPY_MODE]
+option_type=dropdown
+default_value=local
+description=Copy mode when using oracle_fdw
+allowed_values=local,server
+
+[ORACLE_FDW_COPY_FORMAT]
+option_type=dropdown
+default_value=binary
+description=Copy format when using oracle_fdw
+allowed_values=binary,csv
+
+[DROP_FOREIGN_SCHEMA]
+option_type=checkbox
+default_value=1
+description=Drop temporary FDW schema before each import
+allowed_values=
+
+#------------------------------------------------------------------------------
+# MYSQL SECTION
+#------------------------------------------------------------------------------
+
+[MYSQL_PIPES_AS_CONCAT]
+option_type=checkbox
+default_value=0
+description=Treat || as concat operator (MySQL compatibility)
+allowed_values=
+
+[MYSQL_INTERNAL_EXTRACT_FORMAT]
+option_type=checkbox
+default_value=0
+description=Use internal integer format for EXTRACT() replacement
+allowed_values=
+
+#------------------------------------------------------------------------------
+# SQL SERVER SECTION
+#------------------------------------------------------------------------------
+
+[DROP_ROWVERSION]
+option_type=checkbox
+default_value=0
+description=Do not export rowversion/timestamp columns
+allowed_values=
+
+[CASE_INSENSITIVE_SEARCH]
+option_type=text
+default_value=citext
+description=Case insensitive search method (citext, collation name, or none)
+allowed_values=
+
+[SELECT_TOP]
+option_type=text
+default_value=
+description=Append TOP N clause to SELECT for data extraction
+allowed_values=
