@@ -44,6 +44,10 @@
     <div class="flex justify-between items-center mb-4">
         <h3 class="text-lg font-bold text-white">Select Objects to Export</h3>
         <div class="flex space-x-4">
+        <label class="flex items-center text-sm text-gray-300">
+            <input type="checkbox" id="bulk-ddl-pretty-checkbox" class="mr-2">
+            Pretty DDL
+        </label>
             <button id="download-original-ddl-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
                 <i class="fas fa-download mr-2"></i> <span>Download Original DDL</span>
             </button>
@@ -85,3 +89,9 @@
     </div>
 </div>
 
+<div class="flex items-center space-x-2">
+    <label class="flex items-center text-sm text-gray-300">
+        <input type="checkbox" id="bulk-ddl-pretty-checkbox" class="mr-2">
+        Pretty DDL (no storage clauses)
+    </label>
+</div>

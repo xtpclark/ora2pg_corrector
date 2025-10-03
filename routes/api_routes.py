@@ -268,15 +268,12 @@ def test_ora2pg_connection(client_id):
         logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
 
-@api_bp.route('/client/<int:client_id>/get_object_list', methods=['POST'])
+# In api_routes.py
+@api_bp.route('/client/<int:client_id>/get_object_list', methods=['GET'])
 def get_object_list(client_id):
-    data = request.get_json()
-    object_types = data.get('object_types')
-    if not object_types:
-        return jsonify({'error': 'Object types are required.'}), 400
-
     try:
         conn = get_db()
+        # Fetch the client's config to connect to their Oracle DB
         query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
@@ -293,8 +290,10 @@ def get_object_list(client_id):
                 except Exception:
                     pass
 
+        # Call the new, refactored sql_processing method
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        object_list, error = corrector._get_object_list(config, object_types)
+        # Note: We pass the app's DB connection 'conn' now
+        object_list, error = corrector._get_object_list(conn, config)
 
         if error:
             log_audit(client_id, 'get_object_list', f'Failed: {error}')
@@ -311,7 +310,8 @@ def get_object_list(client_id):
 def get_oracle_ddl(client_id):
     data = request.get_json()
     object_name = data.get('object_name')
-    object_type = data.get('object_type', 'TABLE') 
+    object_type = data.get('object_type', 'TABLE')
+    pretty = data.get('pretty', False)  # Add this line
 
     if not object_name:
         return jsonify({'error': 'Object name is required.'}), 400
@@ -335,7 +335,7 @@ def get_oracle_ddl(client_id):
                     pass
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name)
+        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name, pretty=pretty)  # Update this line
 
         if error:
             return jsonify({'error': error}), 500
@@ -349,7 +349,8 @@ def get_oracle_ddl(client_id):
 @api_bp.route('/client/<int:client_id>/get_bulk_oracle_ddl', methods=['POST'])
 def get_bulk_oracle_ddl(client_id):
     data = request.get_json()
-    objects = data.get('objects') 
+    objects = data.get('objects')
+    pretty = data.get('pretty', False)  # Add this line
 
     if not objects:
         return jsonify({'error': 'A list of objects is required.'}), 400
@@ -373,7 +374,7 @@ def get_bulk_oracle_ddl(client_id):
         
         all_ddls = []
         for obj in objects:
-            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'])
+            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'], pretty=pretty)  # Update this line
             if error:
                 logger.warning(f"Could not fetch DDL for {obj['name']}: {error}")
                 all_ddls.append(f"-- FAILED to retrieve DDL for {obj['type']} {obj['name']}: {error}\n\n")
@@ -443,6 +444,7 @@ def run_ora2pg(client_id):
         
         request_data = request.get_json(silent=True) or {}
         
+        
         # --- THIS IS THE FIX ---
         # Check for and apply the 'type' override from the new dropdown.
         if 'type' in request_data:
@@ -479,7 +481,7 @@ def run_ora2pg(client_id):
     except Exception as e:
         logger.error(f"Failed to run Ora2Pg for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
-
+        
 @api_bp.route('/get_exported_file', methods=['POST'])
 def get_exported_file():
     file_path = None

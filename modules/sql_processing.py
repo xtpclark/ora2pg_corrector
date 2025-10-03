@@ -278,7 +278,103 @@ class Ora2PgAICorrector:
             logger.error(f"An unexpected error occurred during SQL*Plus execution: {e}", exc_info=True)
             return None, f"An unexpected error occurred: {str(e)}"
             
-    def get_oracle_ddl(self, client_config, object_type, object_name):
+    def get_oracle_ddl(self, client_config, object_type, object_name, pretty=False):
+        """
+        Extracts the original Oracle DDL for a single object using SQL*Plus.
+        
+        :param dict client_config: Client configuration
+        :param str object_type: Type of object (TABLE, VIEW, etc.)
+        :param str object_name: Name of the object
+        :param bool pretty: If True, returns cleaned DDL without storage clauses
+        """
+        logger.info(f"Fetching Oracle DDL for {object_type} {object_name} (pretty={pretty}).")
+    
+        schema = client_config.get('schema')
+        if not schema:
+            return None, "Oracle schema is not configured."
+    
+        # SECURITY FIX: Validate all identifiers to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+            validated_object_type = self._validate_oracle_identifier(object_type, "object type")
+            validated_object_name = self._validate_oracle_identifier(object_name, "object name")
+        except ValueError as e:
+            logger.error(f"Identifier validation failed: {e}")
+            return None, str(e)
+    
+        # Use the central helper method
+        connect_string, error = self._build_sqlplus_connect_string(client_config)
+        if error:
+            return None, error
+        
+        # Build the SQL query with optional pretty formatting
+        if pretty:
+            sql_query = f"""
+                SET LONG 2000000
+                SET PAGESIZE 0
+                SET LINESIZE 32767
+                SET HEADING OFF
+                SET FEEDBACK OFF
+                SET VERIFY OFF
+                SET ECHO OFF
+                SET TERMOUT OFF
+                SET TRIMOUT ON
+                SET TRIMSPOOL ON
+                
+                BEGIN
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'STORAGE', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'TABLESPACE', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SQLTERMINATOR', TRUE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'PRETTY', TRUE);
+                END;
+                /
+                
+                SELECT DBMS_METADATA.GET_DDL('{validated_object_type.upper()}', '{validated_object_name.upper()}', '{validated_schema.upper()}') FROM DUAL;
+                EXIT;
+            """
+        else:
+            sql_query = f"""
+                SET LONG 2000000
+                SET PAGESIZE 0
+                SET LINESIZE 32767
+                SET HEADING OFF
+                SET FEEDBACK OFF
+                SET VERIFY OFF
+                SET ECHO OFF
+                SET TERMOUT OFF
+                SET TRIMOUT ON
+                SET TRIMSPOOL ON
+                
+                SELECT DBMS_METADATA.GET_DDL('{validated_object_type.upper()}', '{validated_object_name.upper()}', '{validated_schema.upper()}') FROM DUAL;
+                EXIT;
+            """
+        
+        command = [self.sqlplus_path, '-S', connect_string]
+        
+        try:
+            process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
+    
+            if process.returncode != 0:
+                error_message = process.stderr.strip() or process.stdout.strip()
+                logger.error(f"SQL*Plus DDL fetch failed: {error_message}")
+                return None, f"SQL*Plus failed: {error_message}"
+            
+            ddl = process.stdout.strip()
+            if not ddl or "ORA-" in ddl:
+                return None, f"Could not retrieve DDL for {object_name}. Reason: {ddl}"
+    
+            logger.info(f"Successfully fetched DDL for {object_name}.")
+            return ddl, None
+    
+        except subprocess.TimeoutExpired:
+            return None, "SQL*Plus DDL fetch timed out."
+        except Exception as e:
+            logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
+            return None, str(e)
+
+
+    def old2_get_oracle_ddl(self, client_config, object_type, object_name):
        """
        Extracts the original Oracle DDL for a single object using SQL*Plus.
        """

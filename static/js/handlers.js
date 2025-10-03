@@ -1,6 +1,6 @@
 import { state, editors, dom } from './state.js';
 import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectTypeTree, renderObjectList, renderSessionHistory, populateTypeDropdown } from './ui.js';
+import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectTypeTree, renderObjectList, renderSessionHistory, populateTypeDropdown, renderActiveConfig } from './ui.js';
 
 /**
  * Sends an audit log event to the backend for the current client.
@@ -84,17 +84,16 @@ export async function selectClient(clientId) {
     if (!clientId) {
         dom.mainContentEl.classList.add('hidden');
         dom.welcomeMessageEl.classList.remove('hidden');
-        document.getElementById('active-config-display').innerHTML = ''; // Clear config display
+        document.getElementById('active-config-display').innerHTML = '';
         state.currentClientId = null;
-        renderClients(); // This call is OK here to reset the list on deselect
+        renderClients();
         return;
     }
     
     const selectedClient = state.clients.find(c => c.client_id === clientId);
     dom.clientNameHeaderEl.textContent = selectedClient.client_name;
     
-    // --- REMOVED: This line was unnecessarily rebuilding the dropdown ---
-    // renderClients(); 
+    // REMOVED: Line 74 syntax error - ("Token:", localStorage.getItem('token'));
     
     dom.mainContentEl.classList.remove('hidden');
     dom.welcomeMessageEl.classList.add('hidden');
@@ -127,8 +126,13 @@ export async function selectClient(clientId) {
         state.sessions = sessions;
         renderSessionHistory();
 
-        editors.original.setValue('-- Oracle SQL will appear here...');
-        editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        // Safe editor value setting with CodeMirror
+        if (editors.original?.setValue) {
+            editors.original.setValue('-- Oracle SQL will appear here...');
+        }
+        if (editors.corrected?.setValue) {
+            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        }
     } catch (error) {
         showToast("Failed to load client configuration or sessions.", true);
     }
@@ -142,11 +146,22 @@ export async function selectClient(clientId) {
 export function handleFileSelect(event) {
     const file = event.target.files[0];
     if (!file) return;
+    
     const reader = new FileReader();
     reader.onload = function(e) {
         const content = e.target.result;
-        editors.original.setValue(content);
-        editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        
+        // Safe editor operations with null checks
+        if (editors.original?.setValue) {
+            editors.original.setValue(content);
+        } else {
+            console.warn('Original editor not initialized');
+        }
+        
+        if (editors.corrected?.setValue) {
+            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        }
+        
         showToast(`Loaded ${file.name} successfully.`);
         log_audit(state.currentClientId, 'load_sql_file', `Loaded SQL from file: ${file.name}`);
         event.target.value = '';
@@ -232,7 +247,7 @@ async function handleRunGroupedOra2PgExport() {
  */
 async function handleFileClick(fileId) {
     if (!fileId) return;
-    state.currentFileId = fileId; 
+    state.currentFileId = fileId;
 
     showToast(`Loading file...`);
     try {
@@ -241,14 +256,21 @@ async function handleFileClick(fileId) {
             body: JSON.stringify({ file_id: fileId })
         });
 
-        editors.original.setValue(data.content || '');
-        editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        // Safe editor operations
+        if (editors.original?.setValue) {
+            editors.original.setValue(data.content || '');
+        }
+        if (editors.corrected?.setValue) {
+            editors.corrected.setValue('-- AI-corrected PostgreSQL will appear here...');
+        }
+        
         switchTab('workspace');
 
     } catch (error) {
         showToast(`Failed to load file: ${error.message}`, true);
     }
 }
+
 
 /**
  * Fetches and triggers the download of the original Oracle DDL for a single object.
@@ -259,23 +281,27 @@ async function handleFileClick(fileId) {
 async function handleDownloadSingleDDL(objectName, objectType) {
     if (!state.currentClientId || !objectName) return;
 
-    showToast(`Fetching DDL for ${objectName}...`);
+    // Find the checkbox for this object
+    const checkbox = document.querySelector(`.ddl-pretty-checkbox[data-object-name="${objectName}"]`);
+    const pretty = checkbox ? checkbox.checked : false;
+
+    showToast(`Fetching ${pretty ? 'pretty' : 'raw'} DDL for ${objectName}...`);
     try {
         const data = await apiFetch(`/api/client/${state.currentClientId}/get_oracle_ddl`, {
             method: 'POST',
-            body: JSON.stringify({ object_name: objectName, object_type: objectType })
+            body: JSON.stringify({ object_name: objectName, object_type: objectType, pretty: pretty })
         });
         
         const blob = new Blob([data.ddl], { type: 'application/sql' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `${objectName}_oracle.sql`;
+        link.download = `${objectName}_oracle${pretty ? '_pretty' : ''}.sql`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        log_audit(state.currentClientId, 'download_oracle_ddl', `Downloaded original DDL for ${objectName}.`);
+        log_audit(state.currentClientId, 'download_oracle_ddl', `Downloaded ${pretty ? 'pretty' : 'raw'} DDL for ${objectName}.`);
     } catch (error) {
         showToast(`Failed to download DDL: ${error.message}`, true);
         log_audit(state.currentClientId, 'download_oracle_ddl_failed', `Failed to download DDL for ${objectName}: ${error.message}`);
@@ -299,26 +325,27 @@ async function handleDownloadBulkDDL() {
         return;
     }
 
+    const pretty = document.getElementById('bulk-ddl-pretty-checkbox')?.checked || false;
     const button = document.getElementById('download-original-ddl-btn');
     toggleButtonLoading(button, true, 'Download Original DDL');
-    showToast(`Fetching DDL for ${allSelections.length} objects...`);
+    showToast(`Fetching ${pretty ? 'pretty' : 'raw'} DDL for ${allSelections.length} objects...`);
 
     try {
         const data = await apiFetch(`/api/client/${state.currentClientId}/get_bulk_oracle_ddl`, {
             method: 'POST',
-            body: JSON.stringify({ objects: allSelections })
+            body: JSON.stringify({ objects: allSelections, pretty: pretty })
         });
 
         const blob = new Blob([data.ddl], { type: 'application/sql' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = `oracle_ddl_export.sql`;
+        link.download = `oracle_ddl_export${pretty ? '_pretty' : ''}.sql`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
-        log_audit(state.currentClientId, 'download_bulk_oracle_ddl', `Downloaded bulk DDL for ${allSelections.length} objects.`);
+        log_audit(state.currentClientId, 'download_bulk_oracle_ddl', `Downloaded bulk ${pretty ? 'pretty' : 'raw'} DDL for ${allSelections.length} objects.`);
     } catch (error) {
         showToast(`Failed to download bulk DDL: ${error.message}`, true);
         log_audit(state.currentClientId, 'download_bulk_oracle_ddl_failed', `Failed to download bulk DDL: ${error.message}`);
@@ -416,7 +443,9 @@ export async function handleCorrectWithAI() {
         return;
     }
 
-    const originalSql = editors.original.getValue();
+    // Safe getValue with null check
+    const originalSql = editors.original?.getValue ? editors.original.getValue() : '';
+    
     if (!originalSql || originalSql.trim() === '' || originalSql.startsWith('-- Oracle SQL')) {
         showToast('No original SQL to correct.', true);
         return;
@@ -432,7 +461,10 @@ export async function handleCorrectWithAI() {
             body: JSON.stringify({ sql: originalSql, client_id: state.currentClientId })
         });
         
-        editors.corrected.setValue(correctionData.corrected_sql || '');
+        // Safe setValue with null check
+        if (editors.corrected?.setValue) {
+            editors.corrected.setValue(correctionData.corrected_sql || '');
+        }
         
         await apiFetch(`/api/file/${state.currentFileId}/status`, {
             method: 'POST',
@@ -465,7 +497,9 @@ export async function handleValidateSql() {
         return;
     }
 
-    const correctedSql = editors.corrected.getValue();
+    // Safe getValue with null check
+    const correctedSql = editors.corrected?.getValue ? editors.corrected.getValue() : '';
+    
     if (!correctedSql || correctedSql.trim() === '' || correctedSql.startsWith('-- AI-corrected')) {
         showToast('No corrected SQL to validate.', true);
         return;
@@ -496,7 +530,7 @@ export async function handleValidateSql() {
             body: JSON.stringify({ status: newStatus })
         });
 
-        if (validationData.corrected_sql) {
+        if (validationData.corrected_sql && editors.corrected?.setValue) {
             editors.corrected.setValue(validationData.corrected_sql);
         }
 

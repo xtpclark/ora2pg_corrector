@@ -1,5 +1,21 @@
+// Extract token from URL query parameters
+function getAuthToken() {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get('token');
+}
+
+// Store token for the session
+const authToken = getAuthToken();
+
 export async function apiFetch(url, options = {}) {
-    // --- FIX: Automatically add the correct Content-Type header if a body exists ---
+    // Add token to the request
+    if (authToken) {
+        // Add token as query parameter to the URL
+        const separator = url.includes('?') ? '&' : '?';
+        url = `${url}${separator}token=${authToken}`;
+    }
+    
+    // Add Content-Type header if body exists
     if (options.body && (!options.headers || !options.headers['Content-Type'])) {
         options.headers = {
             ...options.headers,

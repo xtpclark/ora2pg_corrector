@@ -6,8 +6,51 @@
     <title>Ora2Pg AI Corrector</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.33.0/min/vs/loader.js"></script>
+    <!-- Removed Monaco editor loader - not needed for CodeMirror -->
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <style>
+        /* Editor container styling */
+        #original-editor,
+        #corrected-editor {
+            height: 100%;
+            min-height: 400px;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        
+        /* CodeMirror specific styling */
+        .cm-editor {
+            height: 100%;
+        }
+        
+        .cm-focused {
+            outline: 2px solid #4299e1 !important;
+        }
+        
+        /* Override some CodeMirror defaults for better dark theme integration */
+        .cm-editor .cm-scroller {
+            scrollbar-width: thin;
+            scrollbar-color: #4a5568 #2d3748;
+        }
+        
+        .cm-editor::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        .cm-editor::-webkit-scrollbar-track {
+            background: #2d3748;
+        }
+        
+        .cm-editor::-webkit-scrollbar-thumb {
+            background: #4a5568;
+            border-radius: 4px;
+        }
+        
+        .cm-editor::-webkit-scrollbar-thumb:hover {
+            background: #718096;
+        }
+    </style>
 </head>
 <body class="bg-gray-800 text-gray-200 flex h-screen overflow-hidden">
 
@@ -17,10 +60,10 @@
          <div id="client-management-container">
              <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Client</h2>
              <select id="client-selector" class="form-select w-full rounded-md">
-                 </select>
+             </select>
              
              <div id="active-config-display" class="mt-6">
-                 </div>
+             </div>
          </div>
          
          <div class="mt-auto text-center text-gray-500 text-xs">
@@ -35,7 +78,6 @@
     <div id="toast" class="toast bg-gray-700 border border-gray-600 text-white py-3 px-5 rounded-lg shadow-lg">
         <p id="toast-message"></p>
     </div>
-
-    <script type="module" src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script type="module" src="{{ url_for('static', filename='js/app.js') }}?v=2"></script>
 </body>
 </html>

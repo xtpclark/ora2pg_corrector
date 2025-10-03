@@ -73,4 +73,5 @@ ENTRYPOINT ["entrypoint.sh"]
 EXPOSE 8000
 
 # Command to run the application (will be executed by the entrypoint)
-CMD ["gunicorn", "--timeout", "3000", "-w", "4", "-b", "0.0.0.0:8000", "app:create_app()"]
+# CMD ["gunicorn", "--timeout", "3000", "-w", "4", "-b", "0.0.0.0:8000", "app:create_app()"]
+CMD ["gunicorn", "--log-level", "debug", "--error-logfile", "-", "--timeout", "3000", "-w", "4", "-b", "0.0.0.0:8000", "app:create_app()"]
