@@ -26,7 +26,7 @@
                 <i class="fas fa-file-export mr-2"></i> <span>Export as AsciiDoc</span>
              </button>
             <button id="run-ora2pg-btn" class="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-6 rounded-lg flex items-center disabled:opacity-50">
-               <i class="fas fa-rocket mr-2"></i> <span>Run Ora2Pg Export</span>
+               <i class="fas fa-rocket mr-2"></i> <span>Discover Objects</span>
             </button>
         </div>
     </div>
@@ -40,58 +40,52 @@
     <div id="report-container" class="mt-6 bg-gray-900 p-6 rounded-lg hidden">
     </div>
 
-<div id="object-selector-container" class="mt-6 bg-gray-900 p-6 rounded-lg hidden">
-    <div class="flex justify-between items-center mb-4">
-        <h3 class="text-lg font-bold text-white">Select Objects to Export</h3>
-        <div class="flex space-x-4">
-        <label class="flex items-center text-sm text-gray-300">
-            <input type="checkbox" id="bulk-ddl-pretty-checkbox" class="mr-2">
-            Pretty DDL
-        </label>
-            <button id="download-original-ddl-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
-                <i class="fas fa-download mr-2"></i> <span>Download Original DDL</span>
-            </button>
-            <button id="export-selected-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
-                <i class="fas fa-file-export mr-2"></i> <span>Export Selected</span>
-            </button>
-        </div>
-    </div>
-
-    <div class="flex space-x-6">
-        <div class="w-1/4">
-            <div id="object-type-tree" class="bg-gray-800 p-4 rounded-lg max-h-96 overflow-y-auto">
-                </div>
-        </div>
-
-        <div class="w-3/4">
-            <div class="flex justify-between items-center mb-2">
-                <div class="relative w-1/2">
-                    <input type="text" id="object-filter-input" placeholder="Filter objects..." class="form-input w-full rounded-md pl-10 text-sm">
-                    <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-                </div>
-                <div class="flex space-x-2">
-                    <button id="select-all-objects" class="text-sm text-blue-400 hover:underline">Select All</button>
-                    <span class="text-gray-600">|</span>
-                    <button id="select-none-objects" class="text-sm text-blue-400 hover:underline">Select None</button>
-                </div>
-            </div>
-            <div id="object-list" class="bg-gray-800 p-4 rounded-lg max-h-80 overflow-y-auto">
-                <p class="text-gray-500 text-center py-16">Select an object type from the tree to see the list of objects.</p>
+    <!-- Object Selector Container - wraps the entire object selection UI -->
+    <div id="object-selector-container" class="mt-6 bg-gray-900 p-6 rounded-lg hidden">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-bold text-white">Select Objects to Export</h3>
+            <div class="flex space-x-4 items-center">
+                <label class="flex items-center text-sm text-gray-300 border border-gray-600 rounded px-3 py-2">
+                    <input type="checkbox" id="ddl-format-pretty" class="mr-2">
+                    Pretty DDL (no storage clauses)
+                </label>
+                <button id="download-original-ddl-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
+                    <i class="fas fa-download mr-2"></i> <span>Download Original DDL</span>
+                </button>
+                <button id="export-selected-btn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg flex items-center">
+                    <i class="fas fa-file-export mr-2"></i> <span>Export Selected</span>
+                </button>
             </div>
         </div>
+
+        <div class="flex space-x-6">
+            <div class="w-1/4">
+                <div id="object-type-tree" class="bg-gray-800 p-4 rounded-lg max-h-96 overflow-y-auto">
+                </div>
+            </div>
+
+            <div class="w-3/4">
+                <div class="flex justify-between items-center mb-2">
+                    <div class="relative w-1/2">
+                        <input type="text" id="object-filter-input" placeholder="Filter objects..." class="form-input w-full rounded-md pl-10 text-sm">
+                        <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button id="select-all-objects" class="text-sm text-blue-400 hover:underline">Select All</button>
+                        <span class="text-gray-600">|</span>
+                        <button id="select-none-objects" class="text-sm text-blue-400 hover:underline">Select None</button>
+                    </div>
+                </div>
+                <div id="object-list" class="bg-gray-800 p-4 rounded-lg max-h-80 overflow-y-auto">
+                    <p class="text-gray-500 text-center py-16">Select an object type from the tree to see the list of objects.</p>
+                </div>
+            </div>
+        </div>
     </div>
-</div>
     
     <div id="file-browser-container" class="mt-6 bg-gray-900 p-6 rounded-lg hidden">
         <h3 class="text-lg font-bold text-white mb-4">Exported Files</h3>
         <div id="migration-file-list" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
         </div>
     </div>
-</div>
-
-<div class="flex items-center space-x-2">
-    <label class="flex items-center text-sm text-gray-300">
-        <input type="checkbox" id="bulk-ddl-pretty-checkbox" class="mr-2">
-        Pretty DDL (no storage clauses)
-    </label>
 </div>
