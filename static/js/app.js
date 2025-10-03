@@ -1,10 +1,10 @@
 import { state, editors, dom } from './state.js';
 import { initializeApp, initEventListeners } from './handlers.js';
 
-// CodeMirror 6 imports - using ESM CDN
-import { EditorView, basicSetup } from "https://cdn.jsdelivr.net/npm/codemirror@6/+esm";
-import { sql, PostgreSQL } from "https://cdn.jsdelivr.net/npm/@codemirror/lang-sql@6/+esm";
-import { oneDark } from "https://cdn.jsdelivr.net/npm/@codemirror/theme-one-dark@6/+esm";
+// CodeMirror 6 imports - using esm.sh for proper dependency resolution
+import { EditorView, basicSetup } from "https://esm.sh/codemirror@6.0.1";
+import { sql, PostgreSQL } from "https://esm.sh/@codemirror/lang-sql@6.8.0";
+import { oneDark } from "https://esm.sh/@codemirror/theme-one-dark@6.1.2";
 
 // Custom theme to match your dark UI
 const customTheme = EditorView.theme({
@@ -148,7 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
     dom.settingsForm = document.getElementById('settings-form');
     dom.filePicker = document.getElementById('sql-file-picker');
     
-    // Initialize editors synchronously - no async loading needed with CodeMirror!
+    // Initialize editors synchronously
     const editorsInitialized = initializeEditors();
     
     if (!editorsInitialized) {

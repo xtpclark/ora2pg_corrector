@@ -433,18 +433,12 @@ item.innerHTML = `
                class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
         <span class="text-sm font-medium text-gray-300">${obj.name}</span>
     </label>
-    <div class="flex items-center space-x-2">
-        <label class="flex items-center text-xs text-gray-400" title="Download formatted DDL without storage clauses">
-            <input type="checkbox" class="ddl-pretty-checkbox mr-1" data-object-name="${obj.name}">
-            Pretty
-        </label>
-        <button class="download-ddl-btn text-gray-400 hover:text-white p-2" 
-                data-object-name="${obj.name}" 
-                data-object-type="${obj.type}" 
-                title="Download Original Oracle DDL for ${obj.name}">
-            <i class="fas fa-download"></i>
-        </button>
-    </div>
+    <button class="download-ddl-btn text-gray-400 hover:text-white p-2" 
+            data-object-name="${obj.name}" 
+            data-object-type="${obj.type}" 
+            title="Download Original Oracle DDL for ${obj.name}">
+        <i class="fas fa-download"></i>
+    </button>
 `;
         listEl.appendChild(item);
     });

@@ -57,7 +57,8 @@ async function fetchAndRenderAuditLogs() {
 async function selectSession(sessionId) {
     if (!sessionId) {
         state.currentSessionId = null;
-        document.getElementById('file-browser-container').classList.add('hidden');
+        const fileBrowserContainer = document.getElementById('file-browser-container');
+        if (fileBrowserContainer) fileBrowserContainer.classList.add('hidden');
         renderSessionHistory();
         return;
     }
@@ -84,7 +85,8 @@ export async function selectClient(clientId) {
     if (!clientId) {
         dom.mainContentEl.classList.add('hidden');
         dom.welcomeMessageEl.classList.remove('hidden');
-        document.getElementById('active-config-display').innerHTML = '';
+        const activeConfigDisplay = document.getElementById('active-config-display');
+        if (activeConfigDisplay) activeConfigDisplay.innerHTML = '';
         state.currentClientId = null;
         renderClients();
         return;
@@ -93,18 +95,21 @@ export async function selectClient(clientId) {
     const selectedClient = state.clients.find(c => c.client_id === clientId);
     dom.clientNameHeaderEl.textContent = selectedClient.client_name;
     
-    // REMOVED: Line 74 syntax error - ("Token:", localStorage.getItem('token'));
-    
     dom.mainContentEl.classList.remove('hidden');
     dom.welcomeMessageEl.classList.add('hidden');
     switchTab('migration');
     
-    // Reset UI sections and state for the new client
-    document.getElementById('report-container').classList.add('hidden');
-    document.getElementById('file-browser-container').classList.add('hidden');
-    document.getElementById('object-selector-container').classList.add('hidden');
-    document.getElementById('session-history-container').classList.add('hidden');
+    // Reset UI sections and state for the new client (with null-safety)
+    const reportContainer = document.getElementById('report-container');
+    const fileBrowserContainer = document.getElementById('file-browser-container');
+    const objectSelectorContainer = document.getElementById('object-selector-container');
+    const sessionHistoryContainer = document.getElementById('session-history-container');
     const exportReportBtn = document.getElementById('export-report-btn');
+    
+    if (reportContainer) reportContainer.classList.add('hidden');
+    if (fileBrowserContainer) fileBrowserContainer.classList.add('hidden');
+    if (objectSelectorContainer) objectSelectorContainer.classList.add('hidden');
+    if (sessionHistoryContainer) sessionHistoryContainer.classList.add('hidden');
     if (exportReportBtn) exportReportBtn.disabled = true;
 
     state.currentReportData = null;
@@ -185,7 +190,7 @@ async function handleGetObjectList() {
         const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
         
         state.objectList = objectList;
-        renderObjectTypeTree(); // Changed from renderObjectSelector
+        renderObjectTypeTree();
         showToast('Object list loaded. Please make your selection.');
         log_audit(state.currentClientId, 'get_object_list_success', `Fetched ${objectList.length} objects.`);
     } catch (error) {
@@ -229,8 +234,9 @@ async function handleRunGroupedOra2PgExport() {
         renderSessionHistory();
         
         showToast(`All exports complete! Check the new session(s).`);
-        document.getElementById('object-selector-container').classList.add('hidden');
-        state.selectedObjects = {}; // Clear selections after successful export
+        const objectSelectorContainer = document.getElementById('object-selector-container');
+        if (objectSelectorContainer) objectSelectorContainer.classList.add('hidden');
+        state.selectedObjects = {};
 
     } catch (error) {
         showToast(error.message, true);
@@ -274,6 +280,7 @@ async function handleFileClick(fileId) {
 
 /**
  * Fetches and triggers the download of the original Oracle DDL for a single object.
+ * Uses the global "Pretty DDL" checkbox setting.
  * @async
  * @param {string} objectName - The name of the database object.
  * @param {string} objectType - The type of the database object (e.g., 'TABLE').
@@ -281,9 +288,7 @@ async function handleFileClick(fileId) {
 async function handleDownloadSingleDDL(objectName, objectType) {
     if (!state.currentClientId || !objectName) return;
 
-    // Find the checkbox for this object
-    const checkbox = document.querySelector(`.ddl-pretty-checkbox[data-object-name="${objectName}"]`);
-    const pretty = checkbox ? checkbox.checked : false;
+    const pretty = document.getElementById('ddl-format-pretty')?.checked || false;
 
     showToast(`Fetching ${pretty ? 'pretty' : 'raw'} DDL for ${objectName}...`);
     try {
@@ -310,7 +315,7 @@ async function handleDownloadSingleDDL(objectName, objectType) {
 
 /**
  * Fetches and triggers the download of a single SQL file containing the DDL for multiple objects.
- * Uses the centrally tracked selected objects.
+ * Uses the centrally tracked selected objects and the global "Pretty DDL" checkbox setting.
  * @async
  */
 async function handleDownloadBulkDDL() {
@@ -325,7 +330,7 @@ async function handleDownloadBulkDDL() {
         return;
     }
 
-    const pretty = document.getElementById('bulk-ddl-pretty-checkbox')?.checked || false;
+    const pretty = document.getElementById('ddl-format-pretty')?.checked || false;
     const button = document.getElementById('download-original-ddl-btn');
     toggleButtonLoading(button, true, 'Download Original DDL');
     showToast(`Fetching ${pretty ? 'pretty' : 'raw'} DDL for ${allSelections.length} objects...`);
@@ -700,12 +705,11 @@ export async function initializeApp() {
  * @export
  */
 export function initEventListeners() {
-    // --- NEW: Listener for the new client selector dropdown ---
+    // Listener for the client selector dropdown
     document.getElementById('client-selector').addEventListener('change', e => {
         const selectedValue = e.target.value;
         if (selectedValue === '--new--') {
             handleAddClient();
-            // Reset selector if user cancels prompt, by checking if a client was actually created and selected.
             if (!state.currentClientId) {
                  e.target.value = '';
             }
@@ -713,8 +717,6 @@ export function initEventListeners() {
             selectClient(parseInt(selectedValue));
         }
     });
-
-
 
     // Listener for the main tab bar
     dom.tabsEl.addEventListener('click', e => {
@@ -727,16 +729,13 @@ export function initEventListeners() {
         }
     });
     
-
-    // --- NEW: Listener for the "Edit Settings" link in the sidebar ---
+    // Listener for the "Edit Settings" link in the sidebar
     document.querySelector('body').addEventListener('click', e => {
          if (e.target && e.target.matches('.sidebar .tab-button')) {
             const tabName = e.target.dataset.tab;
             switchTab(tabName);
          }
     });
-    
-
 
     // Listener for AI provider dropdown to auto-fill model and endpoint
     dom.settingsForm.addEventListener('change', e => {
@@ -761,7 +760,6 @@ export function initEventListeners() {
             showToast('Failed to copy text.', true);
         });
     });
-    
     
     // Main event delegation for various buttons and links
     document.addEventListener('click', e => {
@@ -819,7 +817,6 @@ export function initEventListeners() {
                 break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
-            // The 'add-client-btn' is gone, handled by the select dropdown now
             case 'load-file-proxy-btn': dom.filePicker.click(); break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
