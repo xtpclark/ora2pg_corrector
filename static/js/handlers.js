@@ -57,10 +57,12 @@ function handleClearWorkspace() {
  */
 function handleCopyToTarget() {
     const sourceContent = editors.original?.getValue() || '';
-    if (!sourceContent || sourceContent.trim() === '' || sourceContent.startsWith('--')) {
-        showToast('No SQL to copy', true);
+    
+    if (!sourceContent || sourceContent.trim() === '') {
+        showToast('Source editor is empty', true);
         return;
     }
+    
     if (editors.corrected?.setValue) {
         editors.corrected.setValue(sourceContent);
         showToast('Copied to target editor');
@@ -149,14 +151,17 @@ async function selectSession(sessionId) {
  * @param {number} clientId - The ID of the client to select.
  */
 export async function selectClient(clientId) {
+    console.log('selectClient called with:', clientId);
     state.currentClientId = clientId;
+    toggleClientActions();
+    
     if (!clientId) {
         dom.mainContentEl.classList.add('hidden');
         dom.welcomeMessageEl.classList.remove('hidden');
         const activeConfigDisplay = document.getElementById('active-config-display');
         if (activeConfigDisplay) activeConfigDisplay.innerHTML = '';
         state.currentClientId = null;
-        renderClients();
+        renderClients(); // ONLY render here when deselecting
         return;
     }
     
@@ -519,12 +524,11 @@ export async function handleCorrectWithAI() {
 
     const originalSql = editors.original?.getValue ? editors.original.getValue() : '';
     
-    if (!originalSql || originalSql.trim() === '' || originalSql.startsWith('--')) {
-        showToast('No SQL to convert.', true);
+    if (!originalSql || originalSql.trim() === '') {
+        showToast('Source editor is empty', true);
         return;
     }
 
-    // Get source dialect
     const dialectSelector = document.getElementById('source-dialect-selector');
     const sourceDialect = dialectSelector ? dialectSelector.value : 'oracle';
 
@@ -546,7 +550,6 @@ export async function handleCorrectWithAI() {
             editors.corrected.setValue(correctionData.corrected_sql || '');
         }
         
-        // Only update file status if we're working with a loaded file
         if (state.currentFileId) {
             await apiFetch(`/api/file/${state.currentFileId}/status`, {
                 method: 'POST',
@@ -583,8 +586,8 @@ export async function handleValidateSql() {
 
     const correctedSql = editors.corrected?.getValue ? editors.corrected.getValue() : '';
     
-    if (!correctedSql || correctedSql.trim() === '' || correctedSql.startsWith('--')) {
-        showToast('No SQL to validate.', true);
+    if (!correctedSql || correctedSql.trim() === '') {
+        showToast('Target editor is empty', true);
         return;
     }
 
@@ -724,9 +727,11 @@ export async function handleTestOra2PgConnection() {
  * @export
  * @param {Event} e - The form submission event.
  */
+
 export async function handleSaveSettings(e) {
     e.preventDefault();
     if (!state.currentClientId) return;
+    
     const formData = new FormData(dom.settingsForm);
     const config = {};
     for (let [key, value] of formData.entries()) {
@@ -737,16 +742,26 @@ export async function handleSaveSettings(e) {
             config[key] = value;
         }
     }
+    
     try {
         await apiFetch(`/api/client/${state.currentClientId}/config`, {
             method: 'POST',
             body: JSON.stringify(config)
         });
-        showToast('Settings saved successfully.');
+        
+        // Reload fresh config from server
+        const freshConfig = await apiFetch(`/api/client/${state.currentClientId}/config`);
+        
+        // Update sidebar with fresh config
+        renderActiveConfig(freshConfig);
+        
+        showToast('Settings saved successfully');
+        log_audit(state.currentClientId, 'save_settings', 'Configuration updated');
     } catch (error) {
         showToast(error.message, true);
     }
 }
+
 
 /**
  * Prompts the user for a new client name and creates the client.
@@ -761,9 +776,21 @@ export async function handleAddClient() {
                 method: 'POST',
                 body: JSON.stringify({ client_name: clientName.trim() })
             });
+            
+            // Add to state and sort
             state.clients.push(newClient);
             state.clients.sort((a, b) => a.client_name.localeCompare(b.client_name));
-            selectClient(newClient.client_id);
+            
+            // Set current client BEFORE rendering
+            state.currentClientId = newClient.client_id;
+            
+            // Now render the dropdown with the selection
+            renderClients();
+            
+            // Then complete the client selection process
+            await selectClient(newClient.client_id);
+            
+            showToast(`Client "${clientName.trim()}" created successfully`);
         } catch(error) {
             showToast(error.message, true);
         }
@@ -799,40 +826,176 @@ export async function initializeApp() {
     }
 }
 
+
+/**
+ * Shows the client action buttons when a client is selected
+ */
+function toggleClientActions() {
+    const actionsDiv = document.getElementById('client-actions');
+    if (actionsDiv) {
+        if (state.currentClientId) {
+            actionsDiv.classList.remove('hidden');
+        } else {
+            actionsDiv.classList.add('hidden');
+        }
+    }
+}
+
+/**
+ * Shows a confirmation modal
+ */
+function showConfirmModal(title, message, onConfirm) {
+    const modal = document.getElementById('confirm-modal');
+    const titleEl = document.getElementById('confirm-modal-title');
+    const messageEl = document.getElementById('confirm-modal-message');
+    const confirmBtn = document.getElementById('confirm-modal-confirm');
+    const cancelBtn = document.getElementById('confirm-modal-cancel');
+    
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    
+    const handleConfirm = () => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        confirmBtn.removeEventListener('click', handleConfirm);
+        cancelBtn.removeEventListener('click', handleCancel);
+        onConfirm();
+    };
+    
+    const handleCancel = () => {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+        confirmBtn.removeEventListener('click', handleConfirm);
+        cancelBtn.removeEventListener('click', handleCancel);
+    };
+    
+    confirmBtn.addEventListener('click', handleConfirm);
+    cancelBtn.addEventListener('click', handleCancel);
+}
+
+/**
+ * Handles editing (renaming) the current client
+ */
+async function handleEditClient() {
+    if (!state.currentClientId) return;
+    
+    const currentClient = state.clients.find(c => c.client_id === state.currentClientId);
+    if (!currentClient) return;
+    
+    const newName = prompt('Enter new client name:', currentClient.client_name);
+    if (!newName || newName.trim() === '' || newName === currentClient.client_name) return;
+    
+    try {
+        await apiFetch(`/api/client/${state.currentClientId}`, {
+            method: 'PUT',
+            body: JSON.stringify({ client_name: newName.trim() })
+        });
+        
+        // Update client in state
+        currentClient.client_name = newName.trim();
+        state.clients.sort((a, b) => a.client_name.localeCompare(b.client_name));
+        
+        // Refresh dropdown AND header
+        renderClients();
+        dom.clientNameHeaderEl.textContent = newName.trim();
+        
+        showToast('Client renamed successfully');
+        log_audit(state.currentClientId, 'rename_client', `Renamed to: ${newName.trim()}`);
+    } catch (error) {
+        showToast(error.message, true);
+    }
+}
+/**
+ * Handles deleting the current client
+ */
+async function handleDeleteClient() {
+    if (!state.currentClientId) return;
+    
+    const currentClient = state.clients.find(c => c.client_id === state.currentClientId);
+    if (!currentClient) return;
+    
+    showConfirmModal(
+        'Delete Client',
+        `Are you sure you want to delete "${currentClient.client_name}"? This will delete all associated configurations, sessions, and files. This action cannot be undone.`,
+        async () => {
+            try {
+                await apiFetch(`/api/client/${state.currentClientId}`, {
+                    method: 'DELETE'
+                });
+                
+                state.clients = state.clients.filter(c => c.client_id !== state.currentClientId);
+                state.currentClientId = null;
+                renderClients();
+                selectClient(null);
+                showToast('Client deleted successfully');
+            } catch (error) {
+                showToast(error.message, true);
+            }
+        }
+    );
+}
+
+
+
+
 /**
  * Initializes all the main event listeners for the application.
  * @export
  */
 export function initEventListeners() {
     // Listener for the client selector dropdown
-    document.getElementById('client-selector').addEventListener('change', e => {
-        const selectedValue = e.target.value;
-        if (selectedValue === '--new--') {
-            handleAddClient();
-            if (!state.currentClientId) {
-                 e.target.value = '';
+    const clientSelector = document.getElementById('client-selector');
+    if (clientSelector) {
+        clientSelector.addEventListener('change', e => {
+            const selectedValue = e.target.value;
+            if (selectedValue === '--new--') {
+                handleAddClient();
+                if (!state.currentClientId) {
+                    e.target.value = '';
+                }
+            } else if (selectedValue) {
+                selectClient(parseInt(selectedValue));
             }
-        } else if (selectedValue) {
-            selectClient(parseInt(selectedValue));
-        }
-    });
+        });
+    }
 
-    // Listener for source dialect selector
+    // Client management buttons (with null checks)
+    const addClientBtn = document.getElementById('add-client-btn');
+    if (addClientBtn) {
+        addClientBtn.addEventListener('click', handleAddClient);
+    }
+    
+    const editClientBtn = document.getElementById('edit-client-btn');
+    if (editClientBtn) {
+        editClientBtn.addEventListener('click', handleEditClient);
+    }
+    
+    const deleteClientBtn = document.getElementById('delete-client-btn');
+    if (deleteClientBtn) {
+        deleteClientBtn.addEventListener('click', handleDeleteClient);
+    }
+
+    // Source dialect selector
     const dialectSelector = document.getElementById('source-dialect-selector');
     if (dialectSelector) {
         dialectSelector.addEventListener('change', handleDialectChange);
     }
 
     // Listener for the main tab bar
-    dom.tabsEl.addEventListener('click', e => {
-        if (e.target && e.target.matches('.tab-button')) {
-            const tabName = e.target.dataset.tab;
-            switchTab(tabName);
-            if (tabName === 'audit') {
-                fetchAndRenderAuditLogs();
+    if (dom.tabsEl) {
+        dom.tabsEl.addEventListener('click', e => {
+            if (e.target && e.target.matches('.tab-button')) {
+                const tabName = e.target.dataset.tab;
+                switchTab(tabName);
+                if (tabName === 'audit') {
+                    fetchAndRenderAuditLogs();
+                }
             }
-        }
-    });
+        });
+    }
     
     // Listener for the "Edit Settings" link in the sidebar
     document.querySelector('body').addEventListener('click', e => {
@@ -843,18 +1006,20 @@ export function initEventListeners() {
     });
 
     // Listener for AI provider dropdown to auto-fill model and endpoint
-    dom.settingsForm.addEventListener('change', e => {
-        if (e.target.id === 'ai_provider') {
-            const selectedProviderName = e.target.value;
-            const provider = state.aiProviders.find(p => p.name === selectedProviderName);
-            if (provider) {
-                const modelInput = document.getElementById('ai_model');
-                const endpointInput = document.getElementById('ai_endpoint');
-                if (modelInput) modelInput.value = provider.default_model || '';
-                if (endpointInput) endpointInput.value = provider.api_endpoint || '';
+    if (dom.settingsForm) {
+        dom.settingsForm.addEventListener('change', e => {
+            if (e.target.id === 'ai_provider') {
+                const selectedProviderName = e.target.value;
+                const provider = state.aiProviders.find(p => p.name === selectedProviderName);
+                if (provider) {
+                    const modelInput = document.getElementById('ai_model');
+                    const endpointInput = document.getElementById('ai_endpoint');
+                    if (modelInput) modelInput.value = provider.default_model || '';
+                    if (endpointInput) endpointInput.value = provider.api_endpoint || '';
+                }
             }
-        }
-    });
+        });
+    }
 
     // Listener for copy button in the workspace
     const copyBtn = document.getElementById('copy-btn');
@@ -935,33 +1100,39 @@ export function initEventListeners() {
             case 'clear-workspace-btn': handleClearWorkspace(); break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
-            case 'load-file-proxy-btn': dom.filePicker.click(); break;
+            case 'load-file-proxy-btn': 
+                if (dom.filePicker) dom.filePicker.click(); 
+                break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
         }
     });
     
-    document.getElementById('object-list').addEventListener('change', e => {
-        if (e.target.matches('input[type="checkbox"]')) {
-            const objectName = e.target.value;
-            const objectType = e.target.dataset.objectType;
+    const objectList = document.getElementById('object-list');
+    if (objectList) {
+        objectList.addEventListener('change', e => {
+            if (e.target.matches('input[type="checkbox"]')) {
+                const objectName = e.target.value;
+                const objectType = e.target.dataset.objectType;
 
-            if (!state.selectedObjects[objectType]) {
-                state.selectedObjects[objectType] = [];
-            }
-
-            if (e.target.checked) {
-                if (!state.selectedObjects[objectType].includes(objectName)) {
-                    state.selectedObjects[objectType].push(objectName);
+                if (!state.selectedObjects[objectType]) {
+                    state.selectedObjects[objectType] = [];
                 }
-            } else {
-                state.selectedObjects[objectType] = state.selectedObjects[objectType].filter(name => name !== objectName);
+
+                if (e.target.checked) {
+                    if (!state.selectedObjects[objectType].includes(objectName)) {
+                        state.selectedObjects[objectType].push(objectName);
+                    }
+                } else {
+                    state.selectedObjects[objectType] = state.selectedObjects[objectType].filter(name => name !== objectName);
+                }
             }
-        }
-    });
+        });
+    }
     
-    document.addEventListener('input', e => {
-        if (e.target.id === 'object-filter-input') {
+    const objectFilterInput = document.getElementById('object-filter-input');
+    if (objectFilterInput) {
+        objectFilterInput.addEventListener('input', e => {
             const filterValue = e.target.value.toLowerCase();
             const items = document.querySelectorAll('#object-list > div'); 
             items.forEach(item => {
@@ -975,9 +1146,14 @@ export function initEventListeners() {
                     }
                 }
             });
-        }
-    });
+        });
+    }
     
-    dom.filePicker.addEventListener('change', handleFileSelect);
-    dom.settingsForm.addEventListener('submit', handleSaveSettings);
+    if (dom.filePicker) {
+        dom.filePicker.addEventListener('change', handleFileSelect);
+    }
+    
+    if (dom.settingsForm) {
+        dom.settingsForm.addEventListener('submit', handleSaveSettings);
+    }
 }

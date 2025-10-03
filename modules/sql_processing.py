@@ -620,7 +620,7 @@ class Ora2PgAICorrector:
         logger.info(f"Extracted table names for cleanup: {table_names} (ignoring CTEs: {cte_names})")
         return table_names
 
-    def ai_correct_sql(self, sql):
+    def old_ai_correct_sql(self, sql):
         """
         Sends SQL code to an AI model for correction.
         """
@@ -639,6 +639,62 @@ Original SQL:
         except Exception as e:
             logger.error(f"AI correction failed: {e}", exc_info=False)
             return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0}
+
+
+    def ai_correct_sql(self, sql, source_dialect='oracle'):
+        """
+        Sends SQL code to an AI model for conversion to PostgreSQL.
+        
+        :param str sql: The SQL code to convert
+        :param str source_dialect: The source SQL dialect (oracle, mysql, sqlserver, postgres, generic)
+        :return: Tuple of (corrected_sql, metrics)
+        :rtype: tuple
+        """
+        if not sql:
+            return sql, {'status': 'no_content', 'tokens_used': 0}
+        
+        # Map dialect values to readable names
+        dialect_names = {
+            'oracle': 'Oracle',
+            'mysql': 'MySQL',
+            'sqlserver': 'SQL Server',
+            'postgres': 'PostgreSQL',
+            'generic': 'Generic SQL'
+        }
+        
+        source_name = dialect_names.get(source_dialect.lower(), 'Oracle')
+        
+        # If source is already PostgreSQL, just do cleanup/optimization
+        if source_dialect.lower() == 'postgres':
+            system_instruction = "You are a PostgreSQL expert. Review and optimize PostgreSQL code for best practices."
+            full_prompt = f"""Review this PostgreSQL code and provide an optimized version if improvements are needed. If the code is already optimal, return it unchanged. Provide only the SQL code.
+    
+    PostgreSQL SQL:
+    ```sql
+    {sql}
+    ```"""
+        else:
+            # For other dialects, do full conversion
+            system_instruction = f"You are an expert in database migrations. Convert {source_name} SQL to PostgreSQL, replacing {source_name}-specific constructs with PostgreSQL equivalents. Handle data types, functions, syntax, and PL/SQL to PL/pgSQL conversions."
+            full_prompt = f"""Convert this {source_name} SQL to PostgreSQL-compatible SQL. Provide only the converted SQL code with no explanations.
+    
+    Key conversions needed:
+    - Data types ({source_name} → PostgreSQL)
+    - Functions and operators
+    - Procedural code (if any)
+    - Syntax differences
+    
+    Original {source_name} SQL:
+    ```sql
+    {sql}
+    ```"""
+        
+        try:
+            return self._make_ai_call(system_instruction, full_prompt)
+        except Exception as e:
+            logger.error(f"AI SQL conversion from {source_name} failed: {e}", exc_info=False)
+            return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0}
+
 
     def _get_ddl_from_ai(self, failed_sql, error_message, object_name):
         """

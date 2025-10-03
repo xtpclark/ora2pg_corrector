@@ -103,39 +103,50 @@ export function renderActiveConfig(config) {
     const container = document.getElementById('active-config-display');
     if (!container) return;
 
-    // A list of key configuration items we want to display in the sidebar
+    // Key configuration items to display
     const keyConfigs = [
         { key: 'oracle_dsn', label: 'Oracle DSN' },
-        { key: 'schema', label: 'Oracle Schema' },
+        { key: 'schema', label: 'Schema' },
         { key: 'validation_pg_dsn', label: 'Validation DSN' },
         { key: 'ai_provider', label: 'AI Provider' },
+        { key: 'ai_model', label: 'AI Model' }
     ];
 
     let content = `
-        <h3 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Active Configuration</h3>
-        <div class="space-y-3 bg-gray-800 p-3 rounded-md text-xs">
+        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Active Config</h3>
+        <div class="space-y-2 bg-gray-50 dark:bg-gray-800 p-3 rounded text-xs">
     `;
 
     keyConfigs.forEach(item => {
-        const value = config[item.key] || 'Not set';
+        let value = config[item.key] || 'Not set';
+        
+        // Truncate long values
+        if (value.length > 30) {
+            value = value.substring(0, 27) + '...';
+        }
+        
+        // Mask sensitive values
+        if (item.key === 'ai_api_key' || item.key === 'oracle_pwd') {
+            value = value !== 'Not set' ? '••••••••' : 'Not set';
+        }
+        
         content += `
-            <div>
-                <label class="block font-medium text-gray-500">${item.label}</label>
-                <p class="text-gray-300 truncate" title="${value}">${value}</p>
+            <div class="flex justify-between">
+                <span class="text-gray-600 dark:text-gray-400">${item.label}:</span>
+                <span class="text-gray-900 dark:text-gray-200 font-medium truncate ml-2" title="${config[item.key] || ''}">${value}</span>
             </div>
         `;
     });
 
     content += `
         </div>
-        <button data-tab="settings" class="tab-button mt-4 text-sm w-full text-center text-blue-400 hover:underline">
-            Edit Full Settings...
+        <button data-tab="settings" class="tab-button mt-3 text-xs w-full text-center text-blue-600 dark:text-blue-400 hover:underline">
+            <i class="fas fa-cog mr-1"></i> Edit Settings
         </button>
     `;
 
     container.innerHTML = content;
 }
-
 /**
  * Switches the visible tab in the main content area.
  * @export
@@ -183,74 +194,74 @@ export function populateTypeDropdown(currentConfig) {
  */
 export function renderSettingsForms(config) {
     console.log(`renderSettingsForms called. Number of options to render: ${state.ora2pgOptions.length}`);
-    console.log("Checkpoint 5: renderSettingsForms() has started.");
+    
     const aiContainer = document.getElementById('ai-settings-container');
-    aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>';
+    aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">AI Provider Settings</h3>';
     let providerOptionsHtml = state.aiProviders.map(p => `<option value="${p.name}" ${config.ai_provider === p.name ? 'selected' : ''}>${p.name}</option>`).join('');
     
     aiContainer.insertAdjacentHTML('beforeend', `
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
-                <label for="ai_provider" class="block text-sm font-medium text-gray-300 mb-1">AI Provider</label>
-                <select name="ai_provider" id="ai_provider" class="form-input w-full rounded-md">${providerOptionsHtml}</select>
+                <label for="ai_provider" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Provider</label>
+                <select name="ai_provider" id="ai_provider" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100">${providerOptionsHtml}</select>
             </div>
             <div>
-                <label for="ai_model" class="block text-sm font-medium text-gray-300 mb-1">AI Model</label>
-                <input type="text" name="ai_model" id="ai_model" class="form-input w-full rounded-md" value="${config.ai_model || ''}">
-            </div>
-             <div>
-                <label for="ai_api_key" class="block text-sm font-medium text-gray-300 mb-1">AI API Key</label>
-                <input type="password" name="ai_api_key" id="ai_api_key" class="form-input w-full rounded-md" value="${config.ai_api_key || ''}">
+                <label for="ai_model" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Model</label>
+                <input type="text" name="ai_model" id="ai_model" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_model || ''}">
             </div>
             <div>
-                <label for="ai_endpoint" class="block text-sm font-medium text-gray-300 mb-1">AI Endpoint</label>
-                <input type="text" name="ai_endpoint" id="ai_endpoint" class="form-input w-full rounded-md" value="${config.ai_endpoint || ''}">
+                <label for="ai_api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI API Key</label>
+                <input type="password" name="ai_api_key" id="ai_api_key" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_api_key || ''}">
             </div>
             <div>
-                <label for="ai_temperature" class="block text-sm font-medium text-gray-300 mb-1">Temperature</label>
-                <input type="number" step="0.1" name="ai_temperature" id="ai_temperature" class="form-input w-full rounded-md" value="${config.ai_temperature || '0.2'}">
+                <label for="ai_endpoint" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Endpoint</label>
+                <input type="text" name="ai_endpoint" id="ai_endpoint" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_endpoint || ''}">
             </div>
             <div>
-                <label for="ai_max_output_tokens" class="block text-sm font-medium text-gray-300 mb-1">Max Output Tokens</label>
-                <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md" value="${config.ai_max_output_tokens || '8192'}">
+                <label for="ai_temperature" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Temperature</label>
+                <input type="number" step="0.1" name="ai_temperature" id="ai_temperature" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_temperature || '0.2'}">
+            </div>
+            <div>
+                <label for="ai_max_output_tokens" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Max Output Tokens</label>
+                <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_max_output_tokens || '8192'}">
             </div>
         </div>
     `);
 
     const ora2pgContainer = document.getElementById('ora2pg-settings-container');
-    ora2pgContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Ora2Pg Settings</h3>';
+    ora2pgContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">Ora2Pg Settings</h3>';
     const ora2pgGrid = document.createElement('div');
     ora2pgGrid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6';
     
     const gridItemsHtml = [];
     state.ora2pgOptions.forEach(option => {
         if (option.option_name.toUpperCase() === 'TYPE') {
-            return; // Skip this iteration
+            return;
         }
         const key = option.option_name.toLowerCase();
         let value = config[key];
         if (value === undefined) {
-             value = option.default_value;
+            value = option.default_value;
         }
         let isChecked = option.option_type === 'checkbox' ? (String(value).toLowerCase() === 'true' || String(value) === '1') : false;
 
         let inputHtml = '';
         if (option.option_type === 'checkbox') {
-            inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-input rounded mt-1" ${isChecked ? 'checked' : ''}>`;
+            inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-checkbox h-4 w-4 text-purple-600 rounded" ${isChecked ? 'checked' : ''}>`;
         } else if (option.option_type === 'dropdown') {
             const optionsArray = option.allowed_values ? option.allowed_values.split(',') : [];
             const optionsHtml = optionsArray.map(choice =>
                 `<option value="${choice.trim()}" ${choice.trim() === value ? 'selected' : ''}>${choice.trim()}</option>`
             ).join('');
-            inputHtml = `<select name="${key}" id="${key}" class="form-input w-full rounded-md">${optionsHtml}</select>`;
+            inputHtml = `<select name="${key}" id="${key}" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100">${optionsHtml}</select>`;
         } else {
-             const inputType = option.option_type === 'password' ? 'password' : 'text';
-             inputHtml = `<input type="${inputType}" name="${key}" id="${key}" class="form-input w-full rounded-md" value="${value || ''}">`;
+            const inputType = option.option_type === 'password' ? 'password' : 'text';
+            inputHtml = `<input type="${inputType}" name="${key}" id="${key}" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${value || ''}">`;
         }
         
         gridItemsHtml.push(`
             <div>
-                <label for="${key}" class="block text-sm font-medium text-gray-300 mb-1">${option.description}</label>
+                <label for="${key}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">${option.description}</label>
                 ${inputHtml}
             </div>
         `);

@@ -1,26 +1,26 @@
 <div id="settings-tab" class="tab-pane hidden">
-     <form id="settings-form" class="bg-gray-900 p-6 rounded-lg space-y-8">
+    <form id="settings-form" class="bg-white dark:bg-gray-900 p-6 rounded-lg space-y-8">
         <div id="ai-settings-container">
-            <h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>
+            <h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">AI Provider Settings</h3>
         </div>
         <div id="ora2pg-settings-container">
-            <h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Ora2Pg Settings</h3>
+            <h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">Ora2Pg Settings</h3>
         </div>
-         <div id="validation-settings-container">
-            <h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Validation Database</h3>
-             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div id="validation-settings-container">
+            <h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">Validation Database</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                    <label for="validation_pg_dsn" class="block text-sm font-medium text-gray-300 mb-1">PostgreSQL DSN</label>
-                    <input type="text" name="validation_pg_dsn" id="validation_pg_dsn" class="form-input w-full rounded-md" placeholder="postgresql://user:pass@host:port/dbname">
+                    <label for="validation_pg_dsn" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">PostgreSQL DSN</label>
+                    <input type="text" name="validation_pg_dsn" id="validation_pg_dsn" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" placeholder="postgresql://user:pass@host:port/dbname">
                 </div>
                 <div class="flex items-end">
-                    <button type="button" id="test-pg-conn-btn" class="bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg h-10">Test Connection</button>
+                    <button type="button" id="test-pg-conn-btn" class="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg h-10 transition-colors">Test Connection</button>
                 </div>
             </div>
         </div>
         <div class="flex justify-end space-x-4">
-            <button type="button" id="test-ora-conn-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg">Test Oracle Connection</button>
-            <button type="submit" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-6 rounded-lg">Save Settings</button>
+            <button type="button" id="test-ora-conn-btn" class="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white font-semibold py-2 px-6 rounded-lg transition-colors">Test Oracle Connection</button>
+            <button type="submit" class="bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white font-semibold py-2 px-6 rounded-lg transition-colors">Save Settings</button>
         </div>
     </form>
 </div>

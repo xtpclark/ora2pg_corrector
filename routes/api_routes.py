@@ -702,3 +702,64 @@ def test_pg_connection():
     except Exception as e:
         logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
+
+
+@api_bp.route('/client/<int:client_id>', methods=['PUT', 'DELETE'])
+def manage_single_client(client_id):
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    if request.method == 'PUT':
+        # Rename client
+        data = request.get_json()
+        new_name = data.get('client_name')
+        if not new_name:
+            return jsonify({'error': 'Client name is required'}), 400
+        
+        try:
+            query = 'UPDATE clients SET client_name = ? WHERE client_id = ?'
+            params = (new_name, client_id)
+            if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                query = query.replace('?', '%s')
+            
+            with conn:
+                execute_query(conn, query, params)
+                conn.commit()
+            
+            log_audit(client_id, 'rename_client', f'Renamed to: {new_name}')
+            return jsonify({'message': 'Client renamed successfully'})
+        except Exception as e:
+            return jsonify({'error': f'Failed to rename client: {str(e)}'}), 500
+    
+    elif request.method == 'DELETE':
+        # Delete client and all associated data
+        try:
+            with conn:
+                # Delete in order: audit_logs, migration_files, migration_sessions, configs, client
+                queries = [
+                    'DELETE FROM audit_logs WHERE client_id = ?',
+                    'DELETE FROM migration_files WHERE session_id IN (SELECT session_id FROM migration_sessions WHERE client_id = ?)',
+                    'DELETE FROM migration_sessions WHERE client_id = ?',
+                    'DELETE FROM configs WHERE client_id = ?',
+                    'DELETE FROM clients WHERE client_id = ?'
+                ]
+                
+                if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                    queries = [q.replace('?', '%s') for q in queries]
+                
+                for query in queries:
+                    execute_query(conn, query, (client_id,))
+                
+                conn.commit()
+            
+            # Delete physical files if they exist
+            import shutil
+            client_dir = os.path.join('/app/project_data', str(client_id))
+            if os.path.exists(client_dir):
+                shutil.rmtree(client_dir)
+            
+            return jsonify({'message': 'Client deleted successfully'})
+        except Exception as e:
+            logger.error(f"Failed to delete client {client_id}: {e}", exc_info=True)
+            return jsonify({'error': f'Failed to delete client: {str(e)}'}), 500
