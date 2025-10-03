@@ -17,8 +17,18 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class Ora2PgAICorrector:
-    """Handles the core logic for SQL correction and validation."""
+    """
+    Handles the core logic for running Ora2Pg, correcting SQL using AI, 
+    and validating the results against a PostgreSQL database.
+    """
     def __init__(self, output_dir, ai_settings, encryption_key):
+        """
+        Initializes the Ora2PgAICorrector.
+
+        :param str output_dir: The base directory for saving output files.
+        :param dict ai_settings: Configuration for the AI service (endpoint, model, key).
+        :param bytes encryption_key: The key used for encrypting and decrypting secrets.
+        """
         self.ora2pg_path = 'ora2pg'
         self.sqlplus_path = 'sqlplus'
         self.output_dir = output_dir
@@ -26,8 +36,65 @@ class Ora2PgAICorrector:
         self.encryption_key = encryption_key
         self.fernet = Fernet(encryption_key)
 
+    def _validate_oracle_identifier(self, identifier, identifier_type="identifier"):
+        """
+        Validates Oracle identifiers to prevent SQL injection.
+        Oracle identifiers can contain alphanumeric characters, underscore, dollar sign, and hash.
+        They must start with a letter (or underscore/dollar in some cases).
+        Maximum length is 128 characters (as of Oracle 12.2).
+        
+        :param str identifier: The identifier to validate
+        :param str identifier_type: Type of identifier for error messages
+        :return: The validated identifier
+        :raises ValueError: If the identifier is invalid
+        """
+        if not identifier:
+            raise ValueError(f"Oracle {identifier_type} cannot be empty")
+        
+        # Check length
+        if len(identifier) > 128:
+            raise ValueError(f"Oracle {identifier_type} exceeds maximum length of 128 characters")
+        
+        # Check for valid Oracle identifier pattern
+        # Allows alphanumeric, underscore, dollar sign, and hash
+        # Must start with letter or underscore (we'll be more permissive and allow $ and #)
+        oracle_identifier_pattern = re.compile(r'^[A-Za-z_$#][A-Za-z0-9_$#]*$')
+        
+        if not oracle_identifier_pattern.match(identifier):
+            raise ValueError(
+                f"Invalid Oracle {identifier_type}: '{identifier}'. "
+                f"Must contain only alphanumeric characters, underscore, dollar sign, or hash, "
+                f"and start with a letter, underscore, dollar sign, or hash."
+            )
+        
+        # Check for SQL injection attempts (additional safety)
+        dangerous_patterns = [
+            r';\s*--',  # Comment after semicolon
+            r';\s*/',   # Start of multi-line comment
+            r'union\s+select',  # UNION SELECT
+            r'drop\s+',  # DROP statements
+            r'delete\s+from',  # DELETE statements
+            r'update\s+.*\s+set',  # UPDATE statements
+            r'insert\s+into',  # INSERT statements
+            r'exec\s*\(',  # EXEC calls
+            r'execute\s+immediate',  # Dynamic SQL
+        ]
+        
+        identifier_lower = identifier.lower()
+        for pattern in dangerous_patterns:
+            if re.search(pattern, identifier_lower):
+                raise ValueError(f"Potential SQL injection detected in {identifier_type}: '{identifier}'")
+        
+        return identifier
+
     def _parse_dsn(self, dsn_string):
-        """Parses a DBI-style DSN string into a dictionary."""
+        """
+        Parses a DBI-style DSN string into a dictionary.
+
+        :param str dsn_string: The DSN string, e.g., 'dbi:Oracle:host=...;service_name=...'.
+        :return: A dictionary of DSN components.
+        :rtype: dict
+        """
         if not dsn_string: return {}
         dsn_string = dsn_string.replace('dbi:Oracle:', '')
         pairs = dsn_string.split(';')
@@ -38,8 +105,50 @@ class Ora2PgAICorrector:
                 dsn_dict[key.lower()] = value
         return dsn_dict
 
+    ### NEW CENTRAL HELPER METHOD ###
+    def _build_sqlplus_connect_string(self, client_config):
+        """
+        Builds a SQL*Plus EZCONNECT connection string from client configuration.
+        Handles both SERVICE_NAME and SID connection types.
+
+        :param dict client_config: The client configuration dictionary.
+        :return: A tuple containing the connect string and an error message (if any).
+        :rtype: tuple(str | None, str | None)
+        """
+        dsn_string = client_config.get('oracle_dsn')
+        user = client_config.get('oracle_user')
+        password = client_config.get('oracle_pwd')
+
+        if not all([dsn_string, user, password]):
+            return None, "Oracle connection details (DSN, user, password) are incomplete."
+        
+        dsn_params = self._parse_dsn(dsn_string)
+        host = dsn_params.get('host')
+        port = dsn_params.get('port')
+        
+        if not all([host, port]):
+            return None, "Oracle DSN must include host and port."
+
+        # Check for SERVICE_NAME first, then fall back to SID
+        service_name = dsn_params.get('service_name')
+        sid = dsn_params.get('sid')
+
+        if service_name:
+            # Format for Service Name: user/pass@host:port/service_name
+            connect_string = f"{user}/{password}@{host}:{port}/{service_name}"
+            return connect_string, None
+        elif sid:
+            # Format for SID: user/pass@host:port:sid (note the colon)
+            connect_string = f"{user}/{password}@{host}:{port}:{sid}"
+            return connect_string, None
+        else:
+            return None, "Oracle DSN must include either 'service_name' or 'sid'."
+
     def _run_single_ora2pg_command(self, config, extra_args=None):
-        """Internal helper to run a single ora2pg command with a given config."""
+        """
+        Internal helper to run a single ora2pg command with a given configuration.
+        ...
+        """
         config_content = ""
         if 'pg_version' not in config:
             config['pg_version'] = '13'
@@ -78,62 +187,328 @@ class Ora2PgAICorrector:
             if config_path and os.path.exists(config_path):
                 os.remove(config_path)
                 logger.info(f"Removed temporary config file: {config_path}")
-
-    def _get_table_list(self, client_config):
-        """Fetches the list of tables from the Oracle schema using SQL*Plus."""
-        logger.info("Fetching table list from Oracle schema using SQL*Plus.")
-        
-        dsn_string = client_config.get('oracle_dsn')
-        user = client_config.get('oracle_user')
-        password = client_config.get('oracle_pwd')
-        schema = client_config.get('schema')
-
-        if not all([dsn_string, user, password, schema]):
-            return None, "Oracle connection details (DSN, user, password, schema) are incomplete."
-        
-        dsn_params = self._parse_dsn(dsn_string)
-        host = dsn_params.get('host')
-        port = dsn_params.get('port')
-        service_name = dsn_params.get('service_name')
-
-        if not all([host, port, service_name]):
-            return None, "Oracle DSN must include host, port, and service_name."
+                
+    def _get_object_list(self, app_db_conn, client_config):
+        """
+        Fetches a complete list of objects from the Oracle schema and enriches it
+        with information about whether Ora2Pg supports each object type for export.
+        """
+        try:
+            from .db import execute_query
+            cursor = execute_query(app_db_conn, "SELECT allowed_values FROM ora2pg_config_options WHERE option_name = 'TYPE'")
+            type_row = cursor.fetchone()
+            if not type_row:
+                return None, "Ora2Pg supported types not found in the application database."
             
-        connect_string = f"{user}/{password}@{host}:{port}/{service_name}"
+            supported_ora2pg_types = set(type_row['allowed_values'].split(','))
+            logger.info(f"Found supported Ora2Pg types: {supported_ora2pg_types}")
+
+        except Exception as e:
+            logger.error(f"Failed to query supported Ora2Pg types: {e}")
+            return None, f"Failed to query supported Ora2Pg types: {e}"
+
+        logger.info(f"Fetching ALL objects from Oracle schema using SQL*Plus.")
         
+        schema = client_config.get('schema')
+        if not schema:
+            return None, "Oracle schema is not configured."
+
+        # SECURITY FIX: Validate schema name to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+        except ValueError as e:
+            logger.error(f"Schema validation failed: {e}")
+            return None, str(e)
+
+        # Use the central helper method
+        connect_string, error = self._build_sqlplus_connect_string(client_config)
+        if error:
+            return None, error
+
+        # SQL query with proper formatting suppression and pipe delimiter
         sql_query = f"""
-            SET HEADING OFF FEEDBACK OFF PAGESIZE 0 TERMOUT OFF;
-            SELECT object_name FROM all_objects WHERE owner = '{schema.upper()}' AND object_type = 'TABLE' ORDER BY object_name;
+            SET PAGESIZE 0
+            SET LINESIZE 32767
+            SET FEEDBACK OFF
+            SET HEADING OFF
+            SET TRIMOUT ON
+            SET TRIMSPOOL ON
+            SET SERVEROUTPUT OFF
+            SET VERIFY OFF
+            SET ECHO OFF
+            SET TAB OFF
+            
+            SELECT object_type || '|' || object_name 
+            FROM all_objects 
+            WHERE owner = '{validated_schema.upper()}' 
+            ORDER BY object_type, object_name;
+            
             EXIT;
         """
         
         command = [self.sqlplus_path, '-S', connect_string]
         
         try:
-            process = subprocess.run(
-                command, 
-                input=sql_query, 
-                capture_output=True, 
-                text=True, 
-                timeout=300
-            )
+            process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
 
             if process.returncode != 0:
                 error_message = process.stderr.strip() or process.stdout.strip()
                 logger.error(f"SQL*Plus failed with exit code {process.returncode}: {error_message}")
                 return None, f"SQL*Plus connection failed: {error_message}"
             
-            tables = [line.strip() for line in process.stdout.strip().split('\n') if line.strip()]
-            logger.info(f"Found {len(tables)} tables in schema '{schema}' via SQL*Plus.")
-            return tables, None
+            discovered_objects_raw = [line.strip() for line in process.stdout.strip().split('\n') if line.strip()]
+
+            enriched_objects = []
+            for line in discovered_objects_raw:
+                if '|' in line:
+                    obj_type, obj_name = line.split('|', 1)
+                    is_supported = obj_type.strip() in supported_ora2pg_types
+                    enriched_objects.append({
+                        'type': obj_type.strip(),
+                        'name': obj_name.strip(),
+                        'supported': is_supported
+                    })
+
+            logger.info(f"Discovered {len(enriched_objects)} total objects in schema '{validated_schema}'.")
+            return enriched_objects, None
 
         except subprocess.TimeoutExpired:
             return None, "SQL*Plus connection timed out."
         except Exception as e:
             logger.error(f"An unexpected error occurred during SQL*Plus execution: {e}", exc_info=True)
             return None, f"An unexpected error occurred: {str(e)}"
+            
+    def get_oracle_ddl(self, client_config, object_type, object_name, pretty=False):
+        """
+        Extracts the original Oracle DDL for a single object using SQL*Plus.
+        
+        :param dict client_config: Client configuration
+        :param str object_type: Type of object (TABLE, VIEW, etc.)
+        :param str object_name: Name of the object
+        :param bool pretty: If True, returns cleaned DDL without storage clauses
+        """
+        logger.info(f"Fetching Oracle DDL for {object_type} {object_name} (pretty={pretty}).")
+    
+        schema = client_config.get('schema')
+        if not schema:
+            return None, "Oracle schema is not configured."
+    
+        # SECURITY FIX: Validate all identifiers to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+            validated_object_type = self._validate_oracle_identifier(object_type, "object type")
+            validated_object_name = self._validate_oracle_identifier(object_name, "object name")
+        except ValueError as e:
+            logger.error(f"Identifier validation failed: {e}")
+            return None, str(e)
+    
+        # Use the central helper method
+        connect_string, error = self._build_sqlplus_connect_string(client_config)
+        if error:
+            return None, error
+        
+        # Build the SQL query with optional pretty formatting
+        if pretty:
+            sql_query = f"""
+                SET LONG 2000000
+                SET PAGESIZE 0
+                SET LINESIZE 32767
+                SET HEADING OFF
+                SET FEEDBACK OFF
+                SET VERIFY OFF
+                SET ECHO OFF
+                SET TERMOUT OFF
+                SET TRIMOUT ON
+                SET TRIMSPOOL ON
+                
+                BEGIN
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'STORAGE', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'TABLESPACE', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', FALSE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SQLTERMINATOR', TRUE);
+                    DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'PRETTY', TRUE);
+                END;
+                /
+                
+                SELECT DBMS_METADATA.GET_DDL('{validated_object_type.upper()}', '{validated_object_name.upper()}', '{validated_schema.upper()}') FROM DUAL;
+                EXIT;
+            """
+        else:
+            sql_query = f"""
+                SET LONG 2000000
+                SET PAGESIZE 0
+                SET LINESIZE 32767
+                SET HEADING OFF
+                SET FEEDBACK OFF
+                SET VERIFY OFF
+                SET ECHO OFF
+                SET TERMOUT OFF
+                SET TRIMOUT ON
+                SET TRIMSPOOL ON
+                
+                SELECT DBMS_METADATA.GET_DDL('{validated_object_type.upper()}', '{validated_object_name.upper()}', '{validated_schema.upper()}') FROM DUAL;
+                EXIT;
+            """
+        
+        command = [self.sqlplus_path, '-S', connect_string]
+        
+        try:
+            process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
+    
+            if process.returncode != 0:
+                error_message = process.stderr.strip() or process.stdout.strip()
+                logger.error(f"SQL*Plus DDL fetch failed: {error_message}")
+                return None, f"SQL*Plus failed: {error_message}"
+            
+            ddl = process.stdout.strip()
+            if not ddl or "ORA-" in ddl:
+                return None, f"Could not retrieve DDL for {object_name}. Reason: {ddl}"
+    
+            logger.info(f"Successfully fetched DDL for {object_name}.")
+            return ddl, None
+    
+        except subprocess.TimeoutExpired:
+            return None, "SQL*Plus DDL fetch timed out."
+        except Exception as e:
+            logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
+            return None, str(e)
+
+
+    def old2_get_oracle_ddl(self, client_config, object_type, object_name):
+       """
+       Extracts the original Oracle DDL for a single object using SQL*Plus.
+       """
+       logger.info(f"Fetching Oracle DDL for {object_type} {object_name}.")
+   
+       schema = client_config.get('schema')
+       if not schema:
+           return None, "Oracle schema is not configured."
+   
+       # SECURITY FIX: Validate all identifiers to prevent SQL injection
+       try:
+           validated_schema = self._validate_oracle_identifier(schema, "schema name")
+           validated_object_type = self._validate_oracle_identifier(object_type, "object type")
+           validated_object_name = self._validate_oracle_identifier(object_name, "object name")
+       except ValueError as e:
+           logger.error(f"Identifier validation failed: {e}")
+           return None, str(e)
+   
+       # Use the central helper method
+       connect_string, error = self._build_sqlplus_connect_string(client_config)
+       if error:
+           return None, error
+       
+       # SET commands must come BEFORE DEFINE to suppress substitution messages
+       sql_query = f"""
+           SET LONG 2000000
+           SET PAGESIZE 0
+           SET LINESIZE 32767
+           SET HEADING OFF
+           SET FEEDBACK OFF
+           SET VERIFY OFF
+           SET ECHO OFF
+           SET TERMOUT OFF
+           SET TRIMOUT ON
+           SET TRIMSPOOL ON
+           
+           DEFINE obj_type = '{validated_object_type.upper()}'
+           DEFINE obj_name = '{validated_object_name.upper()}'
+           DEFINE obj_owner = '{validated_schema.upper()}'
+           
+           SELECT DBMS_METADATA.GET_DDL('&obj_type', '&obj_name', '&obj_owner') FROM DUAL;
+           EXIT;
+       """
+       
+       command = [self.sqlplus_path, '-S', connect_string]
+       
+       try:
+           process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
+   
+           if process.returncode != 0:
+               error_message = process.stderr.strip() or process.stdout.strip()
+               logger.error(f"SQL*Plus DDL fetch failed: {error_message}")
+               return None, f"SQL*Plus failed: {error_message}"
+           
+           ddl = process.stdout.strip()
+           if not ddl or "ORA-" in ddl:
+               return None, f"Could not retrieve DDL for {object_name}. Reason: {ddl}"
+   
+           logger.info(f"Successfully fetched DDL for {object_name}.")
+           return ddl, None
+   
+       except subprocess.TimeoutExpired:
+           return None, "SQL*Plus DDL fetch timed out."
+       except Exception as e:
+           logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
+           return None, str(e)
+
+
+
+    def old_get_oracle_ddl(self, client_config, object_type, object_name):
+        """
+        Extracts the original Oracle DDL for a single object using SQL*Plus.
+        """
+        logger.info(f"Fetching Oracle DDL for {object_type} {object_name}.")
+
+        schema = client_config.get('schema')
+        if not schema:
+            return None, "Oracle schema is not configured."
+
+        # SECURITY FIX: Validate all identifiers to prevent SQL injection
+        try:
+            validated_schema = self._validate_oracle_identifier(schema, "schema name")
+            validated_object_type = self._validate_oracle_identifier(object_type, "object type")
+            validated_object_name = self._validate_oracle_identifier(object_name, "object name")
+        except ValueError as e:
+            logger.error(f"Identifier validation failed: {e}")
+            return None, str(e)
+
+        # Use the central helper method
+        connect_string, error = self._build_sqlplus_connect_string(client_config)
+        if error:
+            return None, error
+        
+        # Use bind variables with DEFINE for SQL*Plus
+        sql_query = f"""
+            DEFINE obj_type = '{validated_object_type.upper()}'
+            DEFINE obj_name = '{validated_object_name.upper()}'
+            DEFINE obj_owner = '{validated_schema.upper()}'
+            SET LONG 2000000
+            SET PAGESIZE 0
+            SET HEADING OFF
+            SET FEEDBACK OFF
+            SET TERMOUT OFF
+            SELECT DBMS_METADATA.GET_DDL('&obj_type', '&obj_name', '&obj_owner') FROM DUAL;
+            EXIT;
+        """
+        
+        command = [self.sqlplus_path, '-S', connect_string]
+        
+        try:
+            process = subprocess.run(command, input=sql_query, capture_output=True, text=True, timeout=60)
+
+            if process.returncode != 0:
+                error_message = process.stderr.strip() or process.stdout.strip()
+                logger.error(f"SQL*Plus DDL fetch failed: {error_message}")
+                return None, f"SQL*Plus failed: {error_message}"
+            
+            ddl = process.stdout.strip()
+            if not ddl or "ORA-" in ddl:
+                return None, f"Could not retrieve DDL for {object_name}. Reason: {ddl}"
+
+            logger.info(f"Successfully fetched DDL for {object_name}.")
+            return ddl, None
+
+        except subprocess.TimeoutExpired:
+            return None, "SQL*Plus DDL fetch timed out."
+        except Exception as e:
+            logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
+            return None, str(e)
 
     def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None):
+        """
+        Manages the full Ora2Pg export process, including session creation and file persistence.
+        """
         is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
         if is_report:
             stdout, stderr, returncode = self._run_single_ora2pg_command(client_config, extra_args)
@@ -182,14 +557,10 @@ class Ora2PgAICorrector:
                         logger.warning(f"Skipping table {table_name} for session {session_id} due to export error: {error}")
             else:
                 logger.info("Executing single-command export strategy.")
-                # --- THIS IS THE FIX ---
                 if file_per_table:
-                    # Multi-file data exports (e.g., COPY) need both directives.
-                    # OUTPUT_DIR is the full path, OUTPUT is just the filename.
                     run_config['OUTPUT_DIR'] = persistent_export_dir
                     run_config['OUTPUT'] = f"output_{export_type.lower()}.sql"
                 else:
-                    # Single-file exports (any type) just need the full OUTPUT path.
                     run_config['OUTPUT'] = os.path.join(persistent_export_dir, f"output_{export_type.lower()}.sql")
                     run_config.pop('OUTPUT_DIR', None)
 
@@ -215,9 +586,9 @@ class Ora2PgAICorrector:
             db_conn.commit()
             
             if not file_per_table and len(generated_files) == 1:
-                 with open(os.path.join(persistent_export_dir, generated_files[0]), 'r', encoding='utf-8') as f:
+                with open(os.path.join(persistent_export_dir, generated_files[0]), 'r', encoding='utf-8') as f:
                     sql_output = f.read()
-                 return {'sql_output': sql_output, 'session_id': session_id, 'files': generated_files}, None
+                return {'sql_output': sql_output, 'session_id': session_id, 'files': generated_files}, None
             else:
                 return {'files': generated_files, 'session_id': session_id, 'directory': persistent_export_dir}, None
 
@@ -226,6 +597,9 @@ class Ora2PgAICorrector:
             return {}, f"An unexpected error occurred: {str(e)}"
 
     def _extract_table_names(self, sql):
+        """
+        Extracts table names from a SQL query, ignoring CTEs.
+        """
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)
         cte_names = set()
@@ -246,7 +620,10 @@ class Ora2PgAICorrector:
         logger.info(f"Extracted table names for cleanup: {table_names} (ignoring CTEs: {cte_names})")
         return table_names
 
-    def ai_correct_sql(self, sql):
+    def old_ai_correct_sql(self, sql):
+        """
+        Sends SQL code to an AI model for correction.
+        """
         if not sql:
             return sql, {'status': 'no_content', 'tokens_used': 0}
         
@@ -263,7 +640,66 @@ Original SQL:
             logger.error(f"AI correction failed: {e}", exc_info=False)
             return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0}
 
+
+    def ai_correct_sql(self, sql, source_dialect='oracle'):
+        """
+        Sends SQL code to an AI model for conversion to PostgreSQL.
+        
+        :param str sql: The SQL code to convert
+        :param str source_dialect: The source SQL dialect (oracle, mysql, sqlserver, postgres, generic)
+        :return: Tuple of (corrected_sql, metrics)
+        :rtype: tuple
+        """
+        if not sql:
+            return sql, {'status': 'no_content', 'tokens_used': 0}
+        
+        # Map dialect values to readable names
+        dialect_names = {
+            'oracle': 'Oracle',
+            'mysql': 'MySQL',
+            'sqlserver': 'SQL Server',
+            'postgres': 'PostgreSQL',
+            'generic': 'Generic SQL'
+        }
+        
+        source_name = dialect_names.get(source_dialect.lower(), 'Oracle')
+        
+        # If source is already PostgreSQL, just do cleanup/optimization
+        if source_dialect.lower() == 'postgres':
+            system_instruction = "You are a PostgreSQL expert. Review and optimize PostgreSQL code for best practices."
+            full_prompt = f"""Review this PostgreSQL code and provide an optimized version if improvements are needed. If the code is already optimal, return it unchanged. Provide only the SQL code.
+    
+    PostgreSQL SQL:
+    ```sql
+    {sql}
+    ```"""
+        else:
+            # For other dialects, do full conversion
+            system_instruction = f"You are an expert in database migrations. Convert {source_name} SQL to PostgreSQL, replacing {source_name}-specific constructs with PostgreSQL equivalents. Handle data types, functions, syntax, and PL/SQL to PL/pgSQL conversions."
+            full_prompt = f"""Convert this {source_name} SQL to PostgreSQL-compatible SQL. Provide only the converted SQL code with no explanations.
+    
+    Key conversions needed:
+    - Data types ({source_name} → PostgreSQL)
+    - Functions and operators
+    - Procedural code (if any)
+    - Syntax differences
+    
+    Original {source_name} SQL:
+    ```sql
+    {sql}
+    ```"""
+        
+        try:
+            return self._make_ai_call(system_instruction, full_prompt)
+        except Exception as e:
+            logger.error(f"AI SQL conversion from {source_name} failed: {e}", exc_info=False)
+            return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0}
+
+
     def _get_ddl_from_ai(self, failed_sql, error_message, object_name):
+        """
+        Asks the AI to generate a DDL statement for a missing object.
+        """
         system_instruction = "You are a PostgreSQL expert. Your task is to generate the necessary DDL to resolve a missing object error."
         
         full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
@@ -282,6 +718,9 @@ Query:
             return None
 
     def _get_consolidated_ddl_from_ai(self, sql_query, missing_tables):
+        """
+        Asks the AI to generate all necessary DDL for a list of missing tables.
+        """
         system_instruction = "You are a PostgreSQL expert. Your task is to generate all necessary DDL to satisfy a query."
         table_list = ", ".join(missing_tables)
         
@@ -302,6 +741,9 @@ Query:
             return None
 
     def _get_query_fix_from_ai(self, failed_sql, error_message):
+        """
+        Asks the AI to fix a SQL query based on an error message.
+        """
         system_instruction = "You are a PostgreSQL expert. Your task is to correct a SQL query that failed validation."
         full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
 Please correct the query to resolve the issue. Provide only the corrected, complete SQL query.
@@ -317,6 +759,9 @@ Failed Query:
             return None
 
     def _make_ai_call(self, system_instruction, full_prompt):
+        """
+        Makes a generic call to the configured AI service.
+        """
         api_key = self.ai_settings.get('ai_api_key')
         api_endpoint = self.ai_settings.get('ai_endpoint')
         ai_model = self.ai_settings.get('ai_model')
@@ -370,6 +815,9 @@ Failed Query:
             raise ValueError('AI service request timed out.')
         
     def validate_sql(self, sql, pg_dsn, clean_slate=False, auto_create_ddl=True):
+        """
+        Validates SQL against a PostgreSQL database, with AI-powered retry logic.
+        """
         if clean_slate:
             table_names = self._extract_table_names(sql)
             if table_names:
@@ -466,6 +914,9 @@ Failed Query:
         return False, f"Validation failed after {max_retries} attempts.", None
 
     def save_corrected_file(self, original_sql, corrected_sql, filename="corrected_output.sql"):
+        """
+        Saves the corrected SQL to a file in the output directory.
+        """
         if '..' in filename or filename.startswith('/'):
             raise ValueError("Invalid filename provided.")
 
@@ -480,4 +931,3 @@ Failed Query:
         except Exception as e:
             logger.error(f"Failed to save corrected SQL to {output_path}: {e}")
             raise
-

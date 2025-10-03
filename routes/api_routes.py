@@ -200,15 +200,12 @@ def update_file_status(file_id):
         logger.error(f"Failed to update status for file {file_id}: {e}", exc_info=True)
         return jsonify({'error': 'Failed to update file status.'}), 500
 
-
 @api_bp.route('/client/<int:client_id>/sessions', methods=['GET'])
 def get_sessions(client_id):
-    """Fetches all migration sessions for a given client."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
     try:
-        # --- UPDATED: Select the new export_type column ---
         query = 'SELECT session_id, session_name, created_at, export_type FROM migration_sessions WHERE client_id = ? ORDER BY created_at DESC'
         params = (client_id,)
         if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
@@ -223,7 +220,6 @@ def get_sessions(client_id):
 
 @api_bp.route('/session/<int:session_id>/files', methods=['GET'])
 def get_session_files(session_id):
-    """Fetches all files and their statuses for a given session."""
     conn = get_db()
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
@@ -239,7 +235,6 @@ def get_session_files(session_id):
     except Exception as e:
         logger.error(f"Failed to fetch files for session {session_id}: {e}", exc_info=True)
         return jsonify({'error': 'Failed to fetch session files.'}), 500
-
 
 @api_bp.route('/client/<int:client_id>/test_ora2pg_connection', methods=['POST'])
 def test_ora2pg_connection(client_id):
@@ -292,7 +287,7 @@ def get_object_list(client_id):
                     pass
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        object_list, error = corrector._get_table_list(config)
+        object_list, error = corrector._get_object_list(conn, config)
 
         if error:
             log_audit(client_id, 'get_object_list', f'Failed: {error}')
@@ -303,6 +298,88 @@ def get_object_list(client_id):
         
     except Exception as e:
         logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/get_oracle_ddl', methods=['POST'])
+def get_oracle_ddl(client_id):
+    data = request.get_json()
+    object_name = data.get('object_name')
+    object_type = data.get('object_type', 'TABLE')
+    pretty = data.get('pretty', False)
+
+    if not object_name:
+        return jsonify({'error': 'Object name is required.'}), 400
+
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try:
+                    config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception:
+                    pass
+
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        ddl, error = corrector.get_oracle_ddl(config, object_type, object_name, pretty=pretty)
+
+        if error:
+            return jsonify({'error': error}), 500
+
+        return jsonify({'ddl': ddl})
+
+    except Exception as e:
+        logger.error(f"Failed to fetch DDL for {object_name}: {e}", exc_info=True)
+        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+
+@api_bp.route('/client/<int:client_id>/get_bulk_oracle_ddl', methods=['POST'])
+def get_bulk_oracle_ddl(client_id):
+    data = request.get_json()
+    objects = data.get('objects')
+    pretty = data.get('pretty', False)
+
+    if not objects:
+        return jsonify({'error': 'A list of objects is required.'}), 400
+
+    try:
+        conn = get_db()
+        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+        params = (client_id,)
+        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+            query = query.replace('?', '%s')
+        cursor = execute_query(conn, query, params)
+        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+        
+        fernet = Fernet(ENCRYPTION_KEY)
+        for key in ['oracle_pwd']:
+            if key in config and config[key]:
+                try: config[key] = fernet.decrypt(config[key].encode()).decode()
+                except Exception: pass
+
+        corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
+        
+        all_ddls = []
+        for obj in objects:
+            ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'], pretty=pretty)
+            if error:
+                logger.warning(f"Could not fetch DDL for {obj['name']}: {error}")
+                all_ddls.append(f"-- FAILED to retrieve DDL for {obj['type']} {obj['name']}: {error}\n\n")
+            else:
+                all_ddls.append(ddl + "\n\n")
+        
+        concatenated_ddl = "".join(all_ddls)
+        return jsonify({'ddl': concatenated_ddl})
+
+    except Exception as e:
+        logger.error(f"Failed to fetch bulk DDL: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
 
 @api_bp.route('/client/<int:client_id>/generate_report', methods=['POST'])
@@ -361,6 +438,10 @@ def run_ora2pg(client_id):
         
         request_data = request.get_json(silent=True) or {}
         
+        # Check for and apply the 'type' override from the dropdown
+        if 'type' in request_data:
+            config['type'] = request_data['type']
+
         if 'selected_objects' in request_data:
             selected_objects = request_data['selected_objects']
             if selected_objects:
@@ -386,13 +467,12 @@ def run_ora2pg(client_id):
             return jsonify({'error': error_output}), 500
         
         log_audit(client_id, 'run_ora2pg', 'Successfully executed Ora2Pg export.')
-
         return jsonify(result_data)
 
     except Exception as e:
         logger.error(f"Failed to run Ora2Pg for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
-
+        
 @api_bp.route('/get_exported_file', methods=['POST'])
 def get_exported_file():
     file_path = None
@@ -426,7 +506,7 @@ def get_exported_file():
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        return jsonify({'content': content})
+        return jsonify({'content': content, 'filename': filename})
 
     except FileNotFoundError:
         logger.error(f"File not found at persistent path: {file_path}")
@@ -435,11 +515,13 @@ def get_exported_file():
         logger.error(f"Error reading exported file {file_path}: {e}", exc_info=True)
         return jsonify({'error': 'An unexpected error occurred while reading the file content.'}), 500
 
-
 @api_bp.route('/correct_sql', methods=['POST'])
 def correct_sql_with_ai():
     data = request.json
-    sql, client_id = data.get('sql'), data.get('client_id')
+    sql = data.get('sql')
+    client_id = data.get('client_id')
+    source_dialect = data.get('source_dialect', 'oracle')  # NEW: Get source dialect
+    
     if not sql or not client_id:
         return jsonify({'error': 'SQL content and client ID are required'}), 400
 
@@ -474,13 +556,16 @@ def correct_sql_with_ai():
             encryption_key=ENCRYPTION_KEY
         )
         
-        corrected_sql, metrics = corrector.ai_correct_sql(sql)
-        log_audit(client_id, 'correct_sql_with_ai', f'AI correction performed.')
+        # Pass source_dialect to the AI correction method
+        corrected_sql, metrics = corrector.ai_correct_sql(sql, source_dialect=source_dialect)
+        
+        log_audit(client_id, 'correct_sql_with_ai', f'AI conversion from {source_dialect} to PostgreSQL performed.')
         return jsonify({
             'corrected_sql': corrected_sql,
             'metrics': metrics
         })
     except Exception as e:
+        logger.error(f"Failed to correct SQL with AI: {e}", exc_info=True)
         return jsonify({'error': f'Failed to correct SQL with AI: {str(e)}'}), 500
 
 @api_bp.route('/validate', methods=['POST'])
@@ -545,6 +630,7 @@ def validate_sql():
         
         return jsonify({'message': message, 'status': 'success' if is_valid else 'error', 'corrected_sql': new_sql})
     except Exception as e:
+        logger.error(f"Failed to validate SQL: {e}", exc_info=True)
         return jsonify({'error': f'Failed to validate SQL: {str(e)}'}), 500
 
 @api_bp.route('/save', methods=['POST'])
@@ -617,3 +703,63 @@ def test_pg_connection():
         logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
         return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {e}'}), 500
 
+
+@api_bp.route('/client/<int:client_id>', methods=['PUT', 'DELETE'])
+def manage_single_client(client_id):
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    
+    if request.method == 'PUT':
+        # Rename client
+        data = request.get_json()
+        new_name = data.get('client_name')
+        if not new_name:
+            return jsonify({'error': 'Client name is required'}), 400
+        
+        try:
+            query = 'UPDATE clients SET client_name = ? WHERE client_id = ?'
+            params = (new_name, client_id)
+            if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                query = query.replace('?', '%s')
+            
+            with conn:
+                execute_query(conn, query, params)
+                conn.commit()
+            
+            log_audit(client_id, 'rename_client', f'Renamed to: {new_name}')
+            return jsonify({'message': 'Client renamed successfully'})
+        except Exception as e:
+            return jsonify({'error': f'Failed to rename client: {str(e)}'}), 500
+    
+    elif request.method == 'DELETE':
+        # Delete client and all associated data
+        try:
+            with conn:
+                # Delete in order: audit_logs, migration_files, migration_sessions, configs, client
+                queries = [
+                    'DELETE FROM audit_logs WHERE client_id = ?',
+                    'DELETE FROM migration_files WHERE session_id IN (SELECT session_id FROM migration_sessions WHERE client_id = ?)',
+                    'DELETE FROM migration_sessions WHERE client_id = ?',
+                    'DELETE FROM configs WHERE client_id = ?',
+                    'DELETE FROM clients WHERE client_id = ?'
+                ]
+                
+                if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
+                    queries = [q.replace('?', '%s') for q in queries]
+                
+                for query in queries:
+                    execute_query(conn, query, (client_id,))
+                
+                conn.commit()
+            
+            # Delete physical files if they exist
+            import shutil
+            client_dir = os.path.join('/app/project_data', str(client_id))
+            if os.path.exists(client_dir):
+                shutil.rmtree(client_dir)
+            
+            return jsonify({'message': 'Client deleted successfully'})
+        except Exception as e:
+            logger.error(f"Failed to delete client {client_id}: {e}", exc_info=True)
+            return jsonify({'error': f'Failed to delete client: {str(e)}'}), 500

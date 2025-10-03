@@ -1,5 +1,11 @@
 import { state, dom } from './state.js';
 
+/**
+ * Displays a toast notification at the bottom of the screen.
+ * @export
+ * @param {string} message - The message to display in the toast.
+ * @param {boolean} [isError=false] - If true, the toast will have a red error style.
+ */
 export function showToast(message, isError = false) {
     const toast = document.getElementById('toast');
     const toastMessage = document.getElementById('toast-message');
@@ -9,6 +15,13 @@ export function showToast(message, isError = false) {
     setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
+/**
+ * Toggles the loading state of a button, showing a spinner and disabling it.
+ * @export
+ * @param {HTMLElement} button - The button element to toggle.
+ * @param {boolean} isLoading - If true, sets the button to a loading state.
+ * @param {string} [originalContent=null] - The original text/HTML of the button to restore.
+ */
 export function toggleButtonLoading(button, isLoading, originalContent = null) {
     if (!button) return;
     const textSpan = button.querySelector('span');
@@ -36,94 +49,219 @@ export function toggleButtonLoading(button, isLoading, originalContent = null) {
 }
 
 
+/**
+ * Renders the list of clients into the new dropdown selector.
+ * @export
+ */
 export function renderClients() {
-    dom.clientListEl.innerHTML = '';
-    state.clients.forEach(client => {
-        const clientItem = document.createElement('a');
-        clientItem.href = '#';
-        clientItem.className = 'sidebar-item block text-gray-300 hover:bg-gray-700 hover:text-white rounded-md px-3 py-2 text-sm font-medium';
-        clientItem.textContent = client.client_name;
-        clientItem.dataset.clientId = client.client_id;
-        if (client.client_id === state.currentClientId) {
-            clientItem.classList.add('active');
-        }
-        dom.clientListEl.appendChild(clientItem);
-    });
-}
+    const selector = document.getElementById('client-selector');
+    if (!selector) return;
 
-export function switchTab(tabName) {
-    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
-    document.querySelectorAll('#tab-content .tab-pane').forEach(pane => pane.classList.toggle('hidden', pane.id !== `${tabName}-tab`));
-    if (tabName === 'audit') {
-        // This is handled by an event listener in handlers.js
+    selector.innerHTML = ''; // Clear existing options
+
+    // Add a default, disabled placeholder option
+    const placeholder = document.createElement('option');
+    placeholder.textContent = 'Select a Client...';
+    placeholder.value = '';
+    placeholder.disabled = true;
+    selector.appendChild(placeholder);
+
+    // Populate with clients
+    state.clients.forEach(client => {
+        const option = document.createElement('option');
+        option.value = client.client_id;
+        option.textContent = client.client_name;
+        if (client.client_id === state.currentClientId) {
+            option.selected = true;
+        }
+        selector.appendChild(option);
+    });
+
+    // Add a separator and the "New Client" option
+    const separator = document.createElement('option');
+    separator.disabled = true;
+    separator.textContent = '──────────';
+    selector.appendChild(separator);
+
+    const newClientOption = document.createElement('option');
+    newClientOption.value = '--new--';
+    newClientOption.textContent = 'Create New Client...';
+    selector.appendChild(newClientOption);
+
+    // If no client is selected, make the placeholder selected
+    if (!state.currentClientId) {
+        placeholder.selected = true;
     }
 }
 
+/**
+ * Renders key-value pairs of the active client's configuration in the sidebar.
+ * @export
+ * @param {object} config - The client's configuration object.
+ */
+export function renderActiveConfig(config) {
+    const container = document.getElementById('active-config-display');
+    if (!container) return;
+
+    // Key configuration items to display
+    const keyConfigs = [
+        { key: 'oracle_dsn', label: 'Oracle DSN' },
+        { key: 'schema', label: 'Schema' },
+        { key: 'validation_pg_dsn', label: 'Validation DSN' },
+        { key: 'ai_provider', label: 'AI Provider' },
+        { key: 'ai_model', label: 'AI Model' }
+    ];
+
+    let content = `
+        <h3 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2">Active Config</h3>
+        <div class="space-y-2 bg-gray-50 dark:bg-gray-800 p-3 rounded text-xs">
+    `;
+
+    keyConfigs.forEach(item => {
+        let value = config[item.key] || 'Not set';
+        
+        // Truncate long values
+        if (value.length > 30) {
+            value = value.substring(0, 27) + '...';
+        }
+        
+        // Mask sensitive values
+        if (item.key === 'ai_api_key' || item.key === 'oracle_pwd') {
+            value = value !== 'Not set' ? '••••••••' : 'Not set';
+        }
+        
+        content += `
+            <div class="flex justify-between">
+                <span class="text-gray-600 dark:text-gray-400">${item.label}:</span>
+                <span class="text-gray-900 dark:text-gray-200 font-medium truncate ml-2" title="${config[item.key] || ''}">${value}</span>
+            </div>
+        `;
+    });
+
+    content += `
+        </div>
+        <button data-tab="settings" class="tab-button mt-3 text-xs w-full text-center text-blue-600 dark:text-blue-400 hover:underline">
+            <i class="fas fa-cog mr-1"></i> Edit Settings
+        </button>
+    `;
+
+    container.innerHTML = content;
+}
+/**
+ * Switches the visible tab in the main content area.
+ * @export
+ * @param {string} tabName - The name of the tab to switch to (e.g., 'migration', 'workspace').
+ */
+export function switchTab(tabName) {
+    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
+    document.querySelectorAll('#tab-content .tab-pane').forEach(pane => pane.classList.toggle('hidden', pane.id !== `${tabName}-tab`));
+}
+
+/**
+ * Populates the 'Export Type' dropdown on the migration pane based on available Ora2Pg options.
+ * @export
+ * @param {object} currentConfig - The current client's configuration object.
+ */
+export function populateTypeDropdown(currentConfig) {
+    const typeDropdown = document.getElementById('migration-export-type');
+    if (!typeDropdown) return;
+
+    const typeOption = state.ora2pgOptions.find(opt => opt.option_name.toUpperCase() === 'TYPE');
+    if (!typeOption || !typeOption.allowed_values) {
+        console.error("Could not find TYPE options in configuration.");
+        return;
+    }
+
+    const allowedTypes = typeOption.allowed_values.split(',');
+    typeDropdown.innerHTML = ''; // Clear existing options
+
+    allowedTypes.forEach(type => {
+        const option = document.createElement('option');
+        const trimmedType = type.trim();
+        option.value = trimmedType;
+        option.textContent = trimmedType;
+        if (currentConfig.type === trimmedType) {
+            option.selected = true;
+        }
+        typeDropdown.appendChild(option);
+    });
+}
+
+/**
+ * Renders the dynamic settings forms for AI Provider and Ora2Pg options.
+ * @export
+ * @param {object} config - The client's current configuration object.
+ */
 export function renderSettingsForms(config) {
+    console.log(`renderSettingsForms called. Number of options to render: ${state.ora2pgOptions.length}`);
+    
     const aiContainer = document.getElementById('ai-settings-container');
-    aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">AI Provider Settings</h3>';
+    aiContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">AI Provider Settings</h3>';
     let providerOptionsHtml = state.aiProviders.map(p => `<option value="${p.name}" ${config.ai_provider === p.name ? 'selected' : ''}>${p.name}</option>`).join('');
     
     aiContainer.insertAdjacentHTML('beforeend', `
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
-                <label for="ai_provider" class="block text-sm font-medium text-gray-300 mb-1">AI Provider</label>
-                <select name="ai_provider" id="ai_provider" class="form-input w-full rounded-md">${providerOptionsHtml}</select>
+                <label for="ai_provider" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Provider</label>
+                <select name="ai_provider" id="ai_provider" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100">${providerOptionsHtml}</select>
             </div>
             <div>
-                <label for="ai_model" class="block text-sm font-medium text-gray-300 mb-1">AI Model</label>
-                <input type="text" name="ai_model" id="ai_model" class="form-input w-full rounded-md" value="${config.ai_model || ''}">
-            </div>
-             <div>
-                <label for="ai_api_key" class="block text-sm font-medium text-gray-300 mb-1">AI API Key</label>
-                <input type="password" name="ai_api_key" id="ai_api_key" class="form-input w-full rounded-md" value="${config.ai_api_key || ''}">
+                <label for="ai_model" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Model</label>
+                <input type="text" name="ai_model" id="ai_model" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_model || ''}">
             </div>
             <div>
-                <label for="ai_endpoint" class="block text-sm font-medium text-gray-300 mb-1">AI Endpoint</label>
-                <input type="text" name="ai_endpoint" id="ai_endpoint" class="form-input w-full rounded-md" value="${config.ai_endpoint || ''}">
+                <label for="ai_api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI API Key</label>
+                <input type="password" name="ai_api_key" id="ai_api_key" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_api_key || ''}">
             </div>
             <div>
-                <label for="ai_temperature" class="block text-sm font-medium text-gray-300 mb-1">Temperature</label>
-                <input type="number" step="0.1" name="ai_temperature" id="ai_temperature" class="form-input w-full rounded-md" value="${config.ai_temperature || '0.2'}">
+                <label for="ai_endpoint" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Endpoint</label>
+                <input type="text" name="ai_endpoint" id="ai_endpoint" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_endpoint || ''}">
             </div>
             <div>
-                <label for="ai_max_output_tokens" class="block text-sm font-medium text-gray-300 mb-1">Max Output Tokens</label>
-                <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md" value="${config.ai_max_output_tokens || '8192'}">
+                <label for="ai_temperature" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Temperature</label>
+                <input type="number" step="0.1" name="ai_temperature" id="ai_temperature" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_temperature || '0.2'}">
+            </div>
+            <div>
+                <label for="ai_max_output_tokens" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Max Output Tokens</label>
+                <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_max_output_tokens || '8192'}">
             </div>
         </div>
     `);
 
     const ora2pgContainer = document.getElementById('ora2pg-settings-container');
-    ora2pgContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Ora2Pg Settings</h3>';
+    ora2pgContainer.innerHTML = '<h3 class="text-xl font-semibold mb-4 border-b border-gray-200 dark:border-gray-700 pb-2 text-gray-900 dark:text-white">Ora2Pg Settings</h3>';
     const ora2pgGrid = document.createElement('div');
     ora2pgGrid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6';
     
     const gridItemsHtml = [];
     state.ora2pgOptions.forEach(option => {
+        if (option.option_name.toUpperCase() === 'TYPE') {
+            return;
+        }
         const key = option.option_name.toLowerCase();
         let value = config[key];
         if (value === undefined) {
-             value = option.default_value;
+            value = option.default_value;
         }
         let isChecked = option.option_type === 'checkbox' ? (String(value).toLowerCase() === 'true' || String(value) === '1') : false;
 
         let inputHtml = '';
         if (option.option_type === 'checkbox') {
-            inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-input rounded mt-1" ${isChecked ? 'checked' : ''}>`;
+            inputHtml = `<input type="checkbox" name="${key}" id="${key}" class="form-checkbox h-4 w-4 text-purple-600 rounded" ${isChecked ? 'checked' : ''}>`;
         } else if (option.option_type === 'dropdown') {
             const optionsArray = option.allowed_values ? option.allowed_values.split(',') : [];
             const optionsHtml = optionsArray.map(choice =>
                 `<option value="${choice.trim()}" ${choice.trim() === value ? 'selected' : ''}>${choice.trim()}</option>`
             ).join('');
-            inputHtml = `<select name="${key}" id="${key}" class="form-input w-full rounded-md">${optionsHtml}</select>`;
+            inputHtml = `<select name="${key}" id="${key}" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100">${optionsHtml}</select>`;
         } else {
-             const inputType = option.option_type === 'password' ? 'password' : 'text';
-             inputHtml = `<input type="${inputType}" name="${key}" id="${key}" class="form-input w-full rounded-md" value="${value || ''}">`;
+            const inputType = option.option_type === 'password' ? 'password' : 'text';
+            inputHtml = `<input type="${inputType}" name="${key}" id="${key}" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${value || ''}">`;
         }
         
         gridItemsHtml.push(`
             <div>
-                <label for="${key}" class="block text-sm font-medium text-gray-300 mb-1">${option.description}</label>
+                <label for="${key}" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">${option.description}</label>
                 ${inputHtml}
             </div>
         `);
@@ -135,6 +273,11 @@ export function renderSettingsForms(config) {
     document.getElementById('validation_pg_dsn').value = config.validation_pg_dsn || state.appSettings.validation_pg_dsn || '';
 }
 
+/**
+ * Renders the Ora2Pg assessment report into a table.
+ * @export
+ * @param {object} reportData - The JSON data returned from the Ora2Pg report.
+ */
 export function renderReportTable(reportData) {
     const reportContainer = document.getElementById('report-container');
     reportContainer.classList.remove('hidden');
@@ -189,6 +332,11 @@ export function renderReportTable(reportData) {
     reportContainer.innerHTML = headerHtml + tableHtml;
 }
 
+/**
+ * Renders the list of files for a given session in the file browser.
+ * @export
+ * @param {Array<object>} files - An array of file objects for the session.
+ */
 export function renderFileBrowser(files) {
     const fileListContainer = document.getElementById('migration-file-list');
     const fileBrowserContainer = document.getElementById('file-browser-container');
@@ -217,31 +365,10 @@ export function renderFileBrowser(files) {
     fileBrowserContainer.classList.remove('hidden');
 }
 
-export function renderObjectSelector() {
-    const container = document.getElementById('object-selector-container');
-    const listEl = document.getElementById('object-list');
-    listEl.innerHTML = ''; 
-
-    if (!state.objectList || state.objectList.length === 0) {
-        listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
-        container.classList.remove('hidden');
-        return;
-    }
-
-    state.objectList.forEach(objectName => {
-        const item = document.createElement('div');
-        item.className = 'flex items-center';
-        item.innerHTML = `
-            <input id="obj-${objectName}" name="object" value="${objectName}" type="checkbox" checked class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
-            <label for="obj-${objectName}" class="ml-3 block text-sm font-medium text-gray-300">${objectName}</label>
-        `;
-        listEl.appendChild(item);
-    });
-
-    container.classList.remove('hidden');
-}
-
-// --- UPDATED: Renders the session list with the new export_type ---
+/**
+ * Renders the session history list for the current client.
+ * @export
+ */
 export function renderSessionHistory() {
     const container = document.getElementById('session-history-container');
     const listEl = document.getElementById('session-list');
@@ -276,3 +403,124 @@ export function renderSessionHistory() {
     container.classList.remove('hidden');
 }
 
+// --- REWRITTEN AND NEW FUNCTIONS FOR OBJECT SELECTOR ---
+
+/**
+ * Renders the list of objects for a specific type in the right-hand pane of the master-detail view.
+ * @export
+ * @param {string} objectType - The type of objects to render (e.g., 'TABLE').
+ */
+export function renderObjectList(objectType) {
+    const listEl = document.getElementById('object-list');
+    listEl.innerHTML = '';
+
+    const objectsOfType = state.objectList.filter(obj => obj.type === objectType);
+
+    if (objectsOfType.length === 0) {
+        listEl.innerHTML = `<p class="text-gray-500 text-center py-16">No objects of type '${objectType}' found.</p>`;
+        return;
+    }
+
+    const previouslySelected = state.selectedObjects[objectType] || [];
+
+    objectsOfType.forEach(obj => {
+        const isSupported = obj.supported;
+        const isChecked = previouslySelected.includes(obj.name);
+        const item = document.createElement('div');
+        
+        const disabledClass = !isSupported ? 'opacity-50 cursor-not-allowed' : '';
+        const disabledTooltip = !isSupported ? `Object type '${obj.type}' is not supported for direct export by Ora2Pg.` : '';
+        const checkboxDisabled = !isSupported ? 'disabled' : '';
+
+        item.className = `flex items-center justify-between hover:bg-gray-700 rounded ${disabledClass}`;
+        if(disabledTooltip) {
+            item.setAttribute('title', disabledTooltip);
+        }
+        
+item.innerHTML = `
+    <label class="flex items-center space-x-3 p-2 flex-grow ${isSupported ? 'cursor-pointer' : ''}">
+        <input name="object" value="${obj.name}" type="checkbox" ${checkboxDisabled} ${isChecked ? 'checked' : ''}
+               data-object-type="${obj.type}"
+               class="h-4 w-4 rounded border-gray-600 bg-gray-700 text-indigo-600 focus:ring-indigo-500">
+        <span class="text-sm font-medium text-gray-300">${obj.name}</span>
+    </label>
+    <button class="download-ddl-btn text-gray-400 hover:text-white p-2" 
+            data-object-name="${obj.name}" 
+            data-object-type="${obj.type}" 
+            title="Download Original Oracle DDL for ${obj.name}">
+        <i class="fas fa-download"></i>
+    </button>
+`;
+        listEl.appendChild(item);
+    });
+}
+
+/**
+ * Renders the collapsible object type tree in the left-hand pane of the master-detail view.
+ * Replaces the old renderObjectSelector function.
+ * @export
+ */
+export function renderObjectTypeTree() {
+    const container = document.getElementById('object-selector-container');
+    const treeEl = document.getElementById('object-type-tree');
+    const listEl = document.getElementById('object-list');
+    treeEl.innerHTML = ''; 
+    state.selectedObjects = {}; // Clear previous selections when re-discovering
+
+    if (!state.objectList || state.objectList.length === 0) {
+        listEl.innerHTML = '<p class="text-gray-500 col-span-full">No objects found in the schema.</p>';
+        container.classList.remove('hidden');
+        return;
+    }
+
+    const groupedObjects = state.objectList.reduce((acc, obj) => {
+        const type = obj.type;
+        if (!acc[type]) {
+            acc[type] = { count: 0, supportedCount: 0 };
+        }
+        acc[type].count++;
+        if (obj.supported) {
+            acc[type].supportedCount++;
+        }
+        return acc;
+    }, {});
+
+    const sortedTypes = Object.keys(groupedObjects).sort();
+    
+    // Create root node for the schema
+    const schemaName = document.querySelector('#ora2pg-settings-container #schema').value || 'Schema';
+    const rootDetails = document.createElement('details');
+    rootDetails.open = true;
+    
+    const rootSummary = document.createElement('summary');
+    rootSummary.className = 'text-lg font-bold text-white cursor-pointer';
+    rootSummary.innerHTML = `<i class="fas fa-database mr-2"></i> ${schemaName}`;
+    rootDetails.appendChild(rootSummary);
+
+    // Create list for types
+    const typeList = document.createElement('ul');
+    typeList.className = 'ml-4 mt-2 space-y-1';
+    
+    sortedTypes.forEach(type => {
+        const typeData = groupedObjects[type];
+        const listItem = document.createElement('li');
+        const typeLink = document.createElement('a');
+        typeLink.href = '#';
+        typeLink.className = 'object-type-link block p-1 rounded hover:bg-gray-700';
+        typeLink.dataset.objectType = type;
+        
+        const supportedBadge = typeData.supportedCount > 0 ? `<span class="text-xs text-green-400 ml-2">(${typeData.supportedCount} supported)</span>` : '';
+        
+        typeLink.innerHTML = `${type} <span class="text-xs text-gray-500">(${typeData.count})</span> ${supportedBadge}`;
+        
+        listItem.appendChild(typeLink);
+        typeList.appendChild(listItem);
+    });
+    
+    rootDetails.appendChild(typeList);
+    treeEl.appendChild(rootDetails);
+    
+    // Reset the right-hand pane
+    listEl.innerHTML = `<p class="text-gray-500 text-center py-16">Select an object type from the tree to see the list of objects.</p>`;
+    container.classList.remove('hidden');
+}
