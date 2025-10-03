@@ -1,0 +1,459 @@
+= Ora2Pg AI Corrector
+:toc:
+:toclevels: 3
+:source-highlighter: highlight.js
+:icons: font
+
+A smart web application to accelerate database migrations to PostgreSQL by providing AI-powered SQL conversion, intelligent validation, and integrated Ora2Pg workflow management.
+
+== Overview
+
+Migrating databases to PostgreSQL often involves translating SQL from various source dialects (Oracle, MySQL, SQL Server) and extensive testing to ensure compatibility. The Ora2Pg AI Corrector streamlines this process by combining:
+
+* **AI-powered multi-dialect SQL conversion** - Convert SQL from any major database to PostgreSQL
+* **Integrated Ora2Pg workflow** - Run schema discovery and exports directly from the UI
+* **Intelligent validation engine** - Self-healing validation that automatically resolves dependencies
+* **Multi-client workspace** - Manage multiple migration projects with isolated configurations
+
+== Key Features
+
+=== Multi-Dialect SQL Conversion
+
+Convert SQL from multiple source databases to PostgreSQL:
+
+* **Oracle** → PostgreSQL (primary focus)
+* **MySQL** → PostgreSQL
+* **SQL Server** → PostgreSQL
+* **PostgreSQL** → PostgreSQL (optimization)
+* **Generic SQL** → PostgreSQL
+
+The AI automatically handles dialect-specific conversions:
+
+* Data types (VARCHAR2 → VARCHAR, NUMBER → NUMERIC)
+* Functions (NVL → COALESCE, DECODE → CASE)
+* Syntax (DUAL removal, SYSDATE → CURRENT_TIMESTAMP)
+* Sequences and identity columns
+* Outer join operators
+
+=== Dual Workflow: Migration + Workspace
+
+==== Migration Pane (Ora2Pg Integration)
+
+Designed for comprehensive Oracle migrations:
+
+* **Assessment Reports**: Generate Ora2Pg migration cost and complexity reports
+* **Object Discovery**: Browse and select specific schema objects (tables, views, functions)
+* **Batch Export**: Export selected objects with Ora2Pg
+* **Session Management**: Track export sessions and generated files
+* **Original DDL Download**: Retrieve Oracle DDL with optional pretty formatting
+
+==== Workspace Pane (Ad-hoc Conversion)
+
+Designed for quick conversions and testing:
+
+* **Load or paste any SQL** from files or clipboard
+* **Select source dialect** from dropdown
+* **Convert with AI** to PostgreSQL
+* **Validate** against live database
+* **No file requirements** - works with arbitrary SQL snippets
+
+=== Intelligent Validation Engine
+
+The validation system uses a multi-layered "self-healing" approach:
+
+==== Proactive Schema Generation
+
+For DML queries (SELECT, INSERT, UPDATE):
+
+. Parses SQL to extract all required table names
+. Checks validation database for existing tables
+. Makes a **single consolidated AI call** to generate DDL for all missing tables
+. Creates schema before validation attempt
+
+This eliminates the need for incremental table creation and dramatically reduces API calls.
+
+==== Reactive Self-Healing
+
+When errors occur during validation:
+
+**Dependency Resolution**::
+Catches `relation "..." does not exist` errors and generates the specific missing object DDL on-the-fly.
+
+**Query Correction**::
+Catches syntax or semantic errors, sends the query + error to AI for correction, then retries with the fixed SQL.
+
+**Retry Logic**::
+Up to 5 automatic retry attempts with AI assistance before failing.
+
+==== User Controls
+
+Two checkboxes provide fine-grained control:
+
+[cols="1,3"]
+|===
+|Control |Description
+
+|**Auto-create Tables** _(checked by default)_
+|Enables proactive and reactive DDL generation. When disabled, validation fails immediately if tables are missing.
+
+|**Clean Slate** _(unchecked by default)_
+|When checked, drops all tables referenced in the query before validation begins, ensuring a fresh environment.
+|===
+
+==== Validation Workflows
+
+The combination of controls enables four distinct workflows:
+
+[cols="2,3,3", options="header"]
+|===
+|Mode |Use Case |Behavior
+
+|**Blank Canvas** +
+(Clean Slate ✓, Auto-create ✓)
+|Starting fresh projects
+|Wipes DB, then AI creates all needed tables
+
+|**Iterative Development** +
+(Clean Slate ✗, Auto-create ✓)
+|Building incrementally
+|Keeps existing tables, creates new ones as needed
+
+|**Load and Test** +
+(Clean Slate ✓, Auto-create ✗)
+|Testing with pre-loaded schema
+|Wipes tables, fails if missing (won't create)
+
+|**Pure Validator** +
+(Clean Slate ✗, Auto-create ✗)
+|Testing against "golden" schema
+|Validates only, never modifies database
+|===
+
+=== Multi-Client Management
+
+* **Client Isolation**: Each client has separate configurations, sessions, and files
+* **Add/Rename/Delete**: Full client lifecycle management with confirmation dialogs
+* **Active Configuration Display**: Sidebar shows current client's key settings
+* **Audit Logging**: Track all actions per client
+
+=== Modern UI Features
+
+* **Light/Dark Theme**: Toggle between themes with persistent preference
+* **Responsive Design**: Clean, modern interface with minimal visual clutter
+* **CodeMirror Editors**: Syntax-highlighted SQL editors with theme support
+* **Inline Validation Results**: Success/error messages appear directly below validation controls
+
+== Getting Started
+
+=== Prerequisites
+
+* Docker
+* Docker Compose
+
+=== Installation
+
+. Clone the repository:
++
+[source,bash]
+----
+git clone <your-repository-url>
+cd ora2pg-ai-corrector
+----
+
+. Create environment configuration:
++
+[source,bash]
+----
+cp .env.example .env
+----
+
+. Edit `.env` with your settings:
++
+[source,bash]
+----
+# Application database (SQLite or PostgreSQL)
+DB_BACKEND=sqlite
+# PG_DSN_CONFIG=postgresql://user:pass@host:port/app_db
+
+# Validation database
+VALIDATION_PG_DSN=postgresql://user:pass@host:port/validation_db
+
+# Security
+APP_SECRET_KEY=your_super_secret_key
+APP_ENCRYPTION_KEY=your_32_byte_fernet_encryption_key
+----
+
+. Build and run:
++
+[source,bash]
+----
+docker-compose up --build
+----
+
+. Access the application at `http://localhost:8000`
+
+=== Quick Start: Workspace Workflow
+
+. **Create a client**: Click the + icon next to "Client" in the sidebar
+. **Configure settings**: Go to Settings tab and add:
+   * AI Provider credentials (OpenAI, Anthropic, Google)
+   * Validation PostgreSQL DSN (optional, for validation)
+. **Go to Workspace tab**
+. **Select source dialect** from dropdown (Oracle, MySQL, etc.)
+. **Paste SQL** in the Source editor
+. **Click Convert**: AI translates to PostgreSQL
+. **Click Validate**: Test against live database (if configured)
+
+=== Quick Start: Migration Workflow
+
+. **Create a client** and configure settings including:
+   * Oracle connection details (DSN, user, password, schema)
+   * AI Provider credentials
+. **Go to Migration tab**
+. **Generate Assessment Report**: Get migration complexity analysis
+. **Discover Objects**: Browse Oracle schema objects
+. **Select objects** to export
+. **Export Selected**: Run Ora2Pg with your selections
+. **Click files** in session history to load into Workspace for further refinement
+
+== Configuration
+
+=== Ora2Pg Options (Dynamic Configuration)
+
+The application dynamically supports **any Ora2Pg configuration option** without code changes. The system automatically:
+
+. Parses `ora2pg_config/default.cfg` on startup
+. Loads all options into the database
+. Generates UI form fields based on option metadata
+. Validates and applies options during Ora2Pg execution
+
+==== Adding New Options
+
+To support additional Ora2Pg options:
+
+. Edit `ora2pg_config/default.cfg` and add the option using Ora2Pg's format:
++
+[source,cfg]
+----
+# Comment describing the option
+OPTION_NAME    default_value
+
+# For dropdowns, use pipe-separated values
+TYPE    TABLE|VIEW|SEQUENCE|FUNCTION
+----
+
+. Restart the application (or reinitialize the database)
+. The option automatically appears in Settings → Ora2Pg Settings
+. Users can configure it per-client
+
+==== Option Types
+
+The parser automatically detects:
+
+**Text Fields**:: Single-line values (DSN, schema names, paths)
+**Checkboxes**:: Boolean options (0/1, true/false)
+**Dropdowns**:: Options with pipe-separated allowed values
+**Passwords**:: Options ending in `_PWD` or `_PASSWORD`
+
+==== Example: Adding Custom Option
+
+To add support for Ora2Pg's `PG_SUPPORTS_INOUT` option:
+
+[source,cfg]
+----
+# Edit ora2pg_config/default.cfg
+# Set to 1 if PostgreSQL >= 8.1
+PG_SUPPORTS_INOUT    1
+----
+
+After restart, this appears in the UI as a checkbox under Ora2Pg Settings.
+
+==== Reference Documentation
+
+For the complete list of Ora2Pg options and their meanings, see:
+https://ora2pg.darold.net/documentation.html
+
+=== AI Providers
+
+Edit `ai_config/ai_providers.json` to add or modify AI providers:
+
+[source,json]
+----
+{
+  "name": "OpenAI",
+  "api_endpoint": "https://api.openai.com/v1",
+  "default_model": "gpt-4"
+}
+----
+
+=== Client-Specific Settings
+
+Each client can configure:
+
+* **Oracle Connection**: DSN, username, password, schema
+* **AI Settings**: Provider, model, endpoint, API key, temperature, max tokens
+* **Ora2Pg Options**: Any option from `default.cfg` - automatically available
+* **Validation Database**: PostgreSQL DSN for testing converted SQL
+=== AI Providers
+
+Edit `ai_config/ai_providers.json` to add or modify AI providers:
+
+[source,json]
+----
+{
+  "name": "OpenAI",
+  "api_endpoint": "https://api.openai.com/v1",
+  "default_model": "gpt-4"
+}
+----
+
+=== Ora2Pg Options
+
+The `ora2pg_config/default.cfg` file populates available Ora2Pg configuration options in the UI. Options are automatically loaded into the database on first run.
+
+=== Client-Specific Settings
+
+Each client can configure:
+
+* **Oracle Connection**: DSN, username, password, schema
+* **AI Settings**: Provider, model, endpoint, API key, temperature, max tokens
+* **Ora2Pg Options**: Export types, output directory, file-per-table, etc.
+* **Validation Database**: PostgreSQL DSN for testing converted SQL
+
+== Architecture
+
+=== Components
+
+**Frontend**::
+* Vanilla JavaScript with ES6 modules
+* CodeMirror 6 for SQL editing
+* Tailwind CSS for styling
+* Theme-aware with localStorage persistence
+
+**Backend**::
+* Python Flask application
+* SQLite or PostgreSQL for application data
+* Ora2Pg integration via subprocess
+* SQL*Plus for Oracle DDL extraction
+
+**AI Integration**::
+* Multi-provider support (OpenAI, Anthropic, Google)
+* Streaming and non-streaming modes
+* Token usage tracking
+* Configurable temperature and max tokens
+
+=== Security
+
+* **Encryption**: API keys and passwords encrypted with Fernet
+* **Validation**: SQL injection protection for Oracle identifiers
+* **Isolation**: Client data fully separated
+* **Audit Logging**: All actions tracked per client
+
+== Testing Examples
+
+=== Example 1: Oracle to PostgreSQL DDL
+
+.Oracle Input:
+[source,sql]
+----
+CREATE TABLE employees (
+    emp_id NUMBER PRIMARY KEY,
+    emp_name VARCHAR2(100),
+    hire_date DATE DEFAULT SYSDATE,
+    salary NUMBER(10,2)
+);
+----
+
+.PostgreSQL Output:
+[source,sql]
+----
+CREATE TABLE employees (
+    emp_id INTEGER PRIMARY KEY,
+    emp_name VARCHAR(100),
+    hire_date DATE DEFAULT CURRENT_TIMESTAMP,
+    salary NUMERIC(10,2)
+);
+----
+
+=== Example 2: Self-Healing Validation
+
+.Query with Missing Tables:
+[source,sql]
+----
+SELECT e.emp_name, d.dept_name
+FROM employees e
+JOIN departments d ON e.dept_id = d.dept_id;
+----
+
+**Validation Process**:
+
+. Proactive engine detects `employees` and `departments` are missing
+. Single AI call generates both table DDLs
+. Tables created automatically
+. Query validated successfully
+
+=== Example 3: Syntax Error Correction
+
+.Query with Error:
+[source,sql]
+----
+SELECT * FROM products ORDER BY price LIMIT DESC 10;
+----
+
+**Validation Process**:
+
+. Query fails with syntax error at "DESC"
+. AI receives error message and query
+. AI returns corrected query: `ORDER BY price DESC LIMIT 10`
+. Retry succeeds
+
+== Troubleshooting
+
+=== Validation Fails with "Database not configured"
+
+Ensure the client has a `validation_pg_dsn` set in Settings → Validation Database.
+
+=== AI Conversion Returns Unchanged SQL
+
+Check that:
+
+* AI provider credentials are correct
+* Model supports the task (use GPT-4 or Claude for best results)
+* Source dialect is selected correctly
+
+=== Ora2Pg Commands Fail
+
+Verify in Settings:
+
+* Oracle DSN is correct (format: `dbi:Oracle:host=X;port=Y;service_name=Z`)
+* Oracle credentials are valid
+* Schema name is correct and accessible
+
+=== Theme Not Persisting
+
+The theme preference is stored in browser localStorage. Clear browser cache if experiencing issues.
+
+== Future Enhancements
+
+* **DDL Caching**: Cache AI-generated DDL to reduce API calls for common tables
+* **Batch Processing**: Process entire directories of SQL files with summary reports
+* **Migration Progress Tracking**: Visual progress indicators for long-running operations
+* **Export Formats**: Support for additional output formats beyond SQL
+* **Collaborative Features**: Multi-user access with role-based permissions
+
+== Contributing
+
+Contributions are welcome! Please ensure:
+
+* Code follows existing style patterns
+* New features include appropriate error handling
+* UI changes support both light and dark themes
+* Database changes include migration scripts
+
+== License
+
+[Specify your license here]
+
+== Support
+
+For issues, questions, or feature requests, please open an issue in the repository.

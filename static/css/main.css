@@ -1,0 +1,31 @@
+body { font-family: 'Inter', sans-serif; }
+.sidebar { width: 280px; }
+.sidebar-item.active { background-color: #4a5568; }
+.tab-button.active { border-color: #4299e1; color: #4299e1; }
+.editor-container { height: 55vh; }
+.form-input {
+    background-color: #374151;
+    border: 1px solid #4b5563;
+    color: #d1d5db;
+}
+.toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 50;
+    transition: all 0.5s ease-in-out;
+    opacity: 0;
+    transform: translateY(20px);
+}
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+/* Spinner Animation */
+.spinner {
+    animation: spin 1s linear infinite;
+}
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}

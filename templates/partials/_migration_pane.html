@@ -1,0 +1,85 @@
+<div id="migration-tab" class="tab-pane">
+    <div class="space-y-6">
+        <!-- Assessment Report Section -->
+        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Assessment Report</h3>
+                <div class="flex space-x-3">
+                    <button id="run-report-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                        <i class="fas fa-chart-bar mr-2"></i>Generate Report
+                    </button>
+                    <button id="export-report-btn" disabled class="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                        <i class="fas fa-download mr-2"></i>Export
+                    </button>
+                </div>
+            </div>
+            <div id="report-container" class="hidden mt-4 overflow-x-auto">
+                <!-- Report table will be rendered here -->
+            </div>
+        </div>
+
+        <!-- Object Discovery & Export Section -->
+        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Object Discovery</h3>
+                <button id="run-ora2pg-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                    <i class="fas fa-search mr-2"></i>Discover Objects
+                </button>
+            </div>
+            
+            <!-- Object Selector (Master-Detail View) -->
+            <div id="object-selector-container" class="hidden mt-4">
+                <div class="grid grid-cols-12 gap-4">
+                    <!-- Left: Object Type Tree -->
+                    <div class="col-span-3 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Object Types</h4>
+                        <div id="object-type-tree" class="text-sm text-gray-600 dark:text-gray-400">
+                            <!-- Tree will be rendered here -->
+                        </div>
+                    </div>
+                    
+                    <!-- Right: Object List -->
+                    <div class="col-span-9">
+                        <div class="flex items-center justify-between mb-3">
+                            <div class="flex items-center space-x-2">
+                                <label class="flex items-center cursor-pointer text-sm">
+                                    <input id="ddl-format-pretty" type="checkbox" class="h-4 w-4 text-purple-600 rounded mr-2">
+                                    <span class="text-gray-700 dark:text-gray-300">Pretty DDL Format</span>
+                                </label>
+                            </div>
+                            <div class="flex space-x-2">
+                                <button id="select-all-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-3 rounded transition-colors">Select All</button>
+                                <button id="select-none-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-3 rounded transition-colors">Clear</button>
+                                <button id="download-original-ddl-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white py-1.5 px-3 rounded transition-colors">
+                                    <i class="fas fa-download mr-1"></i>Download DDL
+                                </button>
+                                <button id="export-selected-btn" class="text-xs bg-green-600 hover:bg-green-700 text-white py-1.5 px-3 rounded transition-colors">
+                                    <i class="fas fa-file-export mr-1"></i>Export Selected
+                                </button>
+                            </div>
+                        </div>
+                        <div id="object-list" class="bg-white dark:bg-gray-900 p-4 rounded-lg border border-gray-200 dark:border-gray-700 max-h-96 overflow-y-auto">
+                            <p class="text-gray-500 dark:text-gray-400 text-center py-16">Select an object type to see objects</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Session History Section -->
+        <div id="session-history-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Previous Sessions</h3>
+            <div id="session-list" class="space-y-2">
+                <!-- Session items will be rendered here -->
+            </div>
+        </div>
+
+        <!-- File Browser Section -->
+        <div id="file-browser-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Session Files</h3>
+            <div id="migration-file-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <!-- File items will be rendered here -->
+            </div>
+        </div>
+    </div>
+</div>

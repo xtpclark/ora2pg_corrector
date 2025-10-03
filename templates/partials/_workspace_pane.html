@@ -1,0 +1,83 @@
+<div id="workspace-tab" class="tab-pane hidden">
+    <div class="bg-white dark:bg-gray-900 p-4 rounded-lg">
+        <!-- Action Bar -->
+        <div class="flex items-center justify-between mb-4 pb-3 border-b border-gray-200 dark:border-gray-700">
+            <div class="flex items-center space-x-3">
+                <input type="file" id="sql-file-picker" class="hidden" accept=".sql,text/plain">
+                <button id="load-file-proxy-btn" class="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-3 py-1.5 rounded text-sm font-medium transition-colors">
+                    <i class="fas fa-folder-open mr-1.5"></i> Load
+                </button>
+                
+                <div class="flex items-center space-x-2 px-3 py-1 bg-gray-100 dark:bg-gray-800 rounded text-sm">
+                    <select id="source-dialect-selector" class="bg-transparent border-0 text-gray-900 dark:text-gray-100 focus:ring-0 py-0 pl-0 pr-6 text-sm">
+                        <option value="oracle">Oracle</option>
+                        <option value="mysql">MySQL</option>
+                        <option value="sqlserver">SQL Server</option>
+                        <option value="postgres">PostgreSQL</option>
+                        <option value="generic">Generic SQL</option>
+                    </select>
+                    <i class="fas fa-arrow-right text-gray-400 text-xs"></i>
+                    <span class="font-medium text-gray-900 dark:text-white">PostgreSQL</span>
+                </div>
+                
+                <button id="copy-to-target-btn" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white px-2 py-1" title="Copy source to target">
+                    <i class="fas fa-arrow-right"></i>
+                </button>
+                <button id="clear-workspace-btn" class="text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white px-2 py-1" title="Clear both editors">
+                    <i class="fas fa-eraser"></i>
+                </button>
+            </div>
+            
+            <div class="flex items-center space-x-3">
+                <span id="workspace-file-status" class="text-xs text-gray-500 dark:text-gray-400 italic"></span>
+                <button id="correct-ai-btn" class="bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">
+                    <i class="fas fa-magic mr-1.5"></i> Convert
+                </button>
+            </div>
+        </div>
+
+        <!-- Editors - Fixed height with proper spacing -->
+        <div class="grid grid-cols-2 gap-4 mb-4" style="height: calc(100vh - 340px); max-height: 600px; min-height: 400px;">
+            <div class="flex flex-col">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Source</span>
+                </div>
+                <div id="original-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden"></div>
+            </div>
+
+            <div class="flex flex-col">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Target</span>
+                    <button id="copy-btn" title="Copy to clipboard" class="text-gray-500 hover:text-gray-900 dark:hover:text-white text-sm">
+                        <i class="fas fa-clipboard"></i>
+                    </button>
+                </div>
+                <div id="corrected-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden"></div>
+            </div>
+        </div>
+
+        <!-- Validation Bar - Now always visible -->
+        <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded">
+            <div class="flex items-center space-x-3 text-sm">
+                <label class="flex items-center cursor-pointer">
+                    <input id="auto-create-ddl-checkbox" type="checkbox" class="h-3.5 w-3.5 text-purple-600 rounded mr-1.5" checked>
+                    <span class="text-gray-700 dark:text-gray-300">Auto-create</span>
+                </label>
+                <label class="flex items-center cursor-pointer">
+                    <input id="clean-slate-checkbox" type="checkbox" class="h-3.5 w-3.5 text-purple-600 rounded mr-1.5">
+                    <span class="text-gray-700 dark:text-gray-300">Clean slate</span>
+                </label>
+            </div>
+            
+            <button id="validate-btn" class="bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">
+                <i class="fas fa-check-circle mr-1.5"></i> Validate
+            </button>
+        </div>
+        
+        <!-- Validation Result -->
+        <div id="validation-result" class="mt-2 p-2 rounded text-sm hidden">
+            <div class="font-semibold mb-1" id="validation-result-title"></div>
+            <div id="validation-result-message" class="text-gray-700 dark:text-gray-300"></div>
+        </div>
+    </div>
+</div>

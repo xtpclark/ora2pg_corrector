@@ -1,0 +1,128 @@
+= Nginx Configuration for Ora2Pg Corrector
+:toc:
+:icons: font
+:source-highlighter: rouge
+
+== Overview
+
+This directory contains example nginx configuration files for deploying the Ora2Pg Corrector application behind an nginx reverse proxy.
+
+== Setup Instructions
+
+=== 1. Copy Configuration File
+
+Copy the example configuration to your nginx sites-available directory:
+
+[source,bash]
+----
+sudo cp nginx.conf.example /etc/nginx/sites-available/ora2pg-corrector
+----
+
+=== 2. Retrieve Access Token
+
+Get your access token from the Docker container:
+
+[source,bash]
+----
+# Using the helper script
+./get-token.sh
+
+# Or manually from the container
+docker exec ora2pg-corrector-app-1 cat /app/data/.auth_token
+----
+
+=== 3. Configure nginx
+
+Edit the configuration file and replace `YOUR_TOKEN_HERE` with your actual token:
+
+[source,bash]
+----
+sudo nano /etc/nginx/sites-available/ora2pg-corrector
+----
+
+Key configuration items to update:
+
+* `server_name` - Change to your domain name
+* `proxy_set_header X-Auth-Token` - Replace with your actual token
+* SSL certificates (when enabling HTTPS)
+* IP restrictions (if needed)
+
+=== 4. Enable the Site
+
+[source,bash]
+----
+# Create symbolic link to enable the site
+sudo ln -s /etc/nginx/sites-available/ora2pg-corrector /etc/nginx/sites-enabled/
+
+# Test nginx configuration
+sudo nginx -t
+
+# Reload nginx if test passes
+sudo systemctl reload nginx
+----
+
+== Configuration Options
+
+=== Authentication Token
+
+The application uses token-based authentication. The token must be included in the nginx configuration:
+
+[source,nginx]
+----
+proxy_set_header X-Auth-Token YOUR_TOKEN_HERE;
+----
+
+=== SSL/TLS Configuration
+
+The example includes commented SSL configuration. To enable HTTPS:
+
+. Obtain SSL certificates (e.g., using Let's Encrypt)
+. Uncomment the SSL configuration sections
+. Update certificate paths
+. Redirect HTTP to HTTPS
+
+=== Access Restrictions
+
+To restrict access by IP address, uncomment and modify:
+
+[source,nginx]
+----
+allow 192.168.1.0/24;  # Allow local network
+allow 10.0.0.0/8;      # Allow internal network  
+deny all;              # Deny everyone else
+----
+
+== Troubleshooting
+
+[cols="1,2", options="header"]
+|===
+|Issue |Solution
+
+|401 Unauthorized errors
+|Verify the access token in nginx configuration matches the container token
+
+|502 Bad Gateway
+|Check if the application container is running: `docker ps`
+
+|Connection timeouts
+|Increase proxy timeout values for long-running Ora2Pg operations
+
+|Static files not loading
+|Ensure the proxy headers are correctly forwarding the protocol (http/https)
+|===
+
+== Security Considerations
+
+WARNING: Always use HTTPS in production environments
+
+* The access token should be kept secret
+* Consider implementing rate limiting for API endpoints
+* Use IP restrictions when possible
+* Regularly update nginx and SSL certificates
+* Monitor access logs for suspicious activity
+
+== Additional Resources
+
+* link:https://nginx.org/en/docs/[nginx Documentation]
+* link:https://docs.docker.com/compose/[Docker Compose Documentation]
+* link:../README.adoc[Main Project README]

@@ -1,33 +1,59 @@
 version: '3.8'
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        HOST_UID: ${HOST_UID}
+        HOST_GID: ${HOST_GID}
     ports:
       - "8000:8000"
     volumes:
       - ./output:/app/output:z
-      - ./settings.db:/app/settings.db:z
+      - settings_data:/app/data
+      - project_data:/app/project_data
       - ./ora2pg_config:/app/ora2pg_config:z
       - ./ai_config:/app/ai_config:z
       - ./static:/app/static:z
+      - /home/pclark/git/conversions:/app/project_output:z
     env_file:
       - .env
     depends_on:
       - postgres
     networks:
       - app-network
+
   postgres:
-    image: postgres:13
+    image: postgres:16
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
       POSTGRES_DB: ${POSTGRES_DB:-ora2pg_settings}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./init-multiple-dbs.sh:/docker-entrypoint-initdb.d/init-multiple-dbs.sh:z
     networks:
       - app-network
+
+  oracle-free:
+    image: gvenzl/oracle-free:latest
+    ports:
+      - "1521:1521"
+    environment:
+      ORACLE_PASSWORD: oracle
+    volumes:
+      - ./oracle_setup:/container-entrypoint-initdb.d:z
+      - oracle_data:/opt/oracle/oradata
+    networks:
+      - app-network
+
 volumes:
   pgdata:
+  settings_data:
+  oracle_data:
+  project_data:
+
 networks:
   app-network:
     driver: bridge
+
