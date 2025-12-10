@@ -172,8 +172,10 @@ class Ora2PgAICorrector:
 
             command = [self.ora2pg_path, '-c', config_path] + (extra_args or [])
             logger.info(f"Executing command: {' '.join(command)}")
-            
-            result = subprocess.run(command, capture_output=True, text=True, timeout=300)
+
+            # Run from /tmp to allow Ora2Pg to write temp files (temp_pass2_file.dat)
+            # This is needed for VIEW and PROCEDURE exports which use multi-pass processing
+            result = subprocess.run(command, capture_output=True, text=True, timeout=300, cwd='/tmp')
 
             logger.info(f"Raw stdout: {result.stdout[:500]}...")
             logger.info(f"Raw stderr: {result.stderr}")
