@@ -652,6 +652,8 @@ def _run_migration_thread(client_id, options, app):
             orchestrator = MigrationOrchestrator(client_id)
             _running_migrations[client_id] = orchestrator
             result = orchestrator.run_full_migration(options)
+            # Keep orchestrator in dict after completion so status remains accessible
+            # The orchestrator.results will contain the final state
             log_audit(client_id, 'one_click_migration',
                      f"Completed: {result['successful']} successful, {result['failed']} failed")
         except Exception as e:
@@ -684,6 +686,8 @@ def start_migration(client_id):
                 'error': 'A migration is already running for this client',
                 'status': existing.get_status()
             }), 409
+        # Clear previous completed migration to start fresh
+        del _running_migrations[client_id]
 
     data = request.get_json(silent=True) or {}
     options = {
@@ -731,14 +735,68 @@ def get_migration_status(client_id):
         "files": [{"file_id": 1, "filename": "...", "status": "..."}, ...]
     }
     """
-    if client_id not in _running_migrations:
+    # First check in-memory for running migration
+    if client_id in _running_migrations:
+        orchestrator = _running_migrations[client_id]
+        return jsonify(orchestrator.get_status())
+
+    # Fall back to database for completed migrations
+    # This handles multi-worker environments where the migration ran in another worker
+    conn = get_db()
+
+    # Get the most recent TABLE session (the main export) and its related sessions
+    # Sessions from the same migration run are within 5 minutes of each other
+    cursor = execute_query(conn, '''
+        SELECT session_id, workflow_status, created_at
+        FROM migration_sessions
+        WHERE client_id = ? AND export_type = 'TABLE'
+        ORDER BY session_id DESC
+        LIMIT 1
+    ''', (client_id,))
+    main_session = cursor.fetchone()
+
+    if not main_session:
         return jsonify({
             'status': 'no_migration',
             'message': 'No migration found for this client'
         })
 
-    orchestrator = _running_migrations[client_id]
-    return jsonify(orchestrator.get_status())
+    main_session_id = main_session['session_id']
+    workflow_status = main_session['workflow_status'] or 'unknown'
+
+    # Get all sessions from this migration run (within a short time window)
+    cursor = execute_query(conn, '''
+        SELECT session_id FROM migration_sessions
+        WHERE client_id = ? AND session_id >= ?
+        ORDER BY session_id
+    ''', (client_id, main_session_id))
+    session_ids = [row['session_id'] for row in cursor.fetchall()]
+
+    # Get file statuses for all related sessions
+    placeholders = ','.join('?' * len(session_ids))
+    cursor = execute_query(conn, f'''
+        SELECT file_id, filename, status, error_message
+        FROM migration_files
+        WHERE session_id IN ({placeholders})
+    ''', session_ids)
+    files = cursor.fetchall()
+
+    successful = sum(1 for f in files if f['status'] in ('validated', 'converted'))
+    failed = sum(1 for f in files if f['status'] == 'failed')
+    errors = [f"{f['filename']}: {f['error_message']}" for f in files if f['error_message']]
+
+    return jsonify({
+        'status': workflow_status,
+        'phase': None,
+        'total_objects': len(files),
+        'processed_objects': len(files),
+        'successful': successful,
+        'failed': failed,
+        'errors': errors,
+        'files': [{'file_id': f['file_id'], 'filename': f['filename'], 'status': f['status']} for f in files],
+        'started_at': main_session['created_at'],
+        'completed_at': None
+    })
 
 
 @api_bp.route('/client/<int:client_id>/run_migration_sync', methods=['POST'])

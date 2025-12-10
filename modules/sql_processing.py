@@ -464,6 +464,27 @@ class Ora2PgAICorrector:
             logger.error(f"An unexpected error occurred during Ora2Pg persistence execution: {e}", exc_info=True)
             return {}, f"An unexpected error occurred: {str(e)}"
 
+    def _strip_psql_metacommands(self, sql):
+        """
+        Remove psql-specific metacommands that can't be executed via psycopg2.
+
+        Ora2Pg exports include psql commands like:
+        - \\set ON_ERROR_STOP ON
+        - \\i filename
+        - \\copy
+
+        These must be stripped for validation via psycopg2.
+        """
+        lines = sql.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Skip psql metacommands (lines starting with backslash)
+            if stripped.startswith('\\'):
+                continue
+            cleaned_lines.append(line)
+        return '\n'.join(cleaned_lines)
+
     def _extract_table_names(self, sql):
         """
         Extracts table names from a SQL query, ignoring CTEs.
@@ -522,19 +543,21 @@ class Ora2PgAICorrector:
     ```"""
         else:
             # For other dialects, do full conversion
-            system_instruction = f"You are an expert in database migrations. Convert {source_name} SQL to PostgreSQL, replacing {source_name}-specific constructs with PostgreSQL equivalents. Handle data types, functions, syntax, and PL/SQL to PL/pgSQL conversions."
-            full_prompt = f"""Convert this {source_name} SQL to PostgreSQL-compatible SQL. Provide only the converted SQL code with no explanations.
-    
-    Key conversions needed:
-    - Data types ({source_name} → PostgreSQL)
-    - Functions and operators
-    - Procedural code (if any)
-    - Syntax differences
-    
-    Original {source_name} SQL:
-    ```sql
-    {sql}
-    ```"""
+            system_instruction = f"You are an expert in database migrations. Convert {source_name} SQL to PostgreSQL, replacing {source_name}-specific constructs with PostgreSQL equivalents. Handle data types, functions, syntax, and PL/SQL to PL/pgSQL conversions. Output only valid PostgreSQL SQL that can be executed directly."
+            full_prompt = f"""Convert this {source_name} SQL to PostgreSQL-compatible SQL. Provide only the converted SQL code with no explanations or markdown formatting.
+
+IMPORTANT REQUIREMENTS:
+1. Output only pure PostgreSQL SQL - no psql metacommands (lines starting with \\)
+2. Remove any lines like: \\set, \\i, \\copy, \\encoding, etc.
+3. Keep valid SQL commands like: SET client_encoding, CREATE TABLE, etc.
+4. Convert Oracle data types: NUMBER→numeric, VARCHAR2→varchar, CLOB→text, etc.
+5. Convert Oracle functions: NVL→COALESCE, SYSDATE→CURRENT_TIMESTAMP, etc.
+6. For PL/SQL: Convert to PL/pgSQL (CREATE OR REPLACE FUNCTION/PROCEDURE)
+
+Original {source_name} SQL:
+```sql
+{sql}
+```"""
         
         try:
             return self._make_ai_call(system_instruction, full_prompt)
@@ -591,9 +614,16 @@ Query:
         """
         Asks the AI to fix a SQL query based on an error message.
         """
-        system_instruction = "You are a PostgreSQL expert. Your task is to correct a SQL query that failed validation."
+        system_instruction = "You are a PostgreSQL expert. Your task is to correct a SQL query that failed validation. Output only valid PostgreSQL SQL that can be executed directly via a database driver (not psql CLI)."
         full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
-Please correct the query to resolve the issue. Provide only the corrected, complete SQL query.
+
+Please correct the query to resolve the issue. Provide only the corrected, complete SQL query with no explanations.
+
+IMPORTANT:
+- Remove any psql metacommands (lines starting with \\) like \\set, \\i, \\copy
+- Keep valid SQL statements like SET, CREATE, INSERT, etc.
+- Output pure PostgreSQL SQL only
+
 Failed Query:
 ```sql
 {failed_sql}
@@ -665,6 +695,9 @@ Failed Query:
         """
         Validates SQL against a PostgreSQL database, with AI-powered retry logic.
         """
+        # Strip psql metacommands (like \set) that can't be executed via psycopg2
+        sql = self._strip_psql_metacommands(sql)
+
         if clean_slate:
             table_names = self._extract_table_names(sql)
             if table_names:
