@@ -1,5 +1,55 @@
 <div id="migration-tab" class="tab-pane">
     <div class="space-y-6">
+        <!-- One-Click Migration Section -->
+        <div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 rounded-lg shadow-lg">
+            <div class="flex items-center justify-between">
+                <div>
+                    <h3 class="text-xl font-bold text-white mb-1">One-Click DDL Migration</h3>
+                    <p class="text-indigo-100 text-sm">Discover, export, convert, and validate all DDL objects automatically</p>
+                </div>
+                <button id="start-migration-btn" class="bg-white hover:bg-gray-100 text-indigo-600 font-bold py-3 px-6 rounded-lg transition-colors shadow-md flex items-center">
+                    <i class="fas fa-rocket mr-2"></i>Start Migration
+                </button>
+            </div>
+
+            <!-- Migration Options (collapsible) -->
+            <div id="migration-options" class="mt-4 hidden">
+                <div class="bg-white/10 rounded-lg p-4">
+                    <div class="flex flex-wrap gap-4">
+                        <label class="flex items-center cursor-pointer text-white text-sm">
+                            <input id="migration-auto-create-ddl" type="checkbox" checked class="h-4 w-4 text-indigo-600 rounded mr-2">
+                            <span>Auto-create missing tables</span>
+                        </label>
+                        <label class="flex items-center cursor-pointer text-white text-sm">
+                            <input id="migration-clean-slate" type="checkbox" class="h-4 w-4 text-indigo-600 rounded mr-2">
+                            <span>Clean slate (drop existing)</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Migration Progress (shown when running) -->
+            <div id="migration-progress" class="mt-4 hidden">
+                <div class="bg-white/10 rounded-lg p-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <span id="migration-phase" class="text-white font-medium">Starting...</span>
+                        <span id="migration-counts" class="text-indigo-100 text-sm">0 / 0 objects</span>
+                    </div>
+                    <div class="w-full bg-white/20 rounded-full h-3">
+                        <div id="migration-progress-bar" class="bg-white rounded-full h-3 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                    <div id="migration-status-text" class="mt-2 text-indigo-100 text-sm"></div>
+                </div>
+            </div>
+
+            <!-- Migration Results (shown when complete) -->
+            <div id="migration-results" class="mt-4 hidden">
+                <div id="migration-results-content" class="bg-white/10 rounded-lg p-4">
+                    <!-- Results will be rendered here -->
+                </div>
+            </div>
+        </div>
+
         <!-- Assessment Report Section -->
         <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
             <div class="flex items-center justify-between mb-4">

@@ -121,9 +121,47 @@ def init_db():
                 FOREIGN KEY (session_id) REFERENCES migration_sessions(session_id) ON DELETE CASCADE
             )''')
 
+        # Run schema migrations for existing tables
+        _run_schema_migrations(conn)
+
         logger.info("Database schema initialized successfully.")
     except Exception as e:
         logger.error(f"Error during DB schema initialization: {e}")
+
+
+def _run_schema_migrations(conn):
+    """Apply schema migrations to add missing columns to existing tables."""
+    is_sqlite = os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite'
+
+    # Define migrations: (table_name, column_name, column_definition)
+    migrations = [
+        ('migration_sessions', 'workflow_status', "TEXT DEFAULT 'pending'"),
+        ('migration_files', 'corrected_content', 'TEXT'),
+        ('migration_files', 'error_message', 'TEXT'),
+    ]
+
+    for table_name, column_name, column_def in migrations:
+        try:
+            if is_sqlite:
+                # Check if column exists using pragma
+                cursor = conn.execute(f"PRAGMA table_info({table_name})")
+                columns = [row[1] for row in cursor.fetchall()]
+                if column_name not in columns:
+                    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+                    logger.info(f"Added column {column_name} to {table_name}")
+            else:
+                # PostgreSQL: use information_schema
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = %s AND column_name = %s
+                """, (table_name, column_name))
+                if not cursor.fetchone():
+                    cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+                    conn.commit()
+                    logger.info(f"Added column {column_name} to {table_name}")
+        except Exception as e:
+            logger.warning(f"Migration skipped for {table_name}.{column_name}: {e}")
 
 def init_db_command():
     """Flask command to initialize the database."""

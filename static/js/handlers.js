@@ -939,6 +939,227 @@ async function handleDeleteClient() {
 }
 
 
+// =============================================================================
+// One-Click Migration Functions
+// =============================================================================
+
+let migrationPollInterval = null;
+
+/**
+ * Starts a one-click DDL migration for the current client.
+ * @async
+ */
+async function handleStartMigration() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('start-migration-btn');
+    const progressDiv = document.getElementById('migration-progress');
+    const resultsDiv = document.getElementById('migration-results');
+    const optionsDiv = document.getElementById('migration-options');
+
+    // Get options
+    const autoCreateDdl = document.getElementById('migration-auto-create-ddl')?.checked ?? true;
+    const cleanSlate = document.getElementById('migration-clean-slate')?.checked ?? false;
+
+    // Confirm if clean slate is enabled
+    if (cleanSlate) {
+        if (!confirm('Clean slate mode will DROP all existing tables in the validation database before migration. Continue?')) {
+            return;
+        }
+    }
+
+    // Update UI to show progress
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Running...';
+    optionsDiv?.classList.add('hidden');
+    resultsDiv?.classList.add('hidden');
+    progressDiv?.classList.remove('hidden');
+
+    // Reset progress display
+    updateMigrationProgress({
+        phase: 'Starting',
+        processed_objects: 0,
+        total_objects: 0,
+        status: 'running'
+    });
+
+    try {
+        // Start the migration
+        await apiFetch(`/api/client/${state.currentClientId}/start_migration`, {
+            method: 'POST',
+            body: JSON.stringify({
+                auto_create_ddl: autoCreateDdl,
+                clean_slate: cleanSlate
+            })
+        });
+
+        showToast('Migration started...');
+
+        // Start polling for status
+        migrationPollInterval = setInterval(() => pollMigrationStatus(), 2000);
+
+    } catch (error) {
+        showToast(error.message, true);
+        resetMigrationUI();
+    }
+}
+
+/**
+ * Polls the migration status endpoint and updates the UI.
+ * @async
+ */
+async function pollMigrationStatus() {
+    if (!state.currentClientId) {
+        clearInterval(migrationPollInterval);
+        return;
+    }
+
+    try {
+        const status = await apiFetch(`/api/client/${state.currentClientId}/migration_status`);
+
+        updateMigrationProgress(status);
+
+        // Check if migration is complete
+        if (status.status !== 'running') {
+            clearInterval(migrationPollInterval);
+            migrationPollInterval = null;
+            showMigrationResults(status);
+        }
+
+    } catch (error) {
+        console.error('Failed to poll migration status:', error);
+    }
+}
+
+/**
+ * Updates the migration progress UI elements.
+ * @param {object} status - The migration status object
+ */
+function updateMigrationProgress(status) {
+    const phaseEl = document.getElementById('migration-phase');
+    const countsEl = document.getElementById('migration-counts');
+    const progressBar = document.getElementById('migration-progress-bar');
+    const statusText = document.getElementById('migration-status-text');
+
+    const phaseNames = {
+        'discovery': 'Discovering objects...',
+        'export': 'Exporting DDL...',
+        'converting': 'Converting with AI...',
+        'validating': 'Validating SQL...',
+        'completed': 'Complete!',
+        'failed': 'Failed',
+        'partial': 'Partially Complete'
+    };
+
+    if (phaseEl) {
+        phaseEl.textContent = phaseNames[status.phase] || status.phase || 'Starting...';
+    }
+
+    if (countsEl) {
+        countsEl.textContent = `${status.processed_objects || 0} / ${status.total_objects || 0} objects`;
+    }
+
+    if (progressBar && status.total_objects > 0) {
+        const percent = Math.round((status.processed_objects / status.total_objects) * 100);
+        progressBar.style.width = `${percent}%`;
+    }
+
+    if (statusText) {
+        if (status.successful > 0 || status.failed > 0) {
+            statusText.textContent = `${status.successful || 0} successful, ${status.failed || 0} failed`;
+        } else {
+            statusText.textContent = '';
+        }
+    }
+}
+
+/**
+ * Shows the final migration results.
+ * @param {object} status - The final migration status
+ */
+function showMigrationResults(status) {
+    const progressDiv = document.getElementById('migration-progress');
+    const resultsDiv = document.getElementById('migration-results');
+    const resultsContent = document.getElementById('migration-results-content');
+
+    progressDiv?.classList.add('hidden');
+    resultsDiv?.classList.remove('hidden');
+
+    const isSuccess = status.status === 'completed';
+    const isPartial = status.status === 'partial';
+
+    let html = `
+        <div class="flex items-center mb-3">
+            <i class="fas ${isSuccess ? 'fa-check-circle text-green-300' : isPartial ? 'fa-exclamation-circle text-yellow-300' : 'fa-times-circle text-red-300'} text-2xl mr-3"></i>
+            <div>
+                <div class="text-white font-semibold">${isSuccess ? 'Migration Complete!' : isPartial ? 'Migration Partially Complete' : 'Migration Failed'}</div>
+                <div class="text-indigo-100 text-sm">${status.successful || 0} successful, ${status.failed || 0} failed</div>
+            </div>
+        </div>
+    `;
+
+    if (status.errors && status.errors.length > 0) {
+        html += `
+            <div class="mt-3 max-h-32 overflow-y-auto">
+                <div class="text-white text-sm font-medium mb-1">Errors:</div>
+                <ul class="text-red-200 text-xs space-y-1">
+                    ${status.errors.slice(0, 10).map(e => `<li>- ${e}</li>`).join('')}
+                    ${status.errors.length > 10 ? `<li class="text-indigo-200">...and ${status.errors.length - 10} more</li>` : ''}
+                </ul>
+            </div>
+        `;
+    }
+
+    html += `
+        <button id="migration-done-btn" class="mt-4 bg-white/20 hover:bg-white/30 text-white py-2 px-4 rounded transition-colors text-sm">
+            <i class="fas fa-redo mr-1"></i>Run Another Migration
+        </button>
+    `;
+
+    if (resultsContent) {
+        resultsContent.innerHTML = html;
+    }
+
+    resetMigrationUI();
+
+    // Refresh sessions list to show new export
+    refreshSessions();
+}
+
+/**
+ * Resets the migration UI to its initial state.
+ */
+function resetMigrationUI() {
+    const button = document.getElementById('start-migration-btn');
+    if (button) {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-rocket mr-2"></i>Start Migration';
+    }
+}
+
+/**
+ * Refreshes the sessions list after migration.
+ * @async
+ */
+async function refreshSessions() {
+    if (!state.currentClientId) return;
+
+    try {
+        const sessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
+        state.sessions = sessions;
+
+        // Import and call renderSessionHistory if available
+        const sessionHistoryContainer = document.getElementById('session-history-container');
+        if (sessionHistoryContainer && sessions.length > 0) {
+            sessionHistoryContainer.classList.remove('hidden');
+        }
+    } catch (error) {
+        console.error('Failed to refresh sessions:', error);
+    }
+}
 
 
 /**
@@ -1081,9 +1302,13 @@ export function initEventListeners() {
 
         // Switch for all buttons with IDs
         switch (target.id) {
+            case 'start-migration-btn': handleStartMigration(); break;
+            case 'migration-done-btn':
+                document.getElementById('migration-results')?.classList.add('hidden');
+                break;
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;
-            case 'run-ora2pg-btn': handleGetObjectList(); break; 
+            case 'run-ora2pg-btn': handleGetObjectList(); break;
             case 'export-selected-btn': handleRunGroupedOra2PgExport(); break;
             case 'download-original-ddl-btn': handleDownloadBulkDDL(); break;
             case 'select-all-objects':
@@ -1100,8 +1325,8 @@ export function initEventListeners() {
             case 'clear-workspace-btn': handleClearWorkspace(); break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
-            case 'load-file-proxy-btn': 
-                if (dom.filePicker) dom.filePicker.click(); 
+            case 'load-file-proxy-btn':
+                if (dom.filePicker) dom.filePicker.click();
                 break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;

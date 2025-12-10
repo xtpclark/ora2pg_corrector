@@ -2,16 +2,21 @@ from flask import Blueprint, request, jsonify, session
 from modules.db import get_db, execute_query, get_client_config, extract_ai_settings, ENCRYPTION_KEY
 from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
+from modules.orchestrator import MigrationOrchestrator
 from cryptography.fernet import Fernet
 import os
 import sqlite3
 import psycopg2
 import logging
 import json
+import threading
 
 logger = logging.getLogger(__name__)
 
 api_bp = Blueprint('api_bp', __name__, url_prefix='/api')
+
+# Track running migrations for status polling
+_running_migrations = {}
 
 @api_bp.route('/app_settings', methods=['GET'])
 def get_app_settings():
@@ -634,3 +639,139 @@ def manage_single_client(client_id):
         except Exception as e:
             logger.error(f"Failed to delete client {client_id}: {e}", exc_info=True)
             return jsonify({'error': f'Failed to delete client: {str(e)}'}), 500
+
+
+# =============================================================================
+# One-Click Migration Orchestration Endpoints
+# =============================================================================
+
+def _run_migration_thread(client_id, options, app):
+    """Background thread function to run migration with Flask app context."""
+    with app.app_context():
+        try:
+            orchestrator = MigrationOrchestrator(client_id)
+            _running_migrations[client_id] = orchestrator
+            result = orchestrator.run_full_migration(options)
+            log_audit(client_id, 'one_click_migration',
+                     f"Completed: {result['successful']} successful, {result['failed']} failed")
+        except Exception as e:
+            logger.error(f"Migration thread failed for client {client_id}: {e}", exc_info=True)
+            if client_id in _running_migrations:
+                _running_migrations[client_id].results['status'] = 'failed'
+                _running_migrations[client_id].results['errors'].append(str(e))
+
+
+@api_bp.route('/client/<int:client_id>/start_migration', methods=['POST'])
+def start_migration(client_id):
+    """
+    Start a one-click DDL migration for a client.
+
+    This runs the migration in a background thread and returns immediately.
+    Use the /migration_status endpoint to poll for progress.
+
+    Request body (optional):
+    {
+        "clean_slate": false,       // Drop existing tables before validation
+        "auto_create_ddl": true,    // Auto-create missing tables during validation
+        "object_types": ["TABLE", "VIEW", ...]  // Limit to specific types (optional)
+    }
+    """
+    # Check if migration is already running
+    if client_id in _running_migrations:
+        existing = _running_migrations[client_id]
+        if existing.results.get('status') == 'running':
+            return jsonify({
+                'error': 'A migration is already running for this client',
+                'status': existing.get_status()
+            }), 409
+
+    data = request.get_json(silent=True) or {}
+    options = {
+        'clean_slate': data.get('clean_slate', False),
+        'auto_create_ddl': data.get('auto_create_ddl', True),
+    }
+    if 'object_types' in data:
+        options['object_types'] = data['object_types']
+
+    # Get the Flask app for the thread context
+    from flask import current_app
+    app = current_app._get_current_object()
+
+    # Start migration in background thread
+    thread = threading.Thread(
+        target=_run_migration_thread,
+        args=(client_id, options, app),
+        daemon=True
+    )
+    thread.start()
+
+    log_audit(client_id, 'one_click_migration', 'Migration started')
+
+    return jsonify({
+        'message': 'Migration started',
+        'status': 'running',
+        'poll_url': f'/api/client/{client_id}/migration_status'
+    })
+
+
+@api_bp.route('/client/<int:client_id>/migration_status', methods=['GET'])
+def get_migration_status(client_id):
+    """
+    Get the current status of a running or completed migration.
+
+    Returns:
+    {
+        "status": "running|completed|partial|failed|pending",
+        "phase": "discovery|export|converting|validating|null",
+        "total_objects": 10,
+        "processed_objects": 5,
+        "successful": 4,
+        "failed": 1,
+        "errors": ["error message 1", ...],
+        "files": [{"file_id": 1, "filename": "...", "status": "..."}, ...]
+    }
+    """
+    if client_id not in _running_migrations:
+        return jsonify({
+            'status': 'no_migration',
+            'message': 'No migration found for this client'
+        })
+
+    orchestrator = _running_migrations[client_id]
+    return jsonify(orchestrator.get_status())
+
+
+@api_bp.route('/client/<int:client_id>/run_migration_sync', methods=['POST'])
+def run_migration_sync(client_id):
+    """
+    Run a one-click DDL migration synchronously (blocking).
+
+    Use this for smaller migrations or when you want to wait for completion.
+    For larger migrations, use /start_migration with status polling.
+
+    Request body (optional):
+    {
+        "clean_slate": false,
+        "auto_create_ddl": true,
+        "object_types": ["TABLE", "VIEW", ...]
+    }
+    """
+    data = request.get_json(silent=True) or {}
+    options = {
+        'clean_slate': data.get('clean_slate', False),
+        'auto_create_ddl': data.get('auto_create_ddl', True),
+    }
+    if 'object_types' in data:
+        options['object_types'] = data['object_types']
+
+    try:
+        orchestrator = MigrationOrchestrator(client_id)
+        result = orchestrator.run_full_migration(options)
+
+        log_audit(client_id, 'one_click_migration_sync',
+                 f"Completed: {result['successful']} successful, {result['failed']} failed")
+
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Sync migration failed for client {client_id}: {e}", exc_info=True)
+        return jsonify({'error': str(e), 'status': 'failed'}), 500
