@@ -216,15 +216,21 @@ class MigrationOrchestrator:
 
     def convert_and_validate(self, files, validation_options=None):
         """
-        Phase 3 & 4: AI-convert and validate each exported file.
+        Phase 3 & 4: Validate each exported file, using AI only when needed.
+
+        OPTIMIZED WORKFLOW (Option C):
+        1. Strip psql metacommands from Ora2Pg output
+        2. Validate directly against PostgreSQL
+        3. If validation fails, AI fixes based on error message (self-healing)
+        4. Only uses AI tokens when actually needed
 
         :param list files: List of file records to process
         :param dict validation_options: Options like clean_slate, auto_create_ddl
         :return: Results summary
         :rtype: dict
         """
-        self.results['phase'] = 'converting'
-        self._update_session_status('converting')
+        self.results['phase'] = 'validating'
+        self._update_session_status('validating')
 
         if validation_options is None:
             validation_options = {
@@ -256,37 +262,30 @@ class MigrationOrchestrator:
                 self._update_file_status(file_id, 'skipped', error_message='Empty file')
                 continue
 
-            # AI conversion
-            try:
-                corrected_sql, metrics = self.corrector.ai_correct_sql(content, source_dialect='oracle')
-                logger.info(f"[Client {self.client_id}] Converted {filename}, tokens: {metrics.get('tokens_used', 0)}")
-            except Exception as e:
-                self._update_file_status(file_id, 'failed', error_message=f"AI conversion failed: {str(e)}")
-                self.results['failed'] += 1
-                self.results['errors'].append(f"{filename}: AI conversion failed - {str(e)}")
-                continue
-
             # Validation (if DSN configured)
+            # validate_sql() already:
+            #   - Strips psql metacommands
+            #   - Validates against PostgreSQL
+            #   - Uses AI to fix errors (self-healing with retries)
+            #   - Creates missing dependency DDL if auto_create_ddl=True
             if validation_dsn:
-                self.results['phase'] = 'validating'
-                self._update_session_status('validating')
-
                 try:
-                    is_valid, message, final_sql = self.corrector.validate_sql(
-                        corrected_sql,
+                    is_valid, message, corrected_sql = self.corrector.validate_sql(
+                        content,
                         validation_dsn,
                         clean_slate=validation_options.get('clean_slate', False),
                         auto_create_ddl=validation_options.get('auto_create_ddl', True)
                     )
 
-                    # Use corrected SQL from validation if provided
-                    if final_sql:
-                        corrected_sql = final_sql
-
                     if is_valid:
-                        self._update_file_status(file_id, 'validated', corrected_content=corrected_sql)
+                        # corrected_sql is only set if AI made changes
+                        final_content = corrected_sql if corrected_sql else content
+                        self._update_file_status(file_id, 'validated', corrected_content=final_content)
                         self.results['successful'] += 1
-                        logger.info(f"[Client {self.client_id}] Validated {filename}")
+                        if corrected_sql:
+                            logger.info(f"[Client {self.client_id}] Validated {filename} (AI-corrected)")
+                        else:
+                            logger.info(f"[Client {self.client_id}] Validated {filename} (no AI needed)")
                     else:
                         self._update_file_status(file_id, 'failed',
                                                 corrected_content=corrected_sql,
@@ -297,19 +296,19 @@ class MigrationOrchestrator:
 
                 except Exception as e:
                     self._update_file_status(file_id, 'failed',
-                                            corrected_content=corrected_sql,
                                             error_message=f"Validation error: {str(e)}")
                     self.results['failed'] += 1
                     self.results['errors'].append(f"{filename}: Validation error - {str(e)}")
             else:
-                # No validation, just mark as corrected
-                self._update_file_status(file_id, 'corrected', corrected_content=corrected_sql)
+                # No validation DSN - just mark as exported (can't validate)
+                self._update_file_status(file_id, 'exported')
                 self.results['successful'] += 1
+                logger.info(f"[Client {self.client_id}] Exported {filename} (no validation DSN)")
 
             self.results['files'].append({
                 'file_id': file_id,
                 'filename': filename,
-                'status': 'validated' if validation_dsn else 'corrected'
+                'status': 'validated' if validation_dsn else 'exported'
             })
 
         return self.results
