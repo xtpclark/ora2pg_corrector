@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify, session
-from modules.db import get_db, execute_query
+from modules.db import get_db, execute_query, get_client_config, extract_ai_settings, ENCRYPTION_KEY
 from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
 from cryptography.fernet import Fernet
@@ -12,12 +12,6 @@ import json
 logger = logging.getLogger(__name__)
 
 api_bp = Blueprint('api_bp', __name__, url_prefix='/api')
-
-ENCRYPTION_KEY_STR = os.environ.get('APP_ENCRYPTION_KEY')
-if not ENCRYPTION_KEY_STR:
-    ENCRYPTION_KEY = Fernet.generate_key()
-else:
-    ENCRYPTION_KEY = ENCRYPTION_KEY_STR.encode()
 
 @api_bp.route('/app_settings', methods=['GET'])
 def get_app_settings():
@@ -270,21 +264,7 @@ def test_ora2pg_connection(client_id):
 def get_object_list(client_id):
     try:
         conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
+        config = get_client_config(client_id, conn, decrypt_keys=['oracle_pwd'])
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         object_list, error = corrector._get_object_list(conn, config)
@@ -295,7 +275,7 @@ def get_object_list(client_id):
 
         log_audit(client_id, 'get_object_list', f'Successfully fetched {len(object_list)} objects.')
         return jsonify(object_list)
-        
+
     except Exception as e:
         logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
@@ -311,22 +291,7 @@ def get_oracle_ddl(client_id):
         return jsonify({'error': 'Object name is required.'}), 400
 
     try:
-        conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
+        config = get_client_config(client_id, decrypt_keys=['oracle_pwd'])
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         ddl, error = corrector.get_oracle_ddl(config, object_type, object_name, pretty=pretty)
@@ -350,22 +315,10 @@ def get_bulk_oracle_ddl(client_id):
         return jsonify({'error': 'A list of objects is required.'}), 400
 
     try:
-        conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-        
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd']:
-            if key in config and config[key]:
-                try: config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception: pass
+        config = get_client_config(client_id, decrypt_keys=['oracle_pwd'])
 
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
-        
+
         all_ddls = []
         for obj in objects:
             ddl, error = corrector.get_oracle_ddl(config, obj['type'], obj['name'], pretty=pretty)
@@ -374,7 +327,7 @@ def get_bulk_oracle_ddl(client_id):
                 all_ddls.append(f"-- FAILED to retrieve DDL for {obj['type']} {obj['name']}: {error}\n\n")
             else:
                 all_ddls.append(ddl + "\n\n")
-        
+
         concatenated_ddl = "".join(all_ddls)
         return jsonify({'ddl': concatenated_ddl})
 
@@ -386,22 +339,8 @@ def get_bulk_oracle_ddl(client_id):
 def generate_report(client_id):
     try:
         conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+        config = get_client_config(client_id, conn, decrypt_keys=['oracle_pwd'])
 
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
-        
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         report_args = ['-t', 'SHOW_REPORT', '--estimate_cost', '--dump_as_json']
         report_output, error_output = corrector.run_ora2pg_export(client_id, conn, config, extra_args=report_args)
@@ -409,7 +348,7 @@ def generate_report(client_id):
         if error_output:
             log_audit(client_id, 'generate_report', f'Failed: {error_output}')
             return jsonify({'error': error_output}), 500
-        
+
         json_string = report_output.get('sql_output', '{}')
         try:
             report_data = json.loads(json_string)
@@ -428,44 +367,22 @@ def generate_report(client_id):
 def run_ora2pg(client_id):
     try:
         conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-        
+        config = get_client_config(client_id, conn)
+
+        # Apply request overrides
         request_data = request.get_json(silent=True) or {}
-        
-        # Check for and apply the 'type' override from the dropdown
         if 'type' in request_data:
             config['type'] = request_data['type']
+        if 'selected_objects' in request_data and request_data['selected_objects']:
+            config['ALLOW'] = ','.join(request_data['selected_objects'])
 
-        if 'selected_objects' in request_data:
-            selected_objects = request_data['selected_objects']
-            if selected_objects:
-                config['ALLOW'] = ','.join(selected_objects)
-        
-        for key in ['file_per_table']:
-            if key in config:
-                config[key] = str(config[key]) in ('1', 'true', 'True')
-
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd', 'ai_api_key']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
-        
         corrector = Ora2PgAICorrector(output_dir='', ai_settings={}, encryption_key=ENCRYPTION_KEY)
         result_data, error_output = corrector.run_ora2pg_export(client_id, conn, config)
 
         if error_output:
             log_audit(client_id, 'run_ora2pg', f'Failed: {error_output}')
             return jsonify({'error': error_output}), 500
-        
+
         log_audit(client_id, 'run_ora2pg', 'Successfully executed Ora2Pg export.')
         return jsonify(result_data)
 
@@ -520,45 +437,22 @@ def correct_sql_with_ai():
     data = request.json
     sql = data.get('sql')
     client_id = data.get('client_id')
-    source_dialect = data.get('source_dialect', 'oracle')  # NEW: Get source dialect
-    
+    source_dialect = data.get('source_dialect', 'oracle')
+
     if not sql or not client_id:
         return jsonify({'error': 'SQL content and client ID are required'}), 400
 
     try:
-        conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-        
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd', 'ai_api_key']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
-        
+        config = get_client_config(client_id)
+
         corrector = Ora2PgAICorrector(
             output_dir='/app/output',
-            ai_settings={
-                'ai_provider': config.get('ai_provider'),
-                'ai_endpoint': config.get('ai_endpoint'),
-                'ai_model': config.get('ai_model'),
-                'ai_api_key': config.get('ai_api_key'),
-                'ai_temperature': float(config.get('ai_temperature', 0.2)),
-                'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
-            },
+            ai_settings=extract_ai_settings(config),
             encryption_key=ENCRYPTION_KEY
         )
-        
-        # Pass source_dialect to the AI correction method
+
         corrected_sql, metrics = corrector.ai_correct_sql(sql, source_dialect=source_dialect)
-        
+
         log_audit(client_id, 'correct_sql_with_ai', f'AI conversion from {source_dialect} to PostgreSQL performed.')
         return jsonify({
             'corrected_sql': corrected_sql,
@@ -572,30 +466,14 @@ def correct_sql_with_ai():
 def validate_sql():
     data = request.json
     sql_to_validate, client_id = data.get('sql'), data.get('client_id')
-    
     clean_slate = data.get('clean_slate', False)
     auto_create_ddl = data.get('auto_create_ddl', True)
 
     if not sql_to_validate or not client_id:
         return jsonify({'error': 'SQL and client ID are required'}), 400
-    
+
     try:
-        conn = get_db()
-        query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
-        params = (client_id,)
-        if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-            query = query.replace('?', '%s')
-        
-        cursor = execute_query(conn, query, params)
-        config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
-        
-        fernet = Fernet(ENCRYPTION_KEY)
-        for key in ['oracle_pwd', 'ai_api_key']:
-            if key in config and config[key]:
-                try:
-                    config[key] = fernet.decrypt(config[key].encode()).decode()
-                except Exception:
-                    pass
+        config = get_client_config(client_id)
 
         validation_dsn = config.get('validation_pg_dsn')
         if not validation_dsn:
@@ -603,24 +481,17 @@ def validate_sql():
 
         corrector = Ora2PgAICorrector(
             output_dir='/app/output',
-            ai_settings={
-                'ai_provider': config.get('ai_provider'),
-                'ai_endpoint': config.get('ai_endpoint'),
-                'ai_model': config.get('ai_model'),
-                'ai_api_key': config.get('ai_api_key'),
-                'ai_temperature': float(config.get('ai_temperature', 0.2)),
-                'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
-            },
+            ai_settings=extract_ai_settings(config),
             encryption_key=ENCRYPTION_KEY
         )
-        
+
         is_valid, message, new_sql = corrector.validate_sql(
-            sql_to_validate, 
-            validation_dsn, 
-            clean_slate=clean_slate, 
+            sql_to_validate,
+            validation_dsn,
+            clean_slate=clean_slate,
             auto_create_ddl=auto_create_ddl
         )
-        
+
         audit_details = f'Validation result: {is_valid} - {message}'
         options = []
         if clean_slate: options.append('Clean Slate')

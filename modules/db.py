@@ -4,8 +4,16 @@ import psycopg2.extras
 import os
 import logging
 from flask import g
+from cryptography.fernet import Fernet
 
 logger = logging.getLogger(__name__)
+
+# Encryption key for sensitive config values
+_ENCRYPTION_KEY_STR = os.environ.get('APP_ENCRYPTION_KEY')
+if not _ENCRYPTION_KEY_STR:
+    ENCRYPTION_KEY = Fernet.generate_key()
+else:
+    ENCRYPTION_KEY = _ENCRYPTION_KEY_STR.encode()
 
 def get_db():
     """Get the database connection from the Flask global context."""
@@ -98,6 +106,7 @@ def init_db():
                 session_name TEXT NOT NULL,
                 export_directory TEXT NOT NULL,
                 export_type TEXT,
+                workflow_status TEXT DEFAULT 'pending',
                 created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
             )''')
@@ -106,6 +115,8 @@ def init_db():
                 session_id INTEGER NOT NULL,
                 filename TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'generated',
+                corrected_content TEXT,
+                error_message TEXT,
                 last_modified {ts_type} DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES migration_sessions(session_id) ON DELETE CASCADE
             )''')
@@ -118,4 +129,63 @@ def init_db_command():
     """Flask command to initialize the database."""
     init_db()
     print("Initialized the database.")
+
+
+def get_client_config(client_id, conn=None, decrypt_keys=None):
+    """
+    Load client configuration from the database with optional decryption.
+
+    :param int client_id: The client ID to load config for
+    :param conn: Optional database connection (uses get_db() if not provided)
+    :param list decrypt_keys: List of keys to decrypt (e.g., ['oracle_pwd', 'ai_api_key'])
+                             Defaults to ['oracle_pwd', 'ai_api_key'] if None
+    :return: Dictionary of config key-value pairs with decrypted values
+    :rtype: dict
+    """
+    if conn is None:
+        conn = get_db()
+
+    if decrypt_keys is None:
+        decrypt_keys = ['oracle_pwd', 'ai_api_key']
+
+    query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
+    cursor = execute_query(conn, query, (client_id,))
+    config = {row['config_key']: row['config_value'] for row in cursor.fetchall()}
+
+    # Decrypt sensitive values
+    fernet = Fernet(ENCRYPTION_KEY)
+    for key in decrypt_keys:
+        if key in config and config[key]:
+            try:
+                config[key] = fernet.decrypt(config[key].encode()).decode()
+            except Exception:
+                # Value may not be encrypted (e.g., during testing)
+                pass
+
+    # Convert boolean string values
+    bool_keys = ['dump_as_html', 'export_schema', 'create_schema',
+                 'compile_schema', 'debug', 'file_per_table']
+    for key in bool_keys:
+        if key in config:
+            config[key] = str(config[key]) in ('1', 'true', 'True')
+
+    return config
+
+
+def extract_ai_settings(config):
+    """
+    Extract AI settings from a config dictionary into the format expected by Ora2PgAICorrector.
+
+    :param dict config: Client configuration dictionary
+    :return: Dictionary of AI settings
+    :rtype: dict
+    """
+    return {
+        'ai_provider': config.get('ai_provider'),
+        'ai_endpoint': config.get('ai_endpoint'),
+        'ai_model': config.get('ai_model'),
+        'ai_api_key': config.get('ai_api_key'),
+        'ai_temperature': float(config.get('ai_temperature', 0.2)),
+        'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
+    }
 
