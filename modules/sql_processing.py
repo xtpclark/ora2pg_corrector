@@ -11,7 +11,8 @@ import psycopg2
 from psycopg2 import sql as psql
 import json
 from datetime import datetime
-from .db import execute_query
+from .db import execute_query, is_postgres, insert_returning_id
+from .constants import get_session_dir
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -389,20 +390,17 @@ class Ora2PgAICorrector:
             session_name = f"Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             export_type = client_config.get('type', 'TABLE').upper()
             
-            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory, export_type) VALUES (?, ?, ?, ?)', (client_id, session_name, "pending", export_type))
-                session_id = cursor.lastrowid
-            else:
-                cursor = execute_query(db_conn, 'INSERT INTO migration_sessions (client_id, session_name, export_directory, export_type) VALUES (%s, %s, %s, %s) RETURNING session_id', (client_id, session_name, "pending", export_type))
-                session_id = cursor.fetchone()['session_id']
+            session_id = insert_returning_id(
+                db_conn, 'migration_sessions',
+                ('client_id', 'session_name', 'export_directory', 'export_type'),
+                (client_id, session_name, "pending", export_type),
+                'session_id'
+            )
 
-            persistent_export_dir = os.path.join('/app/project_data', str(client_id), str(session_id))
+            persistent_export_dir = get_session_dir(client_id, session_id)
             os.makedirs(persistent_export_dir, exist_ok=True)
 
-            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
-            else:
-                execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = %s WHERE session_id = %s', (persistent_export_dir, session_id))
+            execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
             
             db_conn.commit()
             logger.info(f"Created persistent session {session_id} at {persistent_export_dir}")
@@ -438,10 +436,7 @@ class Ora2PgAICorrector:
                 
                 if returncode != 0:
                     logger.error(f"Ora2Pg command failed. Rolling back session {session_id}.")
-                    if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                        execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = ?', (session_id,))
-                    else:
-                        execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = %s', (session_id,))
+                    execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = ?', (session_id,))
                     db_conn.commit()
                     shutil.rmtree(persistent_export_dir)
                     return {}, stderr
@@ -449,10 +444,7 @@ class Ora2PgAICorrector:
                 generated_files = [f for f in os.listdir(persistent_export_dir) if f.endswith('.sql')]
 
             for filename in generated_files:
-                if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                    execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
-                else:
-                    execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (%s, %s)', (session_id, filename))
+                execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
             db_conn.commit()
             
             if not file_per_table and len(generated_files) == 1:
@@ -685,13 +677,8 @@ Failed Query:
             ai_provider = self.ai_settings.get('ai_provider', 'unknown')
             ai_model = self.ai_settings.get('ai_model', 'unknown')
 
-            # Insert or update cache entry (SQLite uses INSERT OR REPLACE)
-            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                query = '''INSERT OR REPLACE INTO ddl_cache
-                           (client_id, session_id, object_name, object_type, generated_ddl,
-                            ai_provider, ai_model, hit_count, created_at, last_used)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'''
-            else:
+            # Insert or update cache entry (SQLite uses INSERT OR REPLACE, PostgreSQL uses ON CONFLICT)
+            if is_postgres():
                 query = '''INSERT INTO ddl_cache
                            (client_id, session_id, object_name, object_type, generated_ddl,
                             ai_provider, ai_model, hit_count, created_at, last_used)
@@ -701,6 +688,11 @@ Failed Query:
                            ai_provider = EXCLUDED.ai_provider,
                            ai_model = EXCLUDED.ai_model,
                            last_used = CURRENT_TIMESTAMP'''
+            else:
+                query = '''INSERT OR REPLACE INTO ddl_cache
+                           (client_id, session_id, object_name, object_type, generated_ddl,
+                            ai_provider, ai_model, hit_count, created_at, last_used)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'''
 
             execute_query(db_conn, query, (client_id, session_id, object_name, object_type,
                                            ddl, ai_provider, ai_model))

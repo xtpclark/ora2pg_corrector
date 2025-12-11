@@ -11,6 +11,8 @@ from functools import wraps
 from flask import request, jsonify, current_app
 import logging
 
+from .constants import DATA_DIR, AUTH_TOKEN_FILE
+
 logger = logging.getLogger(__name__)
 
 class TokenAuth:
@@ -43,13 +45,13 @@ class TokenAuth:
         is_container = any([
             os.path.exists('/.dockerenv'),
             os.environ.get('CONTAINER_ENV'),
-            os.path.exists('/app/data'),  # This directory exists in our container
+            os.path.exists(DATA_DIR),  # This directory exists in our container
             os.environ.get('HOST_UID')     # Set in docker-compose
         ])
-        
+
         if is_container:
-            self.token_file_path = Path('/app/data/.auth_token')
-            logger.info("Running in container, using /app/data/.auth_token")
+            self.token_file_path = Path(AUTH_TOKEN_FILE)
+            logger.info(f"Running in container, using {AUTH_TOKEN_FILE}")
         else:
             # Local development
             self.token_file_path = Path.home() / '.ora2pg_corrector' / 'auth_token'

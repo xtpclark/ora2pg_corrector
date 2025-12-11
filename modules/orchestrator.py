@@ -16,6 +16,7 @@ from datetime import datetime
 from .db import get_db, execute_query, get_client_config, extract_ai_settings, ENCRYPTION_KEY
 from .sql_processing import Ora2PgAICorrector
 from .ddl_parser import parse_ddl_file, count_objects_by_type
+from .constants import OUTPUT_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class MigrationOrchestrator:
         self.config = get_client_config(self.client_id, self.conn)
 
         self.corrector = Ora2PgAICorrector(
-            output_dir='/app/output',
+            output_dir=OUTPUT_DIR,
             ai_settings=extract_ai_settings(self.config),
             encryption_key=ENCRYPTION_KEY
         )

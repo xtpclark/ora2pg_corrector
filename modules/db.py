@@ -6,26 +6,31 @@ import logging
 from flask import g
 from cryptography.fernet import Fernet
 
+from .constants import (
+    DATA_DIR, SQLITE_DB_PATH, ENCRYPTION_KEY_FILE,
+    SENSITIVE_CONFIG_KEYS, BOOLEAN_CONFIG_KEYS,
+    DEFAULT_AI_TEMPERATURE, DEFAULT_AI_MAX_OUTPUT_TOKENS
+)
+
 logger = logging.getLogger(__name__)
 
 # Encryption key for sensitive config values
 # Priority: 1) Environment variable, 2) Persisted key file, 3) Generate new (and persist)
 _ENCRYPTION_KEY_STR = os.environ.get('APP_ENCRYPTION_KEY')
-_KEY_FILE_PATH = '/app/data/.encryption_key'
 
 if _ENCRYPTION_KEY_STR:
     ENCRYPTION_KEY = _ENCRYPTION_KEY_STR.encode()
-elif os.path.exists(_KEY_FILE_PATH):
-    with open(_KEY_FILE_PATH, 'rb') as f:
+elif os.path.exists(ENCRYPTION_KEY_FILE):
+    with open(ENCRYPTION_KEY_FILE, 'rb') as f:
         ENCRYPTION_KEY = f.read()
     logger.info("Loaded encryption key from persistent storage")
 else:
     ENCRYPTION_KEY = Fernet.generate_key()
     try:
-        os.makedirs('/app/data', exist_ok=True)
-        with open(_KEY_FILE_PATH, 'wb') as f:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(ENCRYPTION_KEY_FILE, 'wb') as f:
             f.write(ENCRYPTION_KEY)
-        os.chmod(_KEY_FILE_PATH, 0o600)
+        os.chmod(ENCRYPTION_KEY_FILE, 0o600)
         logger.info("Generated and persisted new encryption key")
     except Exception as e:
         logger.warning(f"Could not persist encryption key: {e}. Key will be lost on restart.")
@@ -35,7 +40,7 @@ def get_db():
     if 'db' not in g:
         try:
             if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
-                g.db = sqlite3.connect('/app/data/settings.db', timeout=10)
+                g.db = sqlite3.connect(SQLITE_DB_PATH, timeout=10)
 
                 g.db.row_factory = sqlite3.Row
             else:
@@ -53,17 +58,64 @@ def close_db(e=None):
     if db is not None:
         db.close()
 
+def is_postgres():
+    """Check if using PostgreSQL backend."""
+    return os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite'
+
+
+def normalize_query(query):
+    """Convert query placeholders for the configured database backend.
+
+    SQLite uses ? placeholders, PostgreSQL uses %s.
+    This function converts ? to %s when using PostgreSQL.
+    """
+    if is_postgres():
+        return query.replace('?', '%s')
+    return query
+
+
 def execute_query(conn, query, params=None):
     """Execute a SQL query with parameter substitution for different backends."""
     cursor = conn.cursor()
-    if os.environ.get('DB_BACKEND', 'sqlite') != 'sqlite':
-        query = query.replace('?', '%s')
+    query = normalize_query(query)
     try:
         cursor.execute(query, params or ())
         return cursor
     except Exception as e:
         logger.error(f"Error executing query: {e}")
         raise
+
+
+def insert_returning_id(conn, table, columns, values, id_column='id'):
+    """Insert a row and return the generated ID.
+
+    Handles the difference between SQLite (lastrowid) and PostgreSQL (RETURNING).
+
+    Args:
+        conn: Database connection
+        table: Table name
+        columns: Tuple of column names
+        values: Tuple of values to insert
+        id_column: Name of the auto-increment column (for RETURNING clause)
+
+    Returns:
+        The generated ID
+    """
+    placeholders = ', '.join(['?' for _ in values])
+    columns_str = ', '.join(columns)
+
+    if is_postgres():
+        query = f'INSERT INTO {table} ({columns_str}) VALUES ({placeholders}) RETURNING {id_column}'
+        query = normalize_query(query)
+        cursor = conn.cursor()
+        cursor.execute(query, values)
+        result = cursor.fetchone()
+        return result[id_column] if hasattr(result, '__getitem__') else result[0]
+    else:
+        query = f'INSERT INTO {table} ({columns_str}) VALUES ({placeholders})'
+        cursor = conn.cursor()
+        cursor.execute(query, values)
+        return cursor.lastrowid
 
 def init_db():
     """Initialize the database schema."""
@@ -248,7 +300,7 @@ def get_client_config(client_id, conn=None, decrypt_keys=None):
         conn = get_db()
 
     if decrypt_keys is None:
-        decrypt_keys = ['oracle_pwd', 'ai_api_key']
+        decrypt_keys = SENSITIVE_CONFIG_KEYS
 
     query = 'SELECT config_key, config_value FROM configs WHERE client_id = ?'
     cursor = execute_query(conn, query, (client_id,))
@@ -265,9 +317,7 @@ def get_client_config(client_id, conn=None, decrypt_keys=None):
                 pass
 
     # Convert boolean string values
-    bool_keys = ['dump_as_html', 'export_schema', 'create_schema',
-                 'compile_schema', 'debug', 'file_per_table']
-    for key in bool_keys:
+    for key in BOOLEAN_CONFIG_KEYS:
         if key in config:
             config[key] = str(config[key]) in ('1', 'true', 'True')
 
@@ -287,7 +337,7 @@ def extract_ai_settings(config):
         'ai_endpoint': config.get('ai_endpoint'),
         'ai_model': config.get('ai_model'),
         'ai_api_key': config.get('ai_api_key'),
-        'ai_temperature': float(config.get('ai_temperature', 0.2)),
-        'ai_max_output_tokens': int(config.get('ai_max_output_tokens', 8192))
+        'ai_temperature': float(config.get('ai_temperature', DEFAULT_AI_TEMPERATURE)),
+        'ai_max_output_tokens': int(config.get('ai_max_output_tokens', DEFAULT_AI_MAX_OUTPUT_TOKENS))
     }
 

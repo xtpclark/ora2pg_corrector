@@ -3,11 +3,13 @@ import json
 import os
 import logging
 
+from .constants import ORA2PG_CONFIG_FILE, AI_PROVIDERS_CONFIG_FILE
+
 logger = logging.getLogger(__name__)
 
 def load_ora2pg_config(conn):
     """Load Ora2Pg configuration options from a file and seed the database."""
-    config_path = '/app/ora2pg_config/default.cfg'
+    config_path = ORA2PG_CONFIG_FILE
     if not os.path.exists(config_path):
         logger.error(f"Ora2Pg config file not found at {config_path}")
         return
@@ -28,8 +30,8 @@ def load_ora2pg_config(conn):
         )
         options.append(option)
     
-    from .db import execute_query
-    if os.environ.get('DB_BACKEND', 'sqlite') == 'postgresql':
+    from .db import execute_query, is_postgres
+    if is_postgres():
         insert_sql = 'INSERT INTO ora2pg_config_options (option_name, option_type, default_value, description, allowed_values) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (option_name) DO NOTHING'
     else:
         insert_sql = 'INSERT OR IGNORE INTO ora2pg_config_options (option_name, option_type, default_value, description, allowed_values) VALUES (?, ?, ?, ?, ?)'
@@ -42,7 +44,7 @@ def load_ora2pg_config(conn):
 
 def load_ai_providers(conn):
     """Load AI provider configurations from a JSON file and seed the database."""
-    config_path = '/app/ai_config/ai_providers.json'
+    config_path = AI_PROVIDERS_CONFIG_FILE
     if not os.path.exists(config_path):
         logger.error(f"AI providers config file not found at {config_path}")
         return
@@ -51,8 +53,8 @@ def load_ai_providers(conn):
             data = json.load(f)
         providers = data.get('providers', [])
         
-        from .db import execute_query
-        if os.environ.get('DB_BACKEND', 'sqlite') == 'postgresql':
+        from .db import execute_query, is_postgres
+        if is_postgres():
             insert_sql = 'INSERT INTO ai_providers (name, api_endpoint, default_model, key_url, notes) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (name) DO NOTHING'
         else:
             insert_sql = 'INSERT OR IGNORE INTO ai_providers (name, api_endpoint, default_model, key_url, notes) VALUES (?, ?, ?, ?, ?)'

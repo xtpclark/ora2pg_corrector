@@ -2,8 +2,9 @@ from flask import Flask, jsonify, request
 from modules.db import close_db, init_db
 from modules.config import load_ai_providers, load_ora2pg_config
 from modules.auth import init_auth
+from modules.constants import DB_INIT_LOCK_FILE, DB_INIT_MARKER_FILE, DATA_DIR
 from routes.main_routes import main_bp
-from routes.api_routes import api_bp
+from routes.api import api_bp
 import os
 from dotenv import load_dotenv
 import logging
@@ -22,8 +23,8 @@ def initialize_database_once():
     Initialize database only once, even with multiple workers.
     Uses file locking to ensure only one worker does the initialization.
     """
-    lock_file = Path('/app/data/.db_init.lock')
-    marker_file = Path('/app/data/.db_initialized')
+    lock_file = Path(DB_INIT_LOCK_FILE)
+    marker_file = Path(DB_INIT_MARKER_FILE)
     
     # Create directories if they don't exist
     lock_file.parent.mkdir(parents=True, exist_ok=True)
