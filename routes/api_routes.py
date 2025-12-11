@@ -3,6 +3,7 @@ from modules.db import get_db, execute_query, get_client_config, extract_ai_sett
 from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
 from modules.orchestrator import MigrationOrchestrator
+from modules.reports import MigrationReportGenerator
 from cryptography.fernet import Fernet
 import os
 import sqlite3
@@ -833,3 +834,741 @@ def run_migration_sync(client_id):
     except Exception as e:
         logger.error(f"Sync migration failed for client {client_id}: {e}", exc_info=True)
         return jsonify({'error': str(e), 'status': 'failed'}), 500
+
+
+# =============================================================================
+# DDL Cache Endpoints
+# =============================================================================
+
+@api_bp.route('/client/<int:client_id>/ddl_cache/stats', methods=['GET'])
+def get_ddl_cache_stats(client_id):
+    """
+    Get DDL cache statistics for a client.
+
+    Returns:
+        - total_entries: Number of cached DDL entries
+        - total_hits: Total cache hits
+        - entries: List of cached objects with hit counts
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT object_name, object_type, hit_count, created_at, last_used,
+                          ai_provider, ai_model
+                   FROM ddl_cache WHERE client_id = ?
+                   ORDER BY hit_count DESC'''
+        cursor = execute_query(conn, query, (client_id,))
+        entries = [dict(row) for row in cursor.fetchall()]
+
+        total_hits = sum(e['hit_count'] for e in entries)
+
+        return jsonify({
+            'client_id': client_id,
+            'total_entries': len(entries),
+            'total_hits': total_hits,
+            'entries': entries
+        })
+    except Exception as e:
+        logger.error(f"Failed to get DDL cache stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/client/<int:client_id>/ddl_cache', methods=['DELETE'])
+def clear_ddl_cache(client_id):
+    """
+    Clear all cached DDL entries for a client.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = 'DELETE FROM ddl_cache WHERE client_id = ?'
+        execute_query(conn, query, (client_id,))
+        conn.commit()
+
+        log_audit(client_id, 'ddl_cache_cleared', 'All DDL cache entries cleared')
+
+        return jsonify({'message': 'DDL cache cleared successfully'})
+    except Exception as e:
+        logger.error(f"Failed to clear DDL cache: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/generated_ddl', methods=['GET'])
+def get_generated_ddl_list(session_id):
+    """
+    List all AI-generated DDL files for a session.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Get export directory for the session
+        query = 'SELECT export_directory FROM migration_sessions WHERE session_id = ?'
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        export_dir = session['export_directory']
+        ddl_dir = os.path.join(export_dir, 'ai_generated_ddl')
+
+        # Check if manifest exists
+        manifest_path = os.path.join(ddl_dir, '_manifest.json')
+        if os.path.exists(manifest_path):
+            with open(manifest_path, 'r', encoding='utf-8') as f:
+                manifest = json.load(f)
+            return jsonify({
+                'session_id': session_id,
+                'export_directory': ddl_dir,
+                **manifest
+            })
+        else:
+            return jsonify({
+                'session_id': session_id,
+                'export_directory': ddl_dir,
+                'objects': [],
+                'message': 'No AI-generated DDL files found'
+            })
+
+    except Exception as e:
+        logger.error(f"Failed to get generated DDL list: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/generated_ddl/<object_name>', methods=['GET'])
+def get_generated_ddl_content(session_id, object_name):
+    """
+    Get the content of a specific AI-generated DDL file.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Get export directory for the session
+        query = 'SELECT export_directory FROM migration_sessions WHERE session_id = ?'
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        export_dir = session['export_directory']
+
+        # Sanitize object name to match saved filename
+        import re
+        safe_name = re.sub(r'[^\w\-.]', '_', object_name.lower())
+        ddl_file = os.path.join(export_dir, 'ai_generated_ddl', f"{safe_name}.sql")
+
+        if not os.path.exists(ddl_file):
+            return jsonify({'error': f"DDL file not found for '{object_name}'"}), 404
+
+        with open(ddl_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        return jsonify({
+            'session_id': session_id,
+            'object_name': object_name,
+            'filename': f"{safe_name}.sql",
+            'content': content
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get DDL content: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# Rollback Script Endpoints
+# =============================================================================
+
+@api_bp.route('/session/<int:session_id>/rollback', methods=['GET'])
+def get_rollback_script(session_id):
+    """
+    Get the rollback script for a session.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT rollback_script, rollback_generated_at, export_directory
+                   FROM migration_sessions WHERE session_id = ?'''
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        rollback_script = session['rollback_script']
+
+        # If not in database, try to read from file
+        if not rollback_script:
+            export_dir = session['export_directory']
+            rollback_file = os.path.join(export_dir, 'rollback.sql')
+            if os.path.exists(rollback_file):
+                with open(rollback_file, 'r', encoding='utf-8') as f:
+                    rollback_script = f.read()
+
+        if not rollback_script:
+            return jsonify({
+                'session_id': session_id,
+                'message': 'No rollback script available for this session'
+            }), 404
+
+        return jsonify({
+            'session_id': session_id,
+            'generated_at': session['rollback_generated_at'],
+            'content': rollback_script
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get rollback script: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/rollback/preview', methods=['GET'])
+def preview_rollback(session_id):
+    """
+    Preview what objects would be dropped by the rollback script (dry-run).
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT rollback_script, rollback_generated_at, export_directory
+                   FROM migration_sessions WHERE session_id = ?'''
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        rollback_script = session['rollback_script']
+
+        # If not in database, try to read from file
+        if not rollback_script:
+            export_dir = session['export_directory']
+            rollback_file = os.path.join(export_dir, 'rollback.sql')
+            if os.path.exists(rollback_file):
+                with open(rollback_file, 'r', encoding='utf-8') as f:
+                    rollback_script = f.read()
+
+        if not rollback_script:
+            return jsonify({
+                'session_id': session_id,
+                'message': 'No rollback script available for this session'
+            }), 404
+
+        # Parse DROP statements from the script
+        import re
+        drop_pattern = r'DROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW|INDEX|FUNCTION|PROCEDURE|SEQUENCE|TYPE|TRIGGER)\s+IF\s+EXISTS\s+"?([^"\s;]+)"?\s*(?:ON\s+"?([^"\s;]+)"?)?\s*CASCADE'
+        matches = re.finditer(drop_pattern, rollback_script, re.IGNORECASE)
+
+        objects_to_drop = []
+        for match in matches:
+            obj_type = match.group(1).upper()
+            obj_name = match.group(2)
+            table_name = match.group(3)  # For triggers
+
+            drop_stmt = f'DROP {obj_type} IF EXISTS "{obj_name}"'
+            if table_name:
+                drop_stmt += f' ON "{table_name}"'
+            drop_stmt += ' CASCADE;'
+
+            objects_to_drop.append({
+                'type': obj_type,
+                'name': obj_name,
+                'table': table_name,
+                'drop_statement': drop_stmt
+            })
+
+        return jsonify({
+            'session_id': session_id,
+            'generated_at': session['rollback_generated_at'],
+            'objects_to_drop': objects_to_drop,
+            'total_objects': len(objects_to_drop),
+            'warning': f'This script will DROP {len(objects_to_drop)} objects. Review carefully before executing.'
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to preview rollback: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/rollback/download', methods=['GET'])
+def download_rollback_script(session_id):
+    """
+    Download the rollback script as a .sql file.
+    """
+    from flask import Response
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT rollback_script, rollback_generated_at, export_directory
+                   FROM migration_sessions WHERE session_id = ?'''
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        rollback_script = session['rollback_script']
+
+        # If not in database, try to read from file
+        if not rollback_script:
+            export_dir = session['export_directory']
+            rollback_file = os.path.join(export_dir, 'rollback.sql')
+            if os.path.exists(rollback_file):
+                with open(rollback_file, 'r', encoding='utf-8') as f:
+                    rollback_script = f.read()
+
+        if not rollback_script:
+            return jsonify({'error': 'No rollback script available'}), 404
+
+        return Response(
+            rollback_script,
+            mimetype='application/sql',
+            headers={
+                'Content-Disposition': f'attachment; filename=rollback_session_{session_id}.sql'
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to download rollback script: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/rollback/execute', methods=['POST'])
+def execute_rollback(session_id):
+    """
+    Execute the rollback script against the PostgreSQL validation database.
+    Requires confirmation parameter to prevent accidental execution.
+    """
+    import psycopg2
+
+    data = request.get_json() or {}
+    if not data.get('confirm'):
+        return jsonify({
+            'error': 'Confirmation required',
+            'message': 'Set confirm: true to execute rollback'
+        }), 400
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Get session and rollback script
+        query = '''SELECT ms.rollback_script, ms.export_directory, c.client_id
+                   FROM migration_sessions ms
+                   JOIN clients c ON ms.client_id = c.client_id
+                   WHERE ms.session_id = ?'''
+        cursor = execute_query(conn, query, (session_id,))
+        session = cursor.fetchone()
+
+        if not session:
+            return jsonify({'error': 'Session not found'}), 404
+
+        rollback_script = session['rollback_script']
+
+        # Fall back to file if not in database
+        if not rollback_script:
+            export_dir = session['export_directory']
+            rollback_file = os.path.join(export_dir, 'rollback.sql')
+            if os.path.exists(rollback_file):
+                with open(rollback_file, 'r', encoding='utf-8') as f:
+                    rollback_script = f.read()
+
+        if not rollback_script:
+            return jsonify({'error': 'No rollback script available for this session'}), 404
+
+        # Get PostgreSQL connection string from client config (key-value table)
+        config_query = '''SELECT config_value FROM configs
+                          WHERE client_id = ? AND config_key = 'validation_pg_dsn' '''
+        cursor = execute_query(conn, config_query, (session['client_id'],))
+        config_row = cursor.fetchone()
+
+        if not config_row or not config_row['config_value']:
+            return jsonify({'error': 'PostgreSQL validation DSN not configured'}), 400
+
+        pg_dsn = config_row['config_value']
+
+        # Execute rollback on PostgreSQL
+        dropped_objects = []
+        errors = []
+
+        try:
+            pg_conn = psycopg2.connect(pg_dsn)
+            pg_conn.autocommit = False
+            pg_cursor = pg_conn.cursor()
+
+            # Execute the full script (it has BEGIN/COMMIT)
+            pg_cursor.execute(rollback_script)
+            pg_conn.commit()
+
+            # Parse what was dropped for the response
+            import re
+            drop_pattern = r'DROP\s+(\w+)\s+IF\s+EXISTS\s+"?([^"\s;]+)"?'
+            for match in re.finditer(drop_pattern, rollback_script, re.IGNORECASE):
+                dropped_objects.append({
+                    'type': match.group(1).upper(),
+                    'name': match.group(2)
+                })
+
+            pg_cursor.close()
+            pg_conn.close()
+
+            logger.info(f"Rollback executed for session {session_id}: {len(dropped_objects)} objects dropped")
+
+            return jsonify({
+                'success': True,
+                'session_id': session_id,
+                'message': f'Rollback completed successfully. {len(dropped_objects)} objects dropped.',
+                'dropped_objects': dropped_objects
+            })
+
+        except psycopg2.Error as pg_error:
+            logger.error(f"PostgreSQL error during rollback: {pg_error}")
+            if 'pg_conn' in locals():
+                pg_conn.rollback()
+                pg_conn.close()
+            return jsonify({
+                'success': False,
+                'error': f'PostgreSQL error: {str(pg_error)}',
+                'hint': 'Some objects may not exist or have dependencies'
+            }), 500
+
+    except Exception as e:
+        logger.error(f"Failed to execute rollback: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# Migration Report Endpoints
+# =============================================================================
+
+@api_bp.route('/session/<int:session_id>/report', methods=['GET'])
+def get_migration_report(session_id):
+    """
+    Generate and return an AsciiDoc migration report for a session.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Get client_id from session
+        query = 'SELECT client_id FROM migration_sessions WHERE session_id = ?'
+        cursor = execute_query(conn, query, (session_id,))
+        session_row = cursor.fetchone()
+
+        if not session_row:
+            return jsonify({'error': 'Session not found'}), 404
+
+        client_id = session_row['client_id']
+
+        # Generate report
+        generator = MigrationReportGenerator(conn, client_id, session_id)
+        generator.gather_data()
+        content = generator.generate_asciidoc()
+
+        return jsonify({
+            'session_id': session_id,
+            'format': 'asciidoc',
+            'content': content
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to generate report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/report/download', methods=['GET'])
+def download_migration_report(session_id):
+    """
+    Download the migration report as a .adoc file.
+    """
+    from flask import Response
+
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Get client_id from session
+        query = 'SELECT client_id FROM migration_sessions WHERE session_id = ?'
+        cursor = execute_query(conn, query, (session_id,))
+        session_row = cursor.fetchone()
+
+        if not session_row:
+            return jsonify({'error': 'Session not found'}), 404
+
+        client_id = session_row['client_id']
+
+        # Generate report
+        generator = MigrationReportGenerator(conn, client_id, session_id)
+        generator.gather_data()
+        content = generator.generate_asciidoc()
+
+        return Response(
+            content,
+            mimetype='text/plain',
+            headers={
+                'Content-Disposition': f'attachment; filename=migration_report_session_{session_id}.adoc'
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to download report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/client/<int:client_id>/migration_report', methods=['GET'])
+def get_client_migration_report(client_id):
+    """
+    Get migration report for the latest migration of a client.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Generate report for latest migration
+        generator = MigrationReportGenerator(conn, client_id)
+        generator.gather_data()
+
+        if not generator.data.get('sessions'):
+            return jsonify({
+                'client_id': client_id,
+                'message': 'No migration sessions found for this client'
+            }), 404
+
+        content = generator.generate_asciidoc()
+
+        # Optionally save to file
+        save_to_file = request.args.get('save', 'false').lower() == 'true'
+        file_path = None
+        if save_to_file and generator.data.get('export_directory'):
+            try:
+                file_path = generator.save_report()
+            except Exception as e:
+                logger.warning(f"Failed to save report to file: {e}")
+
+        return jsonify({
+            'client_id': client_id,
+            'session_id': generator.session_id,
+            'format': 'asciidoc',
+            'content': content,
+            'saved_to': file_path
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to generate client report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# =============================================================================
+# Migration Objects Endpoints (Per-Object Tracking)
+# =============================================================================
+
+@api_bp.route('/session/<int:session_id>/objects', methods=['GET'])
+def get_session_objects(session_id):
+    """
+    Get all objects for a migration session with their status.
+    Optional filters: ?type=TABLE&status=validated
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        # Build query with optional filters
+        filters = ['session_id = ?']
+        params = [session_id]
+
+        obj_type = request.args.get('type')
+        if obj_type:
+            filters.append('object_type = ?')
+            params.append(obj_type.upper())
+
+        status = request.args.get('status')
+        if status:
+            filters.append('status = ?')
+            params.append(status)
+
+        where_clause = ' AND '.join(filters)
+        query = f'''SELECT object_id, object_name, object_type, status,
+                           error_message, ai_corrected, line_start, line_end,
+                           created_at, validated_at
+                    FROM migration_objects
+                    WHERE {where_clause}
+                    ORDER BY object_type, object_name'''
+
+        cursor = execute_query(conn, query, tuple(params))
+        objects = [dict(row) for row in cursor.fetchall()]
+
+        # Get summary counts
+        summary_query = '''SELECT object_type, status, COUNT(*) as count
+                          FROM migration_objects
+                          WHERE session_id = ?
+                          GROUP BY object_type, status'''
+        cursor = execute_query(conn, summary_query, (session_id,))
+        summary_rows = cursor.fetchall()
+
+        # Build summary structure
+        summary = {}
+        for row in summary_rows:
+            obj_type = row['object_type']
+            if obj_type not in summary:
+                summary[obj_type] = {'total': 0, 'validated': 0, 'failed': 0, 'pending': 0}
+            summary[obj_type][row['status']] = row['count']
+            summary[obj_type]['total'] += row['count']
+
+        return jsonify({
+            'session_id': session_id,
+            'total_objects': len(objects),
+            'summary': summary,
+            'objects': objects
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get session objects: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/session/<int:session_id>/objects/summary', methods=['GET'])
+def get_session_objects_summary(session_id):
+    """
+    Get summary counts of objects by type and status.
+    Lightweight endpoint for progress display.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT object_type, status, COUNT(*) as count
+                   FROM migration_objects
+                   WHERE session_id = ?
+                   GROUP BY object_type, status
+                   ORDER BY object_type'''
+
+        cursor = execute_query(conn, query, (session_id,))
+        rows = cursor.fetchall()
+
+        # Build structured summary
+        by_type = {}
+        totals = {'total': 0, 'validated': 0, 'failed': 0, 'pending': 0}
+
+        for row in rows:
+            obj_type = row['object_type']
+            status = row['status']
+            count = row['count']
+
+            if obj_type not in by_type:
+                by_type[obj_type] = {'total': 0, 'validated': 0, 'failed': 0, 'pending': 0}
+
+            by_type[obj_type][status] = count
+            by_type[obj_type]['total'] += count
+
+            totals[status] = totals.get(status, 0) + count
+            totals['total'] += count
+
+        return jsonify({
+            'session_id': session_id,
+            'totals': totals,
+            'by_type': by_type
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get objects summary: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/object/<int:object_id>', methods=['GET'])
+def get_object_detail(object_id):
+    """
+    Get detailed information about a specific object, including DDL.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT mo.*, mf.filename, ms.export_directory
+                   FROM migration_objects mo
+                   LEFT JOIN migration_files mf ON mo.file_id = mf.file_id
+                   LEFT JOIN migration_sessions ms ON mo.session_id = ms.session_id
+                   WHERE mo.object_id = ?'''
+
+        cursor = execute_query(conn, query, (object_id,))
+        obj = cursor.fetchone()
+
+        if not obj:
+            return jsonify({'error': 'Object not found'}), 404
+
+        return jsonify(dict(obj))
+
+    except Exception as e:
+        logger.error(f"Failed to get object detail: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@api_bp.route('/client/<int:client_id>/objects/summary', methods=['GET'])
+def get_client_objects_summary(client_id):
+    """
+    Get object summary across all sessions for a client.
+    Shows aggregate view of migration progress.
+    """
+    conn = get_db()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        query = '''SELECT mo.object_type, mo.status, COUNT(*) as count
+                   FROM migration_objects mo
+                   JOIN migration_sessions ms ON mo.session_id = ms.session_id
+                   WHERE ms.client_id = ?
+                   GROUP BY mo.object_type, mo.status
+                   ORDER BY mo.object_type'''
+
+        cursor = execute_query(conn, query, (client_id,))
+        rows = cursor.fetchall()
+
+        by_type = {}
+        totals = {'total': 0, 'validated': 0, 'failed': 0, 'pending': 0}
+
+        for row in rows:
+            obj_type = row['object_type']
+            status = row['status']
+            count = row['count']
+
+            if obj_type not in by_type:
+                by_type[obj_type] = {'total': 0, 'validated': 0, 'failed': 0, 'pending': 0}
+
+            by_type[obj_type][status] = count
+            by_type[obj_type]['total'] += count
+
+            totals[status] = totals.get(status, 0) + count
+            totals['total'] += count
+
+        return jsonify({
+            'client_id': client_id,
+            'totals': totals,
+            'by_type': by_type
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get client objects summary: {e}")
+        return jsonify({'error': str(e)}), 500

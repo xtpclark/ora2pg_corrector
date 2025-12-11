@@ -165,8 +165,8 @@ class TokenAuth:
                             if token:
                                 logger.info(f"Token was created by another worker, loaded from {self.token_file_path}")
                                 return token
-                        except:
-                            pass
+                        except (IOError, OSError) as e:
+                            logger.debug(f"Could not read token file: {e}")
                     
                     # Generate new token since no valid token exists
                     token = secrets.token_urlsafe(32)
@@ -210,13 +210,6 @@ class TokenAuth:
         if self.auth_mode == 'none':
             return True
         
-        # *** ADD THESE DEBUG LINES ***
-        logger.info(f"DEBUG: request.path = {request.path}")
-        logger.info(f"DEBUG: request.args = {dict(request.args)}")
-        logger.info(f"DEBUG: request.query_string = {request.query_string}")
-        logger.info(f"DEBUG: self.token = {self.token}")
-        # *** END DEBUG ***
-        
         # Check for token in multiple places
         provided_token = (
             # Standard header
@@ -228,17 +221,12 @@ class TokenAuth:
             # Form data (for POST requests)
             (request.form.get('token') if request.form else None)
         )
-        
-
-        # *** ADD THIS DEBUG LINE ***
-        logger.info(f"DEBUG: provided_token = {provided_token}")
-        # *** END DEBUG ***
 
         # For JSON requests, check body too
         if not provided_token and request.is_json:
             try:
                 provided_token = request.get_json().get('token')
-            except:
+            except (ValueError, AttributeError):
                 pass
         
         # Debug logging

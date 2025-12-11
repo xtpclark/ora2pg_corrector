@@ -204,6 +204,10 @@ export async function selectClient(clientId) {
         state.sessions = sessions;
         renderSessionHistory();
 
+        // Load migration tools data
+        loadDDLCacheStats();
+        updateToolsStatus();
+
         // Safe editor value setting with CodeMirror
         if (editors.original?.setValue) {
             editors.original.setValue('-- Paste or load your source SQL here...');
@@ -1023,7 +1027,11 @@ async function pollMigrationStatus() {
         updateMigrationProgress(status);
 
         // Check if migration is complete
-        if (status.status !== 'running') {
+        // Keep polling while: running, pending, or in any active phase
+        const activeStates = ['running', 'pending', 'discovering', 'exporting', 'converting', 'validating'];
+        const isActive = activeStates.includes(status.status) || activeStates.includes(status.phase);
+
+        if (!isActive) {
             clearInterval(migrationPollInterval);
             migrationPollInterval = null;
             showMigrationResults(status);
@@ -1080,7 +1088,7 @@ function updateMigrationProgress(status) {
  * Shows the final migration results.
  * @param {object} status - The final migration status
  */
-function showMigrationResults(status) {
+async function showMigrationResults(status) {
     const progressDiv = document.getElementById('migration-progress');
     const resultsDiv = document.getElementById('migration-results');
     const resultsContent = document.getElementById('migration-results-content');
@@ -1096,10 +1104,44 @@ function showMigrationResults(status) {
             <i class="fas ${isSuccess ? 'fa-check-circle text-green-300' : isPartial ? 'fa-exclamation-circle text-yellow-300' : 'fa-times-circle text-red-300'} text-2xl mr-3"></i>
             <div>
                 <div class="text-white font-semibold">${isSuccess ? 'Migration Complete!' : isPartial ? 'Migration Partially Complete' : 'Migration Failed'}</div>
-                <div class="text-indigo-100 text-sm">${status.successful || 0} successful, ${status.failed || 0} failed</div>
+                <div class="text-indigo-100 text-sm">${status.successful || 0} files processed, ${status.failed || 0} failed</div>
             </div>
         </div>
     `;
+
+    // Fetch object-level summary
+    try {
+        const objectSummary = await apiFetch(`/api/client/${state.currentClientId}/objects/summary`);
+        if (objectSummary && objectSummary.totals && objectSummary.totals.total > 0) {
+            html += `
+                <div class="mt-3 bg-white/10 rounded-lg p-3">
+                    <div class="text-white text-sm font-medium mb-2">Objects Summary:</div>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+            `;
+
+            // Show by type
+            for (const [objType, counts] of Object.entries(objectSummary.by_type)) {
+                const successRate = counts.total > 0 ? Math.round((counts.validated / counts.total) * 100) : 0;
+                const statusColor = successRate === 100 ? 'text-green-300' : successRate > 0 ? 'text-yellow-300' : 'text-red-300';
+                html += `
+                    <div class="flex justify-between items-center bg-white/5 rounded px-2 py-1">
+                        <span class="text-indigo-100">${objType}</span>
+                        <span class="${statusColor}">${counts.validated}/${counts.total}</span>
+                    </div>
+                `;
+            }
+
+            html += `
+                    </div>
+                    <div class="mt-2 text-center text-indigo-200 text-xs">
+                        Total: ${objectSummary.totals.validated}/${objectSummary.totals.total} objects validated
+                    </div>
+                </div>
+            `;
+        }
+    } catch (e) {
+        console.error('Failed to fetch object summary:', e);
+    }
 
     if (status.errors && status.errors.length > 0) {
         html += `
@@ -1114,9 +1156,14 @@ function showMigrationResults(status) {
     }
 
     html += `
-        <button id="migration-done-btn" class="mt-4 bg-white/20 hover:bg-white/30 text-white py-2 px-4 rounded transition-colors text-sm">
-            <i class="fas fa-redo mr-1"></i>Run Another Migration
-        </button>
+        <div class="flex gap-2 mt-4">
+            <button id="migration-done-btn" class="bg-white/20 hover:bg-white/30 text-white py-2 px-4 rounded transition-colors text-sm">
+                <i class="fas fa-redo mr-1"></i>Run Another
+            </button>
+            <button id="view-objects-btn" class="bg-white/20 hover:bg-white/30 text-white py-2 px-4 rounded transition-colors text-sm">
+                <i class="fas fa-list mr-1"></i>View Objects
+            </button>
+        </div>
     `;
 
     if (resultsContent) {
@@ -1156,8 +1203,395 @@ async function refreshSessions() {
         if (sessionHistoryContainer && sessions.length > 0) {
             sessionHistoryContainer.classList.remove('hidden');
         }
+
+        // Update tools status after migration completes
+        updateToolsStatus();
+        loadDDLCacheStats();
     } catch (error) {
         console.error('Failed to refresh sessions:', error);
+    }
+}
+
+// =============================================================================
+// Migration Tools Handlers (DDL Cache, Rollback, Reports)
+// =============================================================================
+
+/**
+ * Loads DDL cache stats for the current client.
+ */
+async function loadDDLCacheStats() {
+    if (!state.currentClientId) return;
+    try {
+        const stats = await apiFetch(`/api/client/${state.currentClientId}/ddl_cache/stats`);
+        document.getElementById('ddl-cache-count').textContent = `${stats.total_entries} entries`;
+        document.getElementById('ddl-cache-hits').textContent = `${stats.total_hits} hits`;
+        state.ddlCacheStats = stats;
+    } catch (error) {
+        console.error('Failed to load DDL cache stats:', error);
+    }
+}
+
+/**
+ * Shows the DDL cache modal with cache entries.
+ */
+async function handleViewDDLCache() {
+    if (!state.currentClientId) {
+        alert('Please select a client first');
+        return;
+    }
+
+    try {
+        const stats = await apiFetch(`/api/client/${state.currentClientId}/ddl_cache/stats`);
+        const content = document.getElementById('ddl-cache-content');
+
+        if (stats.entries.length === 0) {
+            content.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center py-8">No cached DDL entries</p>';
+        } else {
+            content.innerHTML = `
+                <div class="space-y-3">
+                    <div class="flex justify-between text-sm text-gray-600 dark:text-gray-400 mb-2">
+                        <span>Total: ${stats.total_entries} entries</span>
+                        <span>Total hits: ${stats.total_hits}</span>
+                    </div>
+                    ${stats.entries.map(entry => `
+                        <div class="bg-gray-50 dark:bg-gray-800 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <div class="flex justify-between items-start">
+                                <div>
+                                    <span class="font-medium text-gray-900 dark:text-white">${entry.object_name}</span>
+                                    <span class="text-xs text-gray-500 ml-2">${entry.object_type}</span>
+                                </div>
+                                <span class="text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-1 rounded">
+                                    ${entry.hit_count} hits
+                                </span>
+                            </div>
+                            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                ${entry.ai_provider} / ${entry.ai_model}
+                            </div>
+                            <div class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                                Created: ${entry.created_at}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        document.getElementById('ddl-cache-modal').classList.remove('hidden');
+    } catch (error) {
+        console.error('Failed to load DDL cache:', error);
+        alert('Failed to load DDL cache: ' + error.message);
+    }
+}
+
+/**
+ * Clears the DDL cache for the current client.
+ */
+async function handleClearDDLCache() {
+    if (!state.currentClientId) {
+        alert('Please select a client first');
+        return;
+    }
+
+    if (!confirm('Are you sure you want to clear the DDL cache? This cannot be undone.')) {
+        return;
+    }
+
+    try {
+        await apiFetch(`/api/client/${state.currentClientId}/ddl_cache`, { method: 'DELETE' });
+        loadDDLCacheStats();
+        alert('DDL cache cleared successfully');
+    } catch (error) {
+        console.error('Failed to clear DDL cache:', error);
+        alert('Failed to clear DDL cache: ' + error.message);
+    }
+}
+
+/**
+ * Gets the current session ID for tools (from state or finds the latest TABLE session).
+ */
+function getCurrentSessionId() {
+    if (state.currentSessionId) return state.currentSessionId;
+    // Find the latest TABLE session
+    if (state.sessions && state.sessions.length > 0) {
+        const tableSession = state.sessions.find(s => s.export_type === 'TABLE');
+        return tableSession ? tableSession.session_id : state.sessions[0].session_id;
+    }
+    return null;
+}
+
+/**
+ * Shows the rollback preview modal.
+ */
+async function handlePreviewRollback() {
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
+        alert('No session selected. Please run a migration first.');
+        return;
+    }
+
+    try {
+        const preview = await apiFetch(`/api/session/${sessionId}/rollback/preview`);
+
+        if (preview.message) {
+            alert(preview.message);
+            return;
+        }
+
+        document.getElementById('rollback-warning-text').textContent = preview.warning;
+
+        const content = document.getElementById('rollback-content');
+        content.innerHTML = `
+            <div class="space-y-2">
+                ${preview.objects_to_drop.map(obj => `
+                    <div class="flex items-center justify-between py-2 border-b border-gray-200 dark:border-gray-700">
+                        <div>
+                            <span class="text-sm font-medium text-gray-900 dark:text-white">${obj.name}</span>
+                            <span class="text-xs text-gray-500 ml-2">${obj.type}</span>
+                            ${obj.table ? `<span class="text-xs text-gray-400 ml-1">ON ${obj.table}</span>` : ''}
+                        </div>
+                        <code class="text-xs bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">${obj.drop_statement}</code>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        // Store the session ID for download button
+        state.currentRollbackSessionId = sessionId;
+        document.getElementById('rollback-modal').classList.remove('hidden');
+
+    } catch (error) {
+        console.error('Failed to preview rollback:', error);
+        alert('Failed to preview rollback: ' + error.message);
+    }
+}
+
+/**
+ * Downloads the rollback script.
+ */
+async function handleDownloadRollback() {
+    const sessionId = state.currentRollbackSessionId || getCurrentSessionId();
+    if (!sessionId) {
+        alert('No session selected.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/session/${sessionId}/rollback/download`);
+        if (!response.ok) throw new Error('Failed to download');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `rollback_session_${sessionId}.sql`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Failed to download rollback:', error);
+        alert('Failed to download rollback script: ' + error.message);
+    }
+}
+
+/**
+ * Copies the rollback script to clipboard.
+ */
+async function handleCopyRollback() {
+    const sessionId = state.currentRollbackSessionId || getCurrentSessionId();
+    if (!sessionId) return;
+
+    try {
+        const data = await apiFetch(`/api/session/${sessionId}/rollback`);
+        await navigator.clipboard.writeText(data.content);
+        alert('Rollback script copied to clipboard');
+    } catch (error) {
+        console.error('Failed to copy rollback:', error);
+        alert('Failed to copy rollback script');
+    }
+}
+
+/**
+ * Executes the rollback script on PostgreSQL with confirmation.
+ */
+async function handleExecuteRollback() {
+    const sessionId = state.currentRollbackSessionId || getCurrentSessionId();
+    if (!sessionId) {
+        alert('No session selected.');
+        return;
+    }
+
+    // Get object count for confirmation message
+    const warningText = document.getElementById('rollback-warning-text')?.textContent || '';
+
+    if (!confirm(`⚠️ WARNING: This will execute the rollback script on PostgreSQL.\n\n${warningText}\n\nThis action cannot be undone. Continue?`)) {
+        return;
+    }
+
+    // Double confirmation for safety
+    if (!confirm('Are you SURE you want to drop these objects from the database?')) {
+        return;
+    }
+
+    const executeBtn = document.getElementById('execute-rollback-btn');
+    const originalText = executeBtn.innerHTML;
+    executeBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Executing...';
+    executeBtn.disabled = true;
+
+    try {
+        const result = await apiFetch(`/api/session/${sessionId}/rollback/execute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirm: true })
+        });
+
+        if (result.success) {
+            alert(`✅ ${result.message}`);
+            // Close modal and refresh
+            document.getElementById('rollback-modal').classList.add('hidden');
+            refreshSessions();
+        } else {
+            alert(`❌ Rollback failed: ${result.error}\n\n${result.hint || ''}`);
+        }
+    } catch (error) {
+        console.error('Failed to execute rollback:', error);
+        alert(`❌ Failed to execute rollback: ${error.message}`);
+    } finally {
+        executeBtn.innerHTML = originalText;
+        executeBtn.disabled = false;
+    }
+}
+
+/**
+ * Shows the migration report modal.
+ */
+async function handleViewMigrationReport() {
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
+        alert('No session selected. Please run a migration first.');
+        return;
+    }
+
+    try {
+        const report = await apiFetch(`/api/session/${sessionId}/report`);
+        document.getElementById('report-text').textContent = report.content;
+        state.currentReportSessionId = sessionId;
+        document.getElementById('report-modal').classList.remove('hidden');
+    } catch (error) {
+        console.error('Failed to load report:', error);
+        alert('Failed to load migration report: ' + error.message);
+    }
+}
+
+/**
+ * Downloads the migration report.
+ */
+async function handleDownloadMigrationReport() {
+    const sessionId = state.currentReportSessionId || getCurrentSessionId();
+    if (!sessionId) {
+        alert('No session selected.');
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/session/${sessionId}/report/download`);
+        if (!response.ok) throw new Error('Failed to download');
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `migration_report_session_${sessionId}.adoc`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+    } catch (error) {
+        console.error('Failed to download report:', error);
+        alert('Failed to download migration report: ' + error.message);
+    }
+}
+
+/**
+ * Copies the migration report to clipboard.
+ */
+async function handleCopyMigrationReport() {
+    const reportText = document.getElementById('report-text').textContent;
+    if (reportText) {
+        await navigator.clipboard.writeText(reportText);
+        alert('Report copied to clipboard');
+    }
+}
+
+/**
+ * Shows the objects modal with detailed list of migrated objects.
+ */
+async function handleViewObjects() {
+    if (!state.currentClientId) {
+        alert('Please select a client first');
+        return;
+    }
+
+    try {
+        const summary = await apiFetch(`/api/client/${state.currentClientId}/objects/summary`);
+
+        // Build modal content
+        let html = `
+            <div class="mb-4">
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-lg font-semibold text-gray-900 dark:text-white">
+                        ${summary.totals.validated}/${summary.totals.total} Objects Validated
+                    </span>
+                    <span class="text-sm ${summary.totals.failed > 0 ? 'text-red-500' : 'text-green-500'}">
+                        ${summary.totals.failed > 0 ? summary.totals.failed + ' failed' : 'All passed'}
+                    </span>
+                </div>
+            </div>
+        `;
+
+        // Show by type with expandable details
+        for (const [objType, counts] of Object.entries(summary.by_type)) {
+            const successRate = counts.total > 0 ? Math.round((counts.validated / counts.total) * 100) : 0;
+            const barColor = successRate === 100 ? 'bg-green-500' : successRate > 0 ? 'bg-yellow-500' : 'bg-red-500';
+
+            html += `
+                <div class="mb-3 bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="font-medium text-gray-900 dark:text-white">${objType}</span>
+                        <span class="text-sm text-gray-600 dark:text-gray-400">
+                            ${counts.validated}/${counts.total} (${successRate}%)
+                        </span>
+                    </div>
+                    <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                        <div class="${barColor} rounded-full h-2 transition-all" style="width: ${successRate}%"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Show in modal
+        const content = document.getElementById('ddl-cache-content');
+        const modal = document.getElementById('ddl-cache-modal');
+        const title = modal?.querySelector('h3');
+        if (title) title.textContent = 'Migration Objects';
+        if (content) content.innerHTML = html;
+        modal?.classList.remove('hidden');
+
+    } catch (error) {
+        console.error('Failed to load objects:', error);
+        alert('Failed to load objects: ' + error.message);
+    }
+}
+
+/**
+ * Updates the tools status text based on current session.
+ */
+function updateToolsStatus() {
+    const sessionId = getCurrentSessionId();
+    if (sessionId) {
+        const session = state.sessions?.find(s => s.session_id === sessionId);
+        const sessionName = session ? `Session ${sessionId} (${session.export_type})` : `Session ${sessionId}`;
+        document.getElementById('rollback-status').textContent = sessionName;
+        document.getElementById('report-status').textContent = sessionName;
+    } else {
+        document.getElementById('rollback-status').textContent = 'Select a session to view rollback';
+        document.getElementById('report-status').textContent = 'Select a session to generate report';
     }
 }
 
@@ -1306,6 +1740,7 @@ export function initEventListeners() {
             case 'migration-done-btn':
                 document.getElementById('migration-results')?.classList.add('hidden');
                 break;
+            case 'view-objects-btn': handleViewObjects(); break;
             case 'run-report-btn': handleGenerateReport(); break;
             case 'export-report-btn': handleExportReport(); break;
             case 'run-ora2pg-btn': handleGetObjectList(); break;
@@ -1330,6 +1765,21 @@ export function initEventListeners() {
                 break;
             case 'correct-ai-btn': handleCorrectWithAI(); break;
             case 'validate-btn': handleValidateSql(); break;
+            // Migration Tools handlers
+            case 'view-ddl-cache-btn': handleViewDDLCache(); break;
+            case 'clear-ddl-cache-btn': handleClearDDLCache(); break;
+            case 'close-ddl-cache-modal': document.getElementById('ddl-cache-modal').classList.add('hidden'); break;
+            case 'preview-rollback-btn': handlePreviewRollback(); break;
+            case 'download-rollback-btn': handleDownloadRollback(); break;
+            case 'close-rollback-modal': document.getElementById('rollback-modal').classList.add('hidden'); break;
+            case 'copy-rollback-btn': handleCopyRollback(); break;
+            case 'download-rollback-modal-btn': handleDownloadRollback(); break;
+            case 'execute-rollback-btn': handleExecuteRollback(); break;
+            case 'view-report-btn': handleViewMigrationReport(); break;
+            case 'download-report-btn': handleDownloadMigrationReport(); break;
+            case 'close-report-modal': document.getElementById('report-modal').classList.add('hidden'); break;
+            case 'copy-report-btn': handleCopyMigrationReport(); break;
+            case 'download-report-modal-btn': handleDownloadMigrationReport(); break;
         }
     });
     

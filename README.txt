@@ -224,9 +224,146 @@ The migration processes objects in dependency order:
 . TRIGGER
 . PACKAGE
 
+== Migration Tools
+
+The application includes several tools to help manage and review migrations.
+
+=== DDL Caching
+
+AI-generated DDL (for missing dependency tables) is automatically cached to reduce API calls and provide an audit trail.
+
+**Dual Storage:**
+
+* **Database cache** - Automatic reuse during validation
+* **File storage** - Human-reviewable files in `ai_generated_ddl/` folder per session
+
+**API Endpoints:**
+
+[source,bash]
+----
+# View cache statistics
+curl http://localhost:8000/api/client/1/ddl_cache/stats
+
+# Clear cache for a client
+curl -X DELETE http://localhost:8000/api/client/1/ddl_cache
+
+# List AI-generated DDL files for a session
+curl http://localhost:8000/api/session/5/generated_ddl
+----
+
+=== Migration Reports
+
+Generate AsciiDoc reports summarizing migration results for stakeholders.
+
+**Report Contents:**
+
+* Executive summary (status, success rate, duration)
+* Object summary by type (TABLE, VIEW, INDEX, PROCEDURE, etc.)
+* File details with validation status
+* Error details for failed objects
+* Metadata (AI provider, model, timestamps)
+
+**API Endpoints:**
+
+[source,bash]
+----
+# Get report for a session (returns AsciiDoc)
+curl http://localhost:8000/api/session/5/report
+
+# Download as .adoc file
+curl -O http://localhost:8000/api/session/5/report/download
+
+# Get report for latest migration (optionally save to file)
+curl "http://localhost:8000/api/client/1/migration_report?save=true"
+----
+
+=== Rollback Scripts
+
+Automatically generated DROP statements to undo a migration if needed.
+
+**Features:**
+
+* Generated after successful migration
+* Objects dropped in reverse dependency order (triggers first, tables last)
+* Includes header with warnings and execution instructions
+* Preview before executing
+
+**API Endpoints:**
+
+[source,bash]
+----
+# Get rollback script content
+curl http://localhost:8000/api/session/5/rollback
+
+# Preview what will be dropped (dry-run)
+curl http://localhost:8000/api/session/5/rollback/preview
+
+# Download as .sql file
+curl -O http://localhost:8000/api/session/5/rollback/download
+
+# Execute rollback (requires confirmation)
+curl -X POST http://localhost:8000/api/session/5/rollback/execute \
+  -H "Content-Type: application/json" \
+  -d '{"confirm": true}'
+----
+
+=== Per-Object Tracking
+
+Individual database objects (tables, views, indexes, etc.) are tracked separately from files, providing granular visibility into migration progress.
+
+**API Endpoints:**
+
+[source,bash]
+----
+# Get all objects for a session with status
+curl http://localhost:8000/api/session/5/objects
+
+# Filter by type or status
+curl "http://localhost:8000/api/session/5/objects?type=TABLE&status=validated"
+
+# Get summary counts by type
+curl http://localhost:8000/api/session/5/objects/summary
+
+# Get detailed info for a specific object
+curl http://localhost:8000/api/object/42
+
+# Get aggregate summary across all sessions for a client
+curl http://localhost:8000/api/client/1/objects/summary
+----
+
+**Example Summary Response:**
+
+[source,json]
+----
+{
+  "totals": {"total": 20, "validated": 20, "failed": 0},
+  "by_type": {
+    "TABLE": {"total": 7, "validated": 7, "failed": 0},
+    "INDEX": {"total": 11, "validated": 11, "failed": 0},
+    "VIEW": {"total": 1, "validated": 1, "failed": 0},
+    "PROCEDURE": {"total": 1, "validated": 1, "failed": 0}
+  }
+}
+----
+
+== Output Files
+
+Each migration session creates the following files in `/app/project_data/{client_id}/{session_id}/`:
+
+[source,text]
+----
+├── output_table.sql           # Ora2Pg DDL export (tables)
+├── output_view.sql            # Ora2Pg DDL export (views)
+├── output_procedure.sql       # Ora2Pg DDL export (procedures)
+├── ai_generated_ddl/          # AI-generated DDL for missing dependencies
+│   ├── employees.sql          # CREATE TABLE employees...
+│   ├── departments.sql        # CREATE TABLE departments...
+│   └── _manifest.json         # Index with metadata
+├── migration_report.adoc      # AsciiDoc migration report
+└── rollback.sql               # DROP statements to undo migration
+----
+
 == Future Enhancements
 
 * **Data Migration:** Extend the one-click workflow to include data migration after DDL is validated
-* **DDL Caching:** Implement a caching layer for AI-generated DDL to further reduce API calls
-* **Migration Reports:** Generate detailed HTML/PDF reports of migration results
-* **Rollback Scripts:** Auto-generate rollback DDL for each migration session
+* **Schema Comparison:** Compare source Oracle and target PostgreSQL schemas to verify migration completeness
