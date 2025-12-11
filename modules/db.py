@@ -9,11 +9,26 @@ from cryptography.fernet import Fernet
 logger = logging.getLogger(__name__)
 
 # Encryption key for sensitive config values
+# Priority: 1) Environment variable, 2) Persisted key file, 3) Generate new (and persist)
 _ENCRYPTION_KEY_STR = os.environ.get('APP_ENCRYPTION_KEY')
-if not _ENCRYPTION_KEY_STR:
-    ENCRYPTION_KEY = Fernet.generate_key()
-else:
+_KEY_FILE_PATH = '/app/data/.encryption_key'
+
+if _ENCRYPTION_KEY_STR:
     ENCRYPTION_KEY = _ENCRYPTION_KEY_STR.encode()
+elif os.path.exists(_KEY_FILE_PATH):
+    with open(_KEY_FILE_PATH, 'rb') as f:
+        ENCRYPTION_KEY = f.read()
+    logger.info("Loaded encryption key from persistent storage")
+else:
+    ENCRYPTION_KEY = Fernet.generate_key()
+    try:
+        os.makedirs('/app/data', exist_ok=True)
+        with open(_KEY_FILE_PATH, 'wb') as f:
+            f.write(ENCRYPTION_KEY)
+        os.chmod(_KEY_FILE_PATH, 0o600)
+        logger.info("Generated and persisted new encryption key")
+    except Exception as e:
+        logger.warning(f"Could not persist encryption key: {e}. Key will be lost on restart.")
 
 def get_db():
     """Get the database connection from the Flask global context."""
