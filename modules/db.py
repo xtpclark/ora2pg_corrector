@@ -120,6 +120,52 @@ def init_db():
                 last_modified {ts_type} DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (session_id) REFERENCES migration_sessions(session_id) ON DELETE CASCADE
             )''')
+            # --- DDL Cache table for AI-generated DDL reuse ---
+            execute_query(conn, f'''CREATE TABLE IF NOT EXISTS ddl_cache (
+                cache_id {pk_type},
+                client_id INTEGER NOT NULL,
+                session_id INTEGER,
+                object_name TEXT NOT NULL,
+                object_type TEXT DEFAULT 'TABLE',
+                generated_ddl TEXT NOT NULL,
+                ai_provider TEXT,
+                ai_model TEXT,
+                hit_count INTEGER DEFAULT 0,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                last_used {ts_type},
+                FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+            )''')
+            # Create unique index for cache lookups
+            if is_sqlite:
+                execute_query(conn, '''CREATE UNIQUE INDEX IF NOT EXISTS idx_ddl_cache_lookup
+                    ON ddl_cache(client_id, object_name)''')
+            else:
+                execute_query(conn, '''CREATE UNIQUE INDEX IF NOT EXISTS idx_ddl_cache_lookup
+                    ON ddl_cache(client_id, object_name)''')
+
+            # --- Migration Objects table for per-object tracking ---
+            execute_query(conn, f'''CREATE TABLE IF NOT EXISTS migration_objects (
+                object_id {pk_type},
+                session_id INTEGER NOT NULL,
+                file_id INTEGER,
+                object_name TEXT NOT NULL,
+                object_type TEXT NOT NULL,
+                schema_name TEXT,
+                status TEXT DEFAULT 'pending',
+                original_ddl TEXT,
+                corrected_ddl TEXT,
+                error_message TEXT,
+                line_start INTEGER,
+                line_end INTEGER,
+                ai_corrected INTEGER DEFAULT 0,
+                created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
+                validated_at {ts_type},
+                FOREIGN KEY (session_id) REFERENCES migration_sessions(session_id) ON DELETE CASCADE,
+                FOREIGN KEY (file_id) REFERENCES migration_files(file_id) ON DELETE SET NULL
+            )''')
+            # Index for efficient lookups by session
+            execute_query(conn, '''CREATE INDEX IF NOT EXISTS idx_migration_objects_session
+                ON migration_objects(session_id, object_type)''')
 
         # Run schema migrations for existing tables
         _run_schema_migrations(conn)
@@ -138,6 +184,9 @@ def _run_schema_migrations(conn):
         ('migration_sessions', 'workflow_status', "TEXT DEFAULT 'pending'"),
         ('migration_files', 'corrected_content', 'TEXT'),
         ('migration_files', 'error_message', 'TEXT'),
+        # Rollback script support
+        ('migration_sessions', 'rollback_script', 'TEXT'),
+        ('migration_sessions', 'rollback_generated_at', 'TIMESTAMP'),
     ]
 
     for table_name, column_name, column_def in migrations:

@@ -50,6 +50,144 @@
             </div>
         </div>
 
+        <!-- Migration Tools Section -->
+        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Migration Tools</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- DDL Cache Card -->
+                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <div class="flex items-center mb-3">
+                        <i class="fas fa-database text-blue-500 text-xl mr-3"></i>
+                        <h4 class="font-semibold text-gray-900 dark:text-white">DDL Cache</h4>
+                    </div>
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">View and manage AI-generated DDL cache</p>
+                    <div id="ddl-cache-stats" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                        <span id="ddl-cache-count">0 entries</span> | <span id="ddl-cache-hits">0 hits</span>
+                    </div>
+                    <div class="flex space-x-2">
+                        <button id="view-ddl-cache-btn" class="flex-1 text-xs bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-eye mr-1"></i>View
+                        </button>
+                        <button id="clear-ddl-cache-btn" class="text-xs bg-red-600 hover:bg-red-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-trash mr-1"></i>Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Rollback Script Card -->
+                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <div class="flex items-center mb-3">
+                        <i class="fas fa-undo-alt text-orange-500 text-xl mr-3"></i>
+                        <h4 class="font-semibold text-gray-900 dark:text-white">Rollback Script</h4>
+                    </div>
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Preview and download rollback SQL</p>
+                    <div id="rollback-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                        Select a session to view rollback
+                    </div>
+                    <div class="flex space-x-2">
+                        <button id="preview-rollback-btn" class="flex-1 text-xs bg-orange-600 hover:bg-orange-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-search mr-1"></i>Preview
+                        </button>
+                        <button id="download-rollback-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-download mr-1"></i>Download
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Migration Report Card -->
+                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <div class="flex items-center mb-3">
+                        <i class="fas fa-file-alt text-green-500 text-xl mr-3"></i>
+                        <h4 class="font-semibold text-gray-900 dark:text-white">Migration Report</h4>
+                    </div>
+                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Generate AsciiDoc migration report</p>
+                    <div id="report-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                        Select a session to generate report
+                    </div>
+                    <div class="flex space-x-2">
+                        <button id="view-report-btn" class="flex-1 text-xs bg-green-600 hover:bg-green-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-eye mr-1"></i>View
+                        </button>
+                        <button id="download-report-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-2 px-3 rounded transition-colors">
+                            <i class="fas fa-download mr-1"></i>Download
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- DDL Cache Modal -->
+        <div id="ddl-cache-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center">
+            <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">DDL Cache</h3>
+                    <button id="close-ddl-cache-modal" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="ddl-cache-content" class="p-4 overflow-y-auto flex-1">
+                    <!-- Cache entries will be rendered here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Rollback Preview Modal -->
+        <div id="rollback-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center">
+            <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Rollback Script Preview</h3>
+                    <button id="close-rollback-modal" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="rollback-warning" class="bg-orange-100 dark:bg-orange-900/30 p-3 mx-4 mt-4 rounded-lg">
+                    <p class="text-sm text-orange-800 dark:text-orange-200">
+                        <i class="fas fa-exclamation-triangle mr-2"></i>
+                        <span id="rollback-warning-text">Review carefully before executing!</span>
+                    </p>
+                </div>
+                <div id="rollback-content" class="p-4 overflow-y-auto flex-1">
+                    <!-- Rollback preview will be rendered here -->
+                </div>
+                <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-between">
+                    <button id="execute-rollback-btn" class="text-sm bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded transition-colors">
+                        <i class="fas fa-play mr-1"></i>Execute Rollback
+                    </button>
+                    <div class="flex">
+                        <button id="copy-rollback-btn" class="text-sm bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded transition-colors mr-2">
+                            <i class="fas fa-copy mr-1"></i>Copy to Clipboard
+                        </button>
+                        <button id="download-rollback-modal-btn" class="text-sm bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded transition-colors">
+                            <i class="fas fa-download mr-1"></i>Download .sql
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Report Modal -->
+        <div id="report-modal" class="fixed inset-0 bg-black/50 z-50 hidden flex items-center justify-center">
+            <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] flex flex-col">
+                <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Migration Report</h3>
+                    <button id="close-report-modal" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="report-content" class="p-4 overflow-y-auto flex-1">
+                    <pre id="report-text" class="text-sm font-mono bg-gray-50 dark:bg-gray-800 p-4 rounded-lg whitespace-pre-wrap"></pre>
+                </div>
+                <div class="p-4 border-t border-gray-200 dark:border-gray-700 flex justify-end">
+                    <button id="copy-report-btn" class="text-sm bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded transition-colors mr-2">
+                        <i class="fas fa-copy mr-1"></i>Copy to Clipboard
+                    </button>
+                    <button id="download-report-modal-btn" class="text-sm bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded transition-colors">
+                        <i class="fas fa-download mr-1"></i>Download .adoc
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Assessment Report Section -->
         <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
             <div class="flex items-center justify-between mb-4">

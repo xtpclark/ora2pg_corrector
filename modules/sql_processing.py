@@ -637,6 +637,156 @@ Failed Query:
             logger.error(f"AI query fix generation failed: {e}", exc_info=False)
             return None
 
+    # --- DDL Cache Methods ---
+
+    def _check_ddl_cache(self, db_conn, client_id, object_name):
+        """
+        Check if DDL exists in cache for the given object.
+
+        :param db_conn: Database connection
+        :param int client_id: Client ID for cache lookup
+        :param str object_name: Name of the object (table, type, etc.)
+        :return: Cached DDL string or None if not found
+        """
+        try:
+            query = '''SELECT cache_id, generated_ddl FROM ddl_cache
+                       WHERE client_id = ? AND LOWER(object_name) = LOWER(?)'''
+            cursor = execute_query(db_conn, query, (client_id, object_name))
+            row = cursor.fetchone()
+            if row:
+                # Update hit count and last_used timestamp
+                update_query = '''UPDATE ddl_cache
+                                  SET hit_count = hit_count + 1, last_used = CURRENT_TIMESTAMP
+                                  WHERE cache_id = ?'''
+                execute_query(db_conn, update_query, (row['cache_id'],))
+                db_conn.commit()
+                logger.info(f"DDL cache HIT for object '{object_name}' (client {client_id})")
+                return row['generated_ddl']
+            logger.info(f"DDL cache MISS for object '{object_name}' (client {client_id})")
+            return None
+        except Exception as e:
+            logger.warning(f"DDL cache lookup failed for '{object_name}': {e}")
+            return None
+
+    def _store_ddl_cache(self, db_conn, client_id, object_name, ddl, session_id=None,
+                         object_type='TABLE', export_dir=None):
+        """
+        Store generated DDL in cache (database) and optionally to file.
+
+        :param db_conn: Database connection
+        :param int client_id: Client ID
+        :param str object_name: Name of the object
+        :param str ddl: Generated DDL SQL
+        :param int session_id: Optional session ID to link the cache entry
+        :param str object_type: Type of object (TABLE, TYPE, etc.)
+        :param str export_dir: Optional directory to save DDL file for review
+        """
+        try:
+            ai_provider = self.ai_settings.get('ai_provider', 'unknown')
+            ai_model = self.ai_settings.get('ai_model', 'unknown')
+
+            # Insert or update cache entry (SQLite uses INSERT OR REPLACE)
+            if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+                query = '''INSERT OR REPLACE INTO ddl_cache
+                           (client_id, session_id, object_name, object_type, generated_ddl,
+                            ai_provider, ai_model, hit_count, created_at, last_used)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'''
+            else:
+                query = '''INSERT INTO ddl_cache
+                           (client_id, session_id, object_name, object_type, generated_ddl,
+                            ai_provider, ai_model, hit_count, created_at, last_used)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                           ON CONFLICT (client_id, object_name) DO UPDATE SET
+                           generated_ddl = EXCLUDED.generated_ddl,
+                           ai_provider = EXCLUDED.ai_provider,
+                           ai_model = EXCLUDED.ai_model,
+                           last_used = CURRENT_TIMESTAMP'''
+
+            execute_query(db_conn, query, (client_id, session_id, object_name, object_type,
+                                           ddl, ai_provider, ai_model))
+            db_conn.commit()
+            logger.info(f"DDL cached for object '{object_name}' (client {client_id})")
+
+            # Save to file for human review if export_dir provided
+            if export_dir:
+                self._save_ddl_to_file(export_dir, object_name, ddl, object_type, ai_provider, ai_model)
+
+        except Exception as e:
+            logger.warning(f"Failed to cache DDL for '{object_name}': {e}")
+
+    def _save_ddl_to_file(self, export_dir, object_name, ddl, object_type, ai_provider, ai_model):
+        """
+        Save AI-generated DDL to file for human review.
+        Creates ai_generated_ddl/ subdirectory and maintains a manifest.
+        """
+        try:
+            ddl_dir = os.path.join(export_dir, 'ai_generated_ddl')
+            os.makedirs(ddl_dir, exist_ok=True)
+
+            # Sanitize filename
+            safe_name = re.sub(r'[^\w\-.]', '_', object_name.lower())
+            ddl_file = os.path.join(ddl_dir, f"{safe_name}.sql")
+
+            # Write DDL file with header
+            with open(ddl_file, 'w', encoding='utf-8') as f:
+                f.write(f"-- AI-Generated DDL for: {object_name}\n")
+                f.write(f"-- Type: {object_type}\n")
+                f.write(f"-- Generated by: {ai_provider} / {ai_model}\n")
+                f.write(f"-- Generated at: {datetime.now().isoformat()}\n")
+                f.write("-- \n")
+                f.write("-- Review this file before applying to production!\n")
+                f.write("-- ============================================\n\n")
+                f.write(ddl)
+
+            logger.info(f"DDL saved to file: {ddl_file}")
+
+            # Update manifest
+            self._update_ddl_manifest(ddl_dir, object_name, object_type, f"{safe_name}.sql",
+                                      ai_provider, ai_model)
+
+        except Exception as e:
+            logger.warning(f"Failed to save DDL file for '{object_name}': {e}")
+
+    def _update_ddl_manifest(self, ddl_dir, object_name, object_type, filename, ai_provider, ai_model):
+        """
+        Update the _manifest.json file in the ai_generated_ddl directory.
+        """
+        manifest_path = os.path.join(ddl_dir, '_manifest.json')
+
+        try:
+            # Load existing manifest or create new
+            if os.path.exists(manifest_path):
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest = json.load(f)
+            else:
+                manifest = {
+                    'generated_at': datetime.now().isoformat(),
+                    'ai_provider': ai_provider,
+                    'ai_model': ai_model,
+                    'objects': []
+                }
+
+            # Check if object already in manifest
+            existing = next((o for o in manifest['objects'] if o['name'] == object_name), None)
+            if existing:
+                existing['file'] = filename
+                existing['updated_at'] = datetime.now().isoformat()
+            else:
+                manifest['objects'].append({
+                    'name': object_name,
+                    'type': object_type,
+                    'file': filename,
+                    'applied': False,
+                    'created_at': datetime.now().isoformat()
+                })
+
+            # Write updated manifest
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2)
+
+        except Exception as e:
+            logger.warning(f"Failed to update DDL manifest: {e}")
+
     def _make_ai_call(self, system_instruction, full_prompt):
         """
         Makes a generic call to the configured AI service.
@@ -693,9 +843,19 @@ Failed Query:
             logger.error("AI request timed out.")
             raise ValueError('AI service request timed out.')
         
-    def validate_sql(self, sql, pg_dsn, clean_slate=False, auto_create_ddl=True):
+    def validate_sql(self, sql, pg_dsn, clean_slate=False, auto_create_ddl=True,
+                      cache_context=None):
         """
         Validates SQL against a PostgreSQL database, with AI-powered retry logic.
+
+        :param str sql: SQL to validate
+        :param str pg_dsn: PostgreSQL connection string
+        :param bool clean_slate: Drop tables before validation
+        :param bool auto_create_ddl: Auto-create missing tables
+        :param dict cache_context: Optional context for DDL caching:
+            - db_conn: App database connection for cache
+            - client_id: Client ID for cache key
+            - export_dir: Directory to save DDL files for review
         """
         # Strip psql metacommands (like \set) that can't be executed via psycopg2
         sql = self._strip_psql_metacommands(sql)
@@ -729,15 +889,55 @@ Failed Query:
                         with conn.cursor() as cursor:
                             cursor.execute("SELECT tablename FROM pg_catalog.pg_tables WHERE schemaname = 'public'")
                             existing_tables = {row[0] for row in cursor.fetchall()}
-                            
+
                             missing_tables = needed_tables - existing_tables
-                            
+
                             if missing_tables:
-                                logger.info(f"Proactively found missing tables: {missing_tables}. Asking AI for consolidated DDL.")
-                                consolidated_ddl = self._get_consolidated_ddl_from_ai(sql, missing_tables)
-                                if consolidated_ddl:
-                                    cursor.execute(consolidated_ddl)
-                                    logger.info(f"Applied consolidated DDL for: {missing_tables}")
+                                # Check cache for each missing table
+                                tables_needing_ai = set()
+                                cached_ddl_parts = []
+
+                                if cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                                    for table_name in missing_tables:
+                                        cached = self._check_ddl_cache(
+                                            cache_context['db_conn'],
+                                            cache_context['client_id'],
+                                            table_name
+                                        )
+                                        if cached:
+                                            cached_ddl_parts.append(cached)
+                                        else:
+                                            tables_needing_ai.add(table_name)
+                                else:
+                                    tables_needing_ai = missing_tables
+
+                                # Apply cached DDL first
+                                if cached_ddl_parts:
+                                    for ddl in cached_ddl_parts:
+                                        try:
+                                            cursor.execute(ddl)
+                                        except psycopg2.Error:
+                                            pass  # Table may already exist
+                                    logger.info(f"Applied {len(cached_ddl_parts)} cached DDL(s)")
+
+                                # Ask AI only for truly missing tables
+                                if tables_needing_ai:
+                                    logger.info(f"Proactively found missing tables: {tables_needing_ai}. Asking AI for consolidated DDL.")
+                                    consolidated_ddl = self._get_consolidated_ddl_from_ai(sql, tables_needing_ai)
+                                    if consolidated_ddl:
+                                        cursor.execute(consolidated_ddl)
+                                        logger.info(f"Applied consolidated DDL for: {tables_needing_ai}")
+
+                                        # Cache each table's DDL for future use
+                                        if cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                                            for table_name in tables_needing_ai:
+                                                self._store_ddl_cache(
+                                                    cache_context['db_conn'],
+                                                    cache_context['client_id'],
+                                                    table_name,
+                                                    consolidated_ddl,
+                                                    export_dir=cache_context.get('export_dir')
+                                                )
 
             except psycopg2.Error as e:
                 logger.warning(f"Proactive DDL check failed: {e}. Falling back to reactive validation.")
@@ -768,9 +968,24 @@ Failed Query:
                 if missing_relation_match:
                     if auto_create_ddl:
                         object_name = missing_relation_match.group(1)
-                        logger.info(f"Attempt {attempt + 1}/{max_retries}: Missing relation '{object_name}'. Asking AI for DDL.")
-                        
-                        ddl_to_execute = self._get_ddl_from_ai(current_sql, error_message, object_name)
+
+                        # Check cache first
+                        ddl_to_execute = None
+                        from_cache = False
+                        if cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                            ddl_to_execute = self._check_ddl_cache(
+                                cache_context['db_conn'],
+                                cache_context['client_id'],
+                                object_name
+                            )
+                            if ddl_to_execute:
+                                from_cache = True
+                                logger.info(f"Attempt {attempt + 1}/{max_retries}: Using cached DDL for '{object_name}'.")
+
+                        # If not in cache, ask AI
+                        if not ddl_to_execute:
+                            logger.info(f"Attempt {attempt + 1}/{max_retries}: Missing relation '{object_name}'. Asking AI for DDL.")
+                            ddl_to_execute = self._get_ddl_from_ai(current_sql, error_message, object_name)
 
                         if not ddl_to_execute:
                             return False, f"Validation failed: AI could not generate DDL for '{object_name}'.", None
@@ -780,6 +995,17 @@ Failed Query:
                                     conn_ddl.set_session(autocommit=True)
                                     cursor_ddl.execute(ddl_to_execute)
                             logger.info(f"Applied DDL for '{object_name}'. Retrying.")
+
+                            # Cache the DDL if it came from AI (not from cache)
+                            if not from_cache and cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                                self._store_ddl_cache(
+                                    cache_context['db_conn'],
+                                    cache_context['client_id'],
+                                    object_name,
+                                    ddl_to_execute,
+                                    export_dir=cache_context.get('export_dir')
+                                )
+
                         except psycopg2.Error as ddl_error:
                             return False, f"Validation failed: AI-generated DDL was invalid. Error: {ddl_error}", None
                     else:
