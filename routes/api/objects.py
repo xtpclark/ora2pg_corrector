@@ -2,6 +2,10 @@
 
 from flask import Blueprint, request, jsonify
 from modules.db import get_db, execute_query
+from modules.responses import (
+    success_response, error_response, not_found_response,
+    server_error_response, db_error_response
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -17,7 +21,7 @@ def get_session_objects(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         # Build query with optional filters
@@ -62,7 +66,7 @@ def get_session_objects(session_id):
             summary[obj_type][row['status']] = row['count']
             summary[obj_type]['total'] += row['count']
 
-        return jsonify({
+        return success_response({
             'session_id': session_id,
             'total_objects': len(objects),
             'summary': summary,
@@ -71,7 +75,7 @@ def get_session_objects(session_id):
 
     except Exception as e:
         logger.error(f"Failed to get session objects: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to get session objects', str(e))
 
 
 @objects_bp.route('/session/<int:session_id>/objects/summary', methods=['GET'])
@@ -82,7 +86,7 @@ def get_session_objects_summary(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT object_type, status, COUNT(*) as count
@@ -112,7 +116,7 @@ def get_session_objects_summary(session_id):
             totals[status] = totals.get(status, 0) + count
             totals['total'] += count
 
-        return jsonify({
+        return success_response({
             'session_id': session_id,
             'totals': totals,
             'by_type': by_type
@@ -120,7 +124,7 @@ def get_session_objects_summary(session_id):
 
     except Exception as e:
         logger.error(f"Failed to get objects summary: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to get objects summary', str(e))
 
 
 @objects_bp.route('/object/<int:object_id>', methods=['GET'])
@@ -130,7 +134,7 @@ def get_object_detail(object_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT mo.*, mf.filename, ms.export_directory
@@ -143,13 +147,13 @@ def get_object_detail(object_id):
         obj = cursor.fetchone()
 
         if not obj:
-            return jsonify({'error': 'Object not found'}), 404
+            return not_found_response('Object')
 
-        return jsonify(dict(obj))
+        return success_response(dict(obj))
 
     except Exception as e:
         logger.error(f"Failed to get object detail: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to get object detail', str(e))
 
 
 @objects_bp.route('/client/<int:client_id>/objects/summary', methods=['GET'])
@@ -160,7 +164,7 @@ def get_client_objects_summary(client_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT mo.object_type, mo.status, COUNT(*) as count
@@ -190,7 +194,7 @@ def get_client_objects_summary(client_id):
             totals[status] = totals.get(status, 0) + count
             totals['total'] += count
 
-        return jsonify({
+        return success_response({
             'client_id': client_id,
             'totals': totals,
             'by_type': by_type
@@ -198,4 +202,4 @@ def get_client_objects_summary(client_id):
 
     except Exception as e:
         logger.error(f"Failed to get client objects summary: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to get client objects summary', str(e))

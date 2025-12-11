@@ -3,6 +3,10 @@
 from flask import Blueprint, request, jsonify, Response
 from modules.db import get_db, execute_query
 from modules.reports import MigrationReportGenerator
+from modules.responses import (
+    success_response, error_response, not_found_response,
+    validation_error_response, server_error_response, db_error_response
+)
 import psycopg2
 import os
 import re
@@ -24,7 +28,7 @@ def get_rollback_script(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT rollback_script, rollback_generated_at, export_directory
@@ -33,7 +37,7 @@ def get_rollback_script(session_id):
         session = cursor.fetchone()
 
         if not session:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         rollback_script = session['rollback_script']
 
@@ -46,12 +50,9 @@ def get_rollback_script(session_id):
                     rollback_script = f.read()
 
         if not rollback_script:
-            return jsonify({
-                'session_id': session_id,
-                'message': 'No rollback script available for this session'
-            }), 404
+            return not_found_response('Rollback script')
 
-        return jsonify({
+        return success_response({
             'session_id': session_id,
             'generated_at': session['rollback_generated_at'],
             'content': rollback_script
@@ -59,7 +60,7 @@ def get_rollback_script(session_id):
 
     except Exception as e:
         logger.error(f"Failed to get rollback script: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to get rollback script', str(e))
 
 
 @reports_bp.route('/session/<int:session_id>/rollback/preview', methods=['GET'])
@@ -69,7 +70,7 @@ def preview_rollback(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT rollback_script, rollback_generated_at, export_directory
@@ -78,7 +79,7 @@ def preview_rollback(session_id):
         session = cursor.fetchone()
 
         if not session:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         rollback_script = session['rollback_script']
 
@@ -91,10 +92,7 @@ def preview_rollback(session_id):
                     rollback_script = f.read()
 
         if not rollback_script:
-            return jsonify({
-                'session_id': session_id,
-                'message': 'No rollback script available for this session'
-            }), 404
+            return not_found_response('Rollback script')
 
         # Parse DROP statements from the script
         drop_pattern = r'DROP\s+(TABLE|VIEW|MATERIALIZED\s+VIEW|INDEX|FUNCTION|PROCEDURE|SEQUENCE|TYPE|TRIGGER)\s+IF\s+EXISTS\s+"?([^"\s;]+)"?\s*(?:ON\s+"?([^"\s;]+)"?)?\s*CASCADE'
@@ -118,7 +116,7 @@ def preview_rollback(session_id):
                 'drop_statement': drop_stmt
             })
 
-        return jsonify({
+        return success_response({
             'session_id': session_id,
             'generated_at': session['rollback_generated_at'],
             'objects_to_drop': objects_to_drop,
@@ -128,7 +126,7 @@ def preview_rollback(session_id):
 
     except Exception as e:
         logger.error(f"Failed to preview rollback: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to preview rollback', str(e))
 
 
 @reports_bp.route('/session/<int:session_id>/rollback/download', methods=['GET'])
@@ -138,7 +136,7 @@ def download_rollback_script(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         query = '''SELECT rollback_script, rollback_generated_at, export_directory
@@ -147,7 +145,7 @@ def download_rollback_script(session_id):
         session = cursor.fetchone()
 
         if not session:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         rollback_script = session['rollback_script']
 
@@ -160,7 +158,7 @@ def download_rollback_script(session_id):
                     rollback_script = f.read()
 
         if not rollback_script:
-            return jsonify({'error': 'No rollback script available'}), 404
+            return not_found_response('Rollback script')
 
         return Response(
             rollback_script,
@@ -172,7 +170,7 @@ def download_rollback_script(session_id):
 
     except Exception as e:
         logger.error(f"Failed to download rollback script: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to download rollback script', str(e))
 
 
 @reports_bp.route('/session/<int:session_id>/rollback/execute', methods=['POST'])
@@ -183,14 +181,11 @@ def execute_rollback(session_id):
     """
     data = request.get_json() or {}
     if not data.get('confirm'):
-        return jsonify({
-            'error': 'Confirmation required',
-            'message': 'Set confirm: true to execute rollback'
-        }), 400
+        return validation_error_response('Confirmation required. Set confirm: true to execute rollback')
 
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         # Get session and rollback script
@@ -202,7 +197,7 @@ def execute_rollback(session_id):
         session = cursor.fetchone()
 
         if not session:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         rollback_script = session['rollback_script']
 
@@ -215,7 +210,7 @@ def execute_rollback(session_id):
                     rollback_script = f.read()
 
         if not rollback_script:
-            return jsonify({'error': 'No rollback script available for this session'}), 404
+            return not_found_response('Rollback script')
 
         # Get PostgreSQL connection string from client config (key-value table)
         config_query = '''SELECT config_value FROM configs
@@ -224,7 +219,7 @@ def execute_rollback(session_id):
         config_row = cursor.fetchone()
 
         if not config_row or not config_row['config_value']:
-            return jsonify({'error': 'PostgreSQL validation DSN not configured'}), 400
+            return validation_error_response('PostgreSQL validation DSN not configured')
 
         pg_dsn = config_row['config_value']
 
@@ -253,7 +248,7 @@ def execute_rollback(session_id):
 
             logger.info(f"Rollback executed for session {session_id}: {len(dropped_objects)} objects dropped")
 
-            return jsonify({
+            return success_response({
                 'success': True,
                 'session_id': session_id,
                 'message': f'Rollback completed successfully. {len(dropped_objects)} objects dropped.',
@@ -265,15 +260,14 @@ def execute_rollback(session_id):
             if 'pg_conn' in locals():
                 pg_conn.rollback()
                 pg_conn.close()
-            return jsonify({
-                'success': False,
-                'error': f'PostgreSQL error: {str(pg_error)}',
-                'hint': 'Some objects may not exist or have dependencies'
-            }), 500
+            return server_error_response(
+                f'PostgreSQL error: {str(pg_error)}',
+                'Some objects may not exist or have dependencies'
+            )
 
     except Exception as e:
         logger.error(f"Failed to execute rollback: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to execute rollback', str(e))
 
 
 # =============================================================================
@@ -287,7 +281,7 @@ def get_migration_report(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         # Get client_id from session
@@ -296,7 +290,7 @@ def get_migration_report(session_id):
         session_row = cursor.fetchone()
 
         if not session_row:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         client_id = session_row['client_id']
 
@@ -305,7 +299,7 @@ def get_migration_report(session_id):
         generator.gather_data()
         content = generator.generate_asciidoc()
 
-        return jsonify({
+        return success_response({
             'session_id': session_id,
             'format': 'asciidoc',
             'content': content
@@ -313,7 +307,7 @@ def get_migration_report(session_id):
 
     except Exception as e:
         logger.error(f"Failed to generate report: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to generate report', str(e))
 
 
 @reports_bp.route('/session/<int:session_id>/report/download', methods=['GET'])
@@ -323,7 +317,7 @@ def download_migration_report(session_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         # Get client_id from session
@@ -332,7 +326,7 @@ def download_migration_report(session_id):
         session_row = cursor.fetchone()
 
         if not session_row:
-            return jsonify({'error': 'Session not found'}), 404
+            return not_found_response('Session')
 
         client_id = session_row['client_id']
 
@@ -351,7 +345,7 @@ def download_migration_report(session_id):
 
     except Exception as e:
         logger.error(f"Failed to download report: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to download report', str(e))
 
 
 @reports_bp.route('/client/<int:client_id>/migration_report', methods=['GET'])
@@ -361,7 +355,7 @@ def get_client_migration_report(client_id):
     """
     conn = get_db()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return db_error_response()
 
     try:
         # Generate report for latest migration
@@ -369,10 +363,7 @@ def get_client_migration_report(client_id):
         generator.gather_data()
 
         if not generator.data.get('sessions'):
-            return jsonify({
-                'client_id': client_id,
-                'message': 'No migration sessions found for this client'
-            }), 404
+            return not_found_response('Migration sessions')
 
         content = generator.generate_asciidoc()
 
@@ -385,7 +376,7 @@ def get_client_migration_report(client_id):
             except Exception as e:
                 logger.warning(f"Failed to save report to file: {e}")
 
-        return jsonify({
+        return success_response({
             'client_id': client_id,
             'session_id': generator.session_id,
             'format': 'asciidoc',
@@ -395,4 +386,4 @@ def get_client_migration_report(client_id):
 
     except Exception as e:
         logger.error(f"Failed to generate client report: {e}")
-        return jsonify({'error': str(e)}), 500
+        return server_error_response('Failed to generate client report', str(e))

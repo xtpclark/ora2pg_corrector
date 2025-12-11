@@ -433,9 +433,250 @@ Verify in Settings:
 
 The theme preference is stored in browser localStorage. Clear browser cache if experiencing issues.
 
+== Recent Enhancements
+
+=== DDL Caching
+
+AI-generated DDL is cached to reduce API calls and provide an audit trail.
+
+==== How It Works
+
+When validation encounters a missing table, the system:
+
+. Checks the database cache for existing DDL
+. If found, reuses cached DDL (increments hit count)
+. If not found, generates DDL via AI and stores it in both:
+   * Database (for automatic reuse)
+   * File system (for human review)
+
+==== File Structure
+
+[source]
+----
+/app/project_data/{client_id}/{session_id}/
+├── output_table.sql           # Ora2Pg export
+├── output_view.sql            # Ora2Pg export
+└── ai_generated_ddl/          # AI-generated DDL folder
+    ├── employees.sql          # CREATE TABLE employees...
+    ├── departments.sql        # CREATE TABLE departments...
+    └── _manifest.json         # Index with metadata
+----
+
+==== API Endpoints
+
+[cols="1,2,3", options="header"]
+|===
+|Method |Endpoint |Description
+
+|GET |`/api/client/{id}/ddl_cache/stats` |View cache statistics and hit counts
+|DELETE |`/api/client/{id}/ddl_cache` |Clear all cached DDL for a client
+|GET |`/api/session/{id}/generated_ddl` |List AI-generated DDL files
+|GET |`/api/session/{id}/generated_ddl/{name}` |Get specific DDL file content
+|===
+
+==== Example: Cache Stats Response
+
+[source,json]
+----
+{
+  "client_id": 1,
+  "total_entries": 3,
+  "total_hits": 12,
+  "entries": [
+    {
+      "object_name": "employees",
+      "object_type": "TABLE",
+      "hit_count": 8,
+      "ai_provider": "Anthropic Claude",
+      "ai_model": "claude-sonnet-4-20250514",
+      "created_at": "2025-12-11 04:17:06"
+    }
+  ]
+}
+----
+
+=== Migration Reports
+
+Generate AsciiDoc reports documenting migration results for stakeholders.
+
+==== Report Contents
+
+* **Executive Summary**: Status, success rate, duration
+* **Object Summary**: Counts by type (TABLE, VIEW, PROCEDURE) with success rates
+* **File Details**: Each file's status, size, and any errors
+* **Error Details**: Full error messages with context
+* **Metadata**: AI provider, model, Ora2Pg version, timestamps
+
+==== API Endpoints
+
+[cols="1,2,3", options="header"]
+|===
+|Method |Endpoint |Description
+
+|GET |`/api/session/{id}/report` |Generate AsciiDoc report for session
+|GET |`/api/session/{id}/report/download` |Download as `.adoc` file
+|GET |`/api/client/{id}/migration_report` |Report for client's latest migration
+|===
+
+==== Example: Report Structure
+
+[source,asciidoc]
+----
+= Migration Report: HR_Migration_Test
+:toc:
+
+== Executive Summary
+[cols="1,2"]
+|===
+|Status |Completed
+|Success Rate |95% (19/20 files)
+|Duration |2 minutes 34 seconds
+|===
+
+== Object Summary
+[cols="1,1,1,1"]
+|===
+|Type |Total |Success |Failed
+
+|TABLE |15 |15 |0
+|VIEW |3 |2 |1
+|PROCEDURE |2 |2 |0
+|===
+----
+
+=== Rollback Scripts
+
+Automatic generation of DROP statements for safe migration reversal.
+
+==== How It Works
+
+After successful validation, the system:
+
+. Parses all validated DDL to extract object names and types
+. Sorts objects in reverse dependency order (safe drop order)
+. Generates a complete rollback script with:
+   * Header with session metadata and warnings
+   * BEGIN/COMMIT transaction wrapper
+   * DROP IF EXISTS ... CASCADE for each object
+
+==== Drop Order (Reverse Dependency)
+
+Objects are dropped in this order to avoid dependency errors:
+
+. TRIGGER
+. PROCEDURE
+. FUNCTION
+. MATERIALIZED VIEW
+. VIEW
+. INDEX
+. TABLE
+. SEQUENCE
+. TYPE
+
+==== API Endpoints
+
+[cols="1,2,3", options="header"]
+|===
+|Method |Endpoint |Description
+
+|GET |`/api/session/{id}/rollback` |Get rollback script content
+|GET |`/api/session/{id}/rollback/preview` |Preview objects that would be dropped
+|GET |`/api/session/{id}/rollback/download` |Download as `.sql` file
+|POST |`/api/session/{id}/rollback/execute` |Execute rollback (requires `confirm: true`)
+|===
+
+==== Example: Rollback Preview Response
+
+[source,json]
+----
+{
+  "session_id": 25,
+  "total_objects": 21,
+  "warning": "This script will DROP 21 objects. Review carefully before executing.",
+  "objects_to_drop": [
+    {"type": "PROCEDURE", "name": "add_job_history", "drop_statement": "DROP PROCEDURE IF EXISTS..."},
+    {"type": "VIEW", "name": "emp_details_view", "drop_statement": "DROP VIEW IF EXISTS..."},
+    {"type": "TABLE", "name": "employees", "drop_statement": "DROP TABLE IF EXISTS..."}
+  ]
+}
+----
+
+==== Example: Rollback Script
+
+[source,sql]
+----
+-- =============================================================================
+-- ROLLBACK SCRIPT
+-- Session ID: 25 | Client: HR_Migration_Test
+-- Generated: 2025-12-11 06:59:06
+-- WARNING: This script will DROP all objects created by this migration.
+-- =============================================================================
+
+BEGIN;
+
+-- 1. Procedures
+DROP PROCEDURE IF EXISTS "add_job_history" CASCADE;
+
+-- 2. Views
+DROP VIEW IF EXISTS "emp_details_view" CASCADE;
+
+-- 3. Tables
+DROP TABLE IF EXISTS "employees" CASCADE;
+DROP TABLE IF EXISTS "departments" CASCADE;
+
+COMMIT;
+----
+
+=== Per-Object Tracking
+
+Track validation status for individual database objects within a migration session.
+
+==== Object States
+
+[cols="1,3", options="header"]
+|===
+|Status |Description
+
+|`pending` |Object discovered, not yet validated
+|`validated` |Successfully validated against PostgreSQL
+|`failed` |Validation failed (error message stored)
+|===
+
+==== API Endpoints
+
+[cols="1,2,3", options="header"]
+|===
+|Method |Endpoint |Description
+
+|GET |`/api/session/{id}/objects` |List all objects with optional filters
+|GET |`/api/session/{id}/objects/summary` |Lightweight summary counts
+|GET |`/api/object/{id}` |Get detailed info for specific object
+|GET |`/api/client/{id}/objects/summary` |Aggregate summary across all sessions
+|===
+
+==== Query Parameters
+
+* `?type=TABLE` - Filter by object type
+* `?status=validated` - Filter by status
+
+==== Example: Objects Summary Response
+
+[source,json]
+----
+{
+  "session_id": 25,
+  "totals": {"total": 21, "validated": 19, "failed": 2, "pending": 0},
+  "by_type": {
+    "TABLE": {"total": 7, "validated": 7, "failed": 0},
+    "VIEW": {"total": 1, "validated": 0, "failed": 1},
+    "INDEX": {"total": 11, "validated": 10, "failed": 1},
+    "PROCEDURE": {"total": 2, "validated": 2, "failed": 0}
+  }
+}
+----
+
 == Future Enhancements
 
-* **DDL Caching**: Cache AI-generated DDL to reduce API calls for common tables
 * **Batch Processing**: Process entire directories of SQL files with summary reports
 * **Migration Progress Tracking**: Visual progress indicators for long-running operations
 * **Export Formats**: Support for additional output formats beyond SQL

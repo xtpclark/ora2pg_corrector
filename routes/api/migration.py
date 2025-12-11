@@ -6,6 +6,10 @@ from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
 from modules.orchestrator import MigrationOrchestrator
 from modules.constants import OUTPUT_DIR
+from modules.responses import (
+    success_response, error_response, validation_error_response,
+    server_error_response
+)
 from cryptography.fernet import Fernet
 import threading
 import logging
@@ -53,10 +57,10 @@ def start_migration(client_id):
     if client_id in _running_migrations:
         existing = _running_migrations[client_id]
         if existing.results.get('status') == 'running':
-            return jsonify({
-                'error': 'A migration is already running for this client',
-                'status': existing.get_status()
-            }), 409
+            return error_response(
+                'A migration is already running for this client',
+                status_code=409
+            )
         # Clear previous completed migration to start fresh
         del _running_migrations[client_id]
 
@@ -81,7 +85,7 @@ def start_migration(client_id):
 
     log_audit(client_id, 'one_click_migration', 'Migration started')
 
-    return jsonify({
+    return success_response({
         'message': 'Migration started',
         'status': 'running',
         'poll_url': f'/api/client/{client_id}/migration_status'
@@ -108,7 +112,7 @@ def get_migration_status(client_id):
     # First check in-memory for running migration
     if client_id in _running_migrations:
         orchestrator = _running_migrations[client_id]
-        return jsonify(orchestrator.get_status())
+        return success_response(orchestrator.get_status())
 
     # Fall back to database for completed migrations
     conn = get_db()
@@ -124,7 +128,7 @@ def get_migration_status(client_id):
     main_session = cursor.fetchone()
 
     if not main_session:
-        return jsonify({
+        return success_response({
             'status': 'no_migration',
             'message': 'No migration found for this client'
         })
@@ -153,7 +157,7 @@ def get_migration_status(client_id):
     failed = sum(1 for f in files if f['status'] == 'failed')
     errors = [f"{f['filename']}: {f['error_message']}" for f in files if f['error_message']]
 
-    return jsonify({
+    return success_response({
         'status': workflow_status,
         'phase': None,
         'total_objects': len(files),
@@ -197,17 +201,17 @@ def run_migration_sync(client_id):
         log_audit(client_id, 'one_click_migration_sync',
                  f"Completed: {result['successful']} successful, {result['failed']} failed")
 
-        return jsonify(result)
+        return success_response(result)
     except Exception as e:
         logger.error(f"Sync migration failed for client {client_id}: {e}", exc_info=True)
-        return jsonify({'error': str(e), 'status': 'failed'}), 500
+        return server_error_response('Migration failed', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/test_ora2pg_connection', methods=['POST'])
 def test_ora2pg_connection(client_id):
     config = request.get_json(force=True)
     if not config:
-        return jsonify({'status': 'error', 'message': 'No configuration data provided for test.'}), 400
+        return validation_error_response('No configuration data provided for test')
     try:
         fernet = Fernet(ENCRYPTION_KEY)
         for key in ['oracle_pwd']:
@@ -223,15 +227,15 @@ def test_ora2pg_connection(client_id):
 
         if error_output:
             log_audit(client_id, 'test_oracle_connection', f'Failed: {error_output}')
-            return jsonify({'status': 'error', 'message': f'Connection failed: {error_output}'}), 400
+            return error_response(f'Connection failed: {error_output}')
 
         version_string = version_output.get('sql_output', '').strip()
         log_audit(client_id, 'test_oracle_connection', f'Success: {version_string}')
-        return jsonify({'status': 'success', 'message': f'Connection successful! {version_string}'})
+        return success_response({'status': 'success', 'message': f'Connection successful! {version_string}'})
 
     except Exception as e:
         logger.error(f"Failed to test Oracle connection for client {client_id}: {e}", exc_info=True)
-        return jsonify({'status': 'error', 'message': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to test Oracle connection', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/get_object_list', methods=['GET'])
@@ -245,14 +249,14 @@ def get_object_list(client_id):
 
         if error:
             log_audit(client_id, 'get_object_list', f'Failed: {error}')
-            return jsonify({'error': error}), 500
+            return server_error_response('Failed to get object list', error)
 
         log_audit(client_id, 'get_object_list', f'Successfully fetched {len(object_list)} objects.')
-        return jsonify(object_list)
+        return success_response(object_list)
 
     except Exception as e:
         logger.error(f"Failed to get object list for client {client_id}: {e}", exc_info=True)
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to get object list', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/get_oracle_ddl', methods=['POST'])
@@ -262,7 +266,7 @@ def get_oracle_ddl(client_id):
     object_type = data.get('object_type', 'TABLE')
 
     if not object_name:
-        return jsonify({'error': 'Object name is required'}), 400
+        return validation_error_response('Object name is required')
 
     try:
         conn = get_db()
@@ -272,14 +276,14 @@ def get_oracle_ddl(client_id):
         ddl, error = corrector._get_single_object_ddl(conn, config, object_name, object_type)
 
         if error:
-            return jsonify({'error': error}), 500
+            return server_error_response('Failed to get Oracle DDL', error)
 
         log_audit(client_id, 'get_oracle_ddl', f'Fetched DDL for {object_type} {object_name}.')
-        return jsonify({'ddl': ddl})
+        return success_response({'ddl': ddl})
 
     except Exception as e:
         logger.error(f"Failed to get Oracle DDL for {object_name}: {e}", exc_info=True)
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to get Oracle DDL', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/get_bulk_oracle_ddl', methods=['POST'])
@@ -288,7 +292,7 @@ def get_bulk_oracle_ddl(client_id):
     objects = data.get('objects', [])
 
     if not objects:
-        return jsonify({'error': 'Object list is required'}), 400
+        return validation_error_response('Object list is required')
 
     try:
         conn = get_db()
@@ -310,11 +314,11 @@ def get_bulk_oracle_ddl(client_id):
 
         successful = sum(1 for r in results if r['ddl'] and not r['error'])
         log_audit(client_id, 'get_bulk_oracle_ddl', f'Fetched DDL for {successful}/{len(results)} objects.')
-        return jsonify({'results': results})
+        return success_response({'results': results})
 
     except Exception as e:
         logger.error(f"Failed to get bulk Oracle DDL: {e}", exc_info=True)
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to get bulk Oracle DDL', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/generate_report', methods=['POST'])
@@ -329,14 +333,14 @@ def generate_ora2pg_report(client_id):
 
         if error:
             log_audit(client_id, 'generate_report', f'Failed: {error}')
-            return jsonify({'error': error}), 500
+            return server_error_response('Failed to generate report', error)
 
         log_audit(client_id, 'generate_report', 'Migration report generated successfully.')
-        return jsonify(result)
+        return success_response(result)
 
     except Exception as e:
         logger.error(f"Failed to generate Ora2Pg report for client {client_id}: {e}", exc_info=True)
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to generate Ora2Pg report', str(e))
 
 
 @migration_bp.route('/client/<int:client_id>/run_ora2pg', methods=['POST'])
@@ -357,7 +361,7 @@ def run_ora2pg(client_id):
 
         if error:
             log_audit(client_id, 'run_ora2pg', f'Export failed: {error}')
-            return jsonify({'error': error}), 500
+            return server_error_response('Export failed', error)
 
         session_id = result.get('session_id')
         files = result.get('files', [])
@@ -372,8 +376,8 @@ def run_ora2pg(client_id):
         if 'sql_output' in result:
             result_data['sql_output'] = result['sql_output']
 
-        return jsonify(result_data)
+        return success_response(result_data)
 
     except Exception as e:
         logger.error(f"Failed to run Ora2Pg for client {client_id}: {e}", exc_info=True)
-        return jsonify({'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return server_error_response('Failed to run Ora2Pg export', str(e))
