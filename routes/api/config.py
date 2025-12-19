@@ -10,6 +10,7 @@ from modules.responses import (
 from cryptography.fernet import Fernet
 import os
 import logging
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,10 @@ def manage_config(client_id):
                     if value is None:
                         continue
                     if key in sensitive_keys and value:
+                        # Skip if value is already encrypted (starts with Fernet prefix)
+                        # or if it's a placeholder like "********"
+                        if value.startswith('gAAAAA') or value == '********' or not value.strip():
+                            continue  # Don't overwrite with encrypted or placeholder value
                         value = fernet.encrypt(value.encode()).decode()
 
                     execute_query(
@@ -103,3 +108,64 @@ def manage_config(client_id):
         except Exception as e:
             logger.error(f"Error saving config for client {client_id}: {e}")
             return server_error_response('Failed to save configuration', str(e))
+
+
+@config_bp.route('/client/<int:client_id>/ai_models', methods=['GET'])
+def get_ai_models(client_id):
+    """Fetch available AI models from the provider's API using client's API key."""
+    conn = get_db()
+    if not conn:
+        return db_error_response()
+
+    try:
+        # Get client's AI settings
+        config = get_client_config(client_id)
+        ai_provider = config.get('ai_provider', '')
+        ai_endpoint = config.get('ai_endpoint', '')
+        ai_api_key = config.get('ai_api_key', '')
+
+        if not ai_api_key:
+            return error_response('AI API key not configured for this client')
+
+        # Currently only supporting Anthropic
+        if 'anthropic' in ai_provider.lower() or 'claude' in ai_provider.lower():
+            # Build the models endpoint URL
+            base_url = ai_endpoint.rstrip('/')
+            if base_url.endswith('/v1'):
+                models_url = f"{base_url}/models"
+            else:
+                models_url = f"{base_url}/v1/models"
+
+            headers = {
+                'x-api-key': ai_api_key,
+                'anthropic-version': '2023-06-01'
+            }
+
+            response = requests.get(models_url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            data = response.json()
+            models = []
+            for model in data.get('data', []):
+                models.append({
+                    'id': model.get('id'),
+                    'display_name': model.get('display_name'),
+                    'created_at': model.get('created_at')
+                })
+
+            return success_response({
+                'provider': ai_provider,
+                'models': models
+            })
+        else:
+            return error_response(f'Model listing not supported for provider: {ai_provider}')
+
+    except requests.exceptions.HTTPError as e:
+        logger.error(f"HTTP error fetching AI models: {e}")
+        return error_response(f'Failed to fetch models: {e.response.status_code} {e.response.reason}')
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Request error fetching AI models: {e}")
+        return error_response(f'Failed to connect to AI provider: {str(e)}')
+    except Exception as e:
+        logger.error(f"Error fetching AI models for client {client_id}: {e}")
+        return server_error_response('Failed to fetch AI models', str(e))

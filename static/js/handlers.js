@@ -1,6 +1,6 @@
 import { state, editors, dom } from './state.js';
-import { apiFetch } from './api.js';
-import { showToast, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectTypeTree, renderObjectList, renderSessionHistory, populateTypeDropdown, renderActiveConfig } from './ui.js';
+import { apiFetch, getMigrationHistory, getSessionDetails, getAllMigrationHistory } from './api.js';
+import { showToast, showConfirmModal, showInputModal, toggleButtonLoading, renderClients, switchTab, renderSettingsForms, renderReportTable, renderFileBrowser, renderObjectTypeTree, renderObjectList, renderSessionHistory, populateTypeDropdown, renderActiveConfig, renderMigrationHistory, showSessionDetailsModal, renderGlobalMigrationHistory } from './ui.js';
 
 /**
  * Sends an audit log event to the backend for the current client.
@@ -18,6 +18,191 @@ async function log_audit(clientId, action, details) {
         });
     } catch (error) {
         console.error("Failed to log audit event:", error);
+    }
+}
+
+// Running migrations polling interval
+let runningMigrationsInterval = null;
+
+/**
+ * Fetches and renders the list of running migrations across all clients.
+ * @async
+ */
+async function fetchAndRenderRunningMigrations() {
+    const listEl = document.getElementById('running-migrations-list');
+    const badgeEl = document.getElementById('running-count-badge');
+
+    if (!listEl) return; // Element not in DOM (probably on a different page)
+
+    try {
+        const data = await apiFetch('/api/running_migrations');
+        const migrations = data.migrations || [];
+        const count = data.running_count || 0;
+
+        // Update badge
+        if (badgeEl) {
+            if (count > 0) {
+                badgeEl.textContent = count;
+                badgeEl.classList.remove('hidden');
+            } else {
+                badgeEl.classList.add('hidden');
+            }
+        }
+
+        // Render migrations
+        if (migrations.length === 0) {
+            listEl.innerHTML = `
+                <p class="text-gray-500 dark:text-gray-400 text-sm text-center py-4">
+                    <i class="fas fa-check-circle mr-2 text-green-500"></i>No migrations currently running
+                </p>
+            `;
+            return;
+        }
+
+        listEl.innerHTML = migrations.map(m => {
+            const percent = m.total_count > 0 ? Math.round((m.processed_count / m.total_count) * 100) : 0;
+            const statusIcon = getStatusIcon(m.workflow_status);
+            const statusColor = getStatusColor(m.workflow_status);
+
+            return `
+                <div class="border border-gray-200 dark:border-gray-700 rounded-lg p-4 mb-3 last:mb-0">
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="flex items-center">
+                            <i class="${statusIcon} ${statusColor} mr-2"></i>
+                            <span class="font-medium text-gray-900 dark:text-white">${escapeHtml(m.client_name)}</span>
+                            <span class="ml-2 text-xs bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 px-2 py-0.5 rounded">
+                                ${m.export_type || 'DDL'}
+                            </span>
+                        </div>
+                        <span class="text-sm text-gray-500 dark:text-gray-400">
+                            Session #${m.session_id}
+                        </span>
+                    </div>
+
+                    <div class="mb-2">
+                        <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mb-1">
+                            <span>${m.current_phase || m.workflow_status}</span>
+                            <span>${m.processed_count} / ${m.total_count} (${percent}%)</span>
+                        </div>
+                        <div class="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                            <div class="bg-purple-500 h-2 rounded-full transition-all duration-300" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+
+                    <div class="text-xs text-gray-500 dark:text-gray-400">
+                        <i class="fas fa-file-code mr-1"></i>${escapeHtml(m.current_file || 'Initializing...')}
+                    </div>
+
+                    <div class="mt-2 flex justify-between items-center">
+                        <span class="text-xs text-gray-400 dark:text-gray-500">
+                            Started: ${formatDateTime(m.started_at)}
+                        </span>
+                        <button onclick="window.selectClientById(${m.client_id})"
+                                class="text-xs text-purple-500 hover:text-purple-600 dark:text-purple-400 dark:hover:text-purple-300">
+                            <i class="fas fa-external-link-alt mr-1"></i>View Client
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+    } catch (error) {
+        console.error('Failed to fetch running migrations:', error);
+        listEl.innerHTML = `
+            <p class="text-red-500 dark:text-red-400 text-sm text-center py-4">
+                <i class="fas fa-exclamation-triangle mr-2"></i>Failed to fetch running migrations
+            </p>
+        `;
+    }
+}
+
+/**
+ * Returns appropriate icon for migration status
+ */
+function getStatusIcon(status) {
+    switch (status) {
+        case 'exporting': return 'fas fa-download';
+        case 'validating': return 'fas fa-check-double';
+        case 'converting': return 'fas fa-exchange-alt';
+        case 'discovering': return 'fas fa-search';
+        default: return 'fas fa-spinner fa-spin';
+    }
+}
+
+/**
+ * Returns appropriate color class for migration status
+ */
+function getStatusColor(status) {
+    switch (status) {
+        case 'exporting': return 'text-blue-500';
+        case 'validating': return 'text-green-500';
+        case 'converting': return 'text-yellow-500';
+        case 'discovering': return 'text-purple-500';
+        default: return 'text-gray-500';
+    }
+}
+
+/**
+ * Escapes HTML characters to prevent XSS
+ */
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+/**
+ * Formats a datetime string for display
+ */
+function formatDateTime(dateStr) {
+    if (!dateStr) return 'Unknown';
+    try {
+        const date = new Date(dateStr);
+        return date.toLocaleString();
+    } catch {
+        return dateStr;
+    }
+}
+
+/**
+ * Starts polling for running migrations (every 3 seconds)
+ */
+function startRunningMigrationsPolling() {
+    // Initial fetch
+    fetchAndRenderRunningMigrations();
+
+    // Clear any existing interval
+    if (runningMigrationsInterval) {
+        clearInterval(runningMigrationsInterval);
+    }
+
+    // Poll every 3 seconds
+    runningMigrationsInterval = setInterval(fetchAndRenderRunningMigrations, 3000);
+}
+
+/**
+ * Stops polling for running migrations
+ */
+function stopRunningMigrationsPolling() {
+    if (runningMigrationsInterval) {
+        clearInterval(runningMigrationsInterval);
+        runningMigrationsInterval = null;
+    }
+}
+
+/**
+ * Selects a client by ID and switches to the migration tab.
+ * Used by the running migrations dashboard "View Client" button.
+ * @param {number} clientId - The ID of the client to select.
+ */
+function selectClientById(clientId) {
+    // Update the dropdown
+    const selector = document.getElementById('client-selector');
+    if (selector) {
+        selector.value = clientId;
+        // Trigger the change event to load the client
+        selector.dispatchEvent(new Event('change'));
     }
 }
 
@@ -145,6 +330,70 @@ async function selectSession(sessionId) {
 }
 
 /**
+ * Fetches and renders the migration history for the current client.
+ * @async
+ */
+async function loadMigrationHistory() {
+    if (!state.currentClientId) return;
+
+    const migrationHistorySection = document.getElementById('migration-history-section');
+
+    try {
+        const response = await getMigrationHistory(state.currentClientId, 5);
+        const migrations = response?.migrations || [];
+
+        if (migrations.length > 0) {
+            migrationHistorySection?.classList.remove('hidden');
+            renderMigrationHistory(migrations, handleMigrationHistoryClick);
+        } else {
+            migrationHistorySection?.classList.add('hidden');
+        }
+    } catch (error) {
+        console.error('Failed to load migration history:', error);
+        migrationHistorySection?.classList.add('hidden');
+    }
+}
+
+/**
+ * Handles click on a migration history row to show session details.
+ * @async
+ * @param {number} sessionId - The session ID to show details for.
+ */
+async function handleMigrationHistoryClick(sessionId) {
+    if (!sessionId) return;
+
+    try {
+        showToast('Loading session details...');
+        const details = await getSessionDetails(sessionId);
+        showSessionDetailsModal(details.session, details.files);
+    } catch (error) {
+        showToast('Failed to load session details: ' + error.message, true);
+    }
+}
+
+/**
+ * Fetches and renders the global migration history (all clients) for the welcome page.
+ * @async
+ */
+async function loadGlobalMigrationHistory() {
+    try {
+        const response = await getAllMigrationHistory(20);
+        const migrations = response?.migrations || [];
+        renderGlobalMigrationHistory(migrations, handleMigrationHistoryClick);
+    } catch (error) {
+        console.error('Failed to load global migration history:', error);
+        const container = document.getElementById('global-migration-history-container');
+        if (container) {
+            container.innerHTML = `
+                <div class="text-gray-500 dark:text-gray-400 text-center py-8">
+                    <i class="fas fa-exclamation-circle text-4xl mb-3 opacity-50"></i>
+                    <p>Failed to load migration history.</p>
+                </div>`;
+        }
+    }
+}
+
+/**
  * Selects a client, making it active. Fetches and renders all associated data.
  * @async
  * @export
@@ -177,12 +426,14 @@ export async function selectClient(clientId) {
     const fileBrowserContainer = document.getElementById('file-browser-container');
     const objectSelectorContainer = document.getElementById('object-selector-container');
     const sessionHistoryContainer = document.getElementById('session-history-container');
+    const migrationHistorySection = document.getElementById('migration-history-section');
     const exportReportBtn = document.getElementById('export-report-btn');
-    
+
     if (reportContainer) reportContainer.classList.add('hidden');
     if (fileBrowserContainer) fileBrowserContainer.classList.add('hidden');
     if (objectSelectorContainer) objectSelectorContainer.classList.add('hidden');
     if (sessionHistoryContainer) sessionHistoryContainer.classList.add('hidden');
+    if (migrationHistorySection) migrationHistorySection.classList.add('hidden');
     if (exportReportBtn) exportReportBtn.disabled = true;
 
     state.currentReportData = null;
@@ -203,6 +454,9 @@ export async function selectClient(clientId) {
         
         state.sessions = sessions;
         renderSessionHistory();
+
+        // Load migration history (token/cost tracking)
+        loadMigrationHistory();
 
         // Load migration tools data
         loadDDLCacheStats();
@@ -683,9 +937,102 @@ export async function handleTestPgConnection() {
             showToast(data.message, data.status !== 'success');
         }
     } catch(error) {
-        showToast(error.message, true);
+        // Check if database is missing and offer to create it
+        if (error.database_missing && error.database_name) {
+            const createDb = await showConfirmModal({
+                title: 'Database Not Found',
+                message: `Database "${error.database_name}" does not exist.\n\nWould you like to create it?`,
+                confirmText: 'Create Database',
+                confirmClass: 'bg-green-600 hover:bg-green-700'
+            });
+            if (createDb) {
+                await handleCreatePgDatabase(pgDsn, error.database_name);
+            }
+        } else {
+            showToast(error.message, true);
+        }
     } finally {
         toggleButtonLoading(button, false);
+    }
+}
+
+/**
+ * Creates a PostgreSQL database.
+ * @async
+ * @param {string} pgDsn - The PostgreSQL DSN
+ * @param {string} dbName - The database name to create
+ */
+async function handleCreatePgDatabase(pgDsn, dbName) {
+    try {
+        showToast(`Creating database "${dbName}"...`);
+        const result = await apiFetch('/api/create_pg_database', {
+            method: 'POST',
+            body: JSON.stringify({ pg_dsn: pgDsn })
+        });
+        showToast(result.message);
+
+        // Re-test connection after creating
+        const testResult = await apiFetch('/api/test_pg_connection', {
+            method: 'POST',
+            body: JSON.stringify({ pg_dsn: pgDsn })
+        });
+        if (testResult.status === 'success') {
+            showToast(testResult.message);
+        }
+    } catch (error) {
+        showToast(`Failed to create database: ${error.message}`, true);
+    }
+}
+
+/**
+ * Fetches available AI models from the provider's API and populates the dropdown.
+ * @async
+ * @export
+ */
+export async function handleRefreshAIModels() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('refresh-models-btn');
+    const modelSelect = document.getElementById('ai_model');
+    const currentValue = modelSelect?.value;
+
+    if (button) {
+        button.disabled = true;
+        button.classList.add('opacity-50');
+    }
+
+    try {
+        showToast('Fetching available models...');
+        const response = await apiFetch(`/api/client/${state.currentClientId}/ai_models`);
+
+        if (response.models && response.models.length > 0) {
+            // Clear existing options and add new ones
+            modelSelect.innerHTML = '<option value="">Select a model...</option>';
+
+            response.models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model.id;
+                option.textContent = model.display_name || model.id;
+                if (model.id === currentValue) {
+                    option.selected = true;
+                }
+                modelSelect.appendChild(option);
+            });
+
+            showToast(`Found ${response.models.length} available models`);
+        } else {
+            showToast('No models found from the API', true);
+        }
+    } catch (error) {
+        showToast(error.message || 'Failed to fetch AI models', true);
+    } finally {
+        if (button) {
+            button.disabled = false;
+            button.classList.remove('opacity-50');
+        }
     }
 }
 
@@ -735,7 +1082,7 @@ export async function handleTestOra2PgConnection() {
 export async function handleSaveSettings(e) {
     e.preventDefault();
     if (!state.currentClientId) return;
-    
+
     const formData = new FormData(dom.settingsForm);
     const config = {};
     for (let [key, value] of formData.entries()) {
@@ -746,6 +1093,13 @@ export async function handleSaveSettings(e) {
             config[key] = value;
         }
     }
+
+    // Handle unchecked checkboxes (not included in FormData)
+    dom.settingsForm.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+        if (!config.hasOwnProperty(checkbox.name)) {
+            config[checkbox.name] = checkbox.checked;
+        }
+    });
     
     try {
         await apiFetch(`/api/client/${state.currentClientId}/config`, {
@@ -773,28 +1127,33 @@ export async function handleSaveSettings(e) {
  * @export
  */
 export async function handleAddClient() {
-    const clientName = prompt('Enter the new client name:');
-    if (clientName && clientName.trim()) {
+    const clientName = await showInputModal({
+        title: 'New Client',
+        message: 'Enter a name for the new migration client.',
+        placeholder: 'e.g., HR_Production_Migration'
+    });
+
+    if (clientName) {
         try {
             const newClient = await apiFetch('/api/clients', {
                 method: 'POST',
-                body: JSON.stringify({ client_name: clientName.trim() })
+                body: JSON.stringify({ client_name: clientName })
             });
-            
+
             // Add to state and sort
             state.clients.push(newClient);
             state.clients.sort((a, b) => a.client_name.localeCompare(b.client_name));
-            
+
             // Set current client BEFORE rendering
             state.currentClientId = newClient.client_id;
-            
+
             // Now render the dropdown with the selection
             renderClients();
-            
+
             // Then complete the client selection process
             await selectClient(newClient.client_id);
-            
-            showToast(`Client "${clientName.trim()}" created successfully`);
+
+            showToast(`Client "${clientName}" created successfully`);
         } catch(error) {
             showToast(error.message, true);
         }
@@ -820,6 +1179,15 @@ export async function initializeApp() {
         state.ora2pgOptions = results[2];
         state.appSettings = results[3];
         renderClients();
+
+        // Start polling for running migrations (shown on welcome screen)
+        startRunningMigrationsPolling();
+
+        // Load global migration history (shown on welcome screen)
+        loadGlobalMigrationHistory();
+
+        // Expose selectClientById for the running migrations dashboard
+        window.selectClientById = selectClientById;
     } catch (error) {
         dom.welcomeMessageEl.innerHTML = `<div class="text-center text-red-400 dark:text-red-500">
             <i class="fas fa-exclamation-triangle text-5xl mb-4"></i>
@@ -845,69 +1213,41 @@ function toggleClientActions() {
     }
 }
 
-/**
- * Shows a confirmation modal
- */
-function showConfirmModal(title, message, onConfirm) {
-    const modal = document.getElementById('confirm-modal');
-    const titleEl = document.getElementById('confirm-modal-title');
-    const messageEl = document.getElementById('confirm-modal-message');
-    const confirmBtn = document.getElementById('confirm-modal-confirm');
-    const cancelBtn = document.getElementById('confirm-modal-cancel');
-    
-    titleEl.textContent = title;
-    messageEl.textContent = message;
-    
-    modal.classList.remove('hidden');
-    modal.classList.add('flex');
-    
-    const handleConfirm = () => {
-        modal.classList.add('hidden');
-        modal.classList.remove('flex');
-        confirmBtn.removeEventListener('click', handleConfirm);
-        cancelBtn.removeEventListener('click', handleCancel);
-        onConfirm();
-    };
-    
-    const handleCancel = () => {
-        modal.classList.add('hidden');
-        modal.classList.remove('flex');
-        confirmBtn.removeEventListener('click', handleConfirm);
-        cancelBtn.removeEventListener('click', handleCancel);
-    };
-    
-    confirmBtn.addEventListener('click', handleConfirm);
-    cancelBtn.addEventListener('click', handleCancel);
-}
 
 /**
  * Handles editing (renaming) the current client
  */
 async function handleEditClient() {
     if (!state.currentClientId) return;
-    
+
     const currentClient = state.clients.find(c => c.client_id === state.currentClientId);
     if (!currentClient) return;
-    
-    const newName = prompt('Enter new client name:', currentClient.client_name);
-    if (!newName || newName.trim() === '' || newName === currentClient.client_name) return;
-    
+
+    const newName = await showInputModal({
+        title: 'Rename Client',
+        message: 'Enter a new name for this client.',
+        placeholder: 'Client name',
+        defaultValue: currentClient.client_name
+    });
+
+    if (!newName || newName === currentClient.client_name) return;
+
     try {
         await apiFetch(`/api/client/${state.currentClientId}`, {
             method: 'PUT',
-            body: JSON.stringify({ client_name: newName.trim() })
+            body: JSON.stringify({ client_name: newName })
         });
-        
+
         // Update client in state
-        currentClient.client_name = newName.trim();
+        currentClient.client_name = newName;
         state.clients.sort((a, b) => a.client_name.localeCompare(b.client_name));
-        
+
         // Refresh dropdown AND header
         renderClients();
-        dom.clientNameHeaderEl.textContent = newName.trim();
-        
+        dom.clientNameHeaderEl.textContent = newName;
+
         showToast('Client renamed successfully');
-        log_audit(state.currentClientId, 'rename_client', `Renamed to: ${newName.trim()}`);
+        log_audit(state.currentClientId, 'rename_client', `Renamed to: ${newName}`);
     } catch (error) {
         showToast(error.message, true);
     }
@@ -917,29 +1257,31 @@ async function handleEditClient() {
  */
 async function handleDeleteClient() {
     if (!state.currentClientId) return;
-    
+
     const currentClient = state.clients.find(c => c.client_id === state.currentClientId);
     if (!currentClient) return;
-    
-    showConfirmModal(
-        'Delete Client',
-        `Are you sure you want to delete "${currentClient.client_name}"? This will delete all associated configurations, sessions, and files. This action cannot be undone.`,
-        async () => {
-            try {
-                await apiFetch(`/api/client/${state.currentClientId}`, {
-                    method: 'DELETE'
-                });
-                
-                state.clients = state.clients.filter(c => c.client_id !== state.currentClientId);
-                state.currentClientId = null;
-                renderClients();
-                selectClient(null);
-                showToast('Client deleted successfully');
-            } catch (error) {
-                showToast(error.message, true);
-            }
-        }
-    );
+
+    const confirmed = await showConfirmModal({
+        title: 'Delete Client',
+        message: `Are you sure you want to delete "${currentClient.client_name}"?\n\nThis will delete all associated configurations, sessions, and files. This action cannot be undone.`,
+        confirmText: 'Delete'
+    });
+
+    if (!confirmed) return;
+
+    try {
+        await apiFetch(`/api/client/${state.currentClientId}`, {
+            method: 'DELETE'
+        });
+
+        state.clients = state.clients.filter(c => c.client_id !== state.currentClientId);
+        state.currentClientId = null;
+        renderClients();
+        selectClient(null);
+        showToast('Client deleted successfully');
+    } catch (error) {
+        showToast(error.message, true);
+    }
 }
 
 
@@ -962,23 +1304,28 @@ async function handleStartMigration() {
     const button = document.getElementById('start-migration-btn');
     const progressDiv = document.getElementById('migration-progress');
     const resultsDiv = document.getElementById('migration-results');
-    const optionsDiv = document.getElementById('migration-options');
+    const objectPreviewDiv = document.getElementById('object-preview-container');
 
     // Get options
+    const sessionName = document.getElementById('migration-session-name')?.value?.trim() || '';
     const autoCreateDdl = document.getElementById('migration-auto-create-ddl')?.checked ?? true;
     const cleanSlate = document.getElementById('migration-clean-slate')?.checked ?? false;
 
     // Confirm if clean slate is enabled
     if (cleanSlate) {
-        if (!confirm('Clean slate mode will DROP all existing tables in the validation database before migration. Continue?')) {
-            return;
-        }
+        const confirmed = await showConfirmModal({
+            title: 'Clean Slate Mode',
+            message: 'This will DROP all existing tables in the validation database before migration.\n\nAre you sure you want to continue?',
+            confirmText: 'Continue',
+            confirmClass: 'bg-orange-600 hover:bg-orange-700'
+        });
+        if (!confirmed) return;
     }
 
     // Update UI to show progress
     button.disabled = true;
     button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Running...';
-    optionsDiv?.classList.add('hidden');
+    objectPreviewDiv?.classList.add('hidden');
     resultsDiv?.classList.add('hidden');
     progressDiv?.classList.remove('hidden');
 
@@ -991,13 +1338,19 @@ async function handleStartMigration() {
     });
 
     try {
+        // Build request body
+        const requestBody = {
+            auto_create_ddl: autoCreateDdl,
+            clean_slate: cleanSlate
+        };
+        if (sessionName) {
+            requestBody.session_name = sessionName;
+        }
+
         // Start the migration
         await apiFetch(`/api/client/${state.currentClientId}/start_migration`, {
             method: 'POST',
-            body: JSON.stringify({
-                auto_create_ddl: autoCreateDdl,
-                clean_slate: cleanSlate
-            })
+            body: JSON.stringify(requestBody)
         });
 
         showToast('Migration started...');
@@ -1109,38 +1462,40 @@ async function showMigrationResults(status) {
         </div>
     `;
 
-    // Fetch object-level summary
-    try {
-        const objectSummary = await apiFetch(`/api/client/${state.currentClientId}/objects/summary`);
-        if (objectSummary && objectSummary.totals && objectSummary.totals.total > 0) {
-            html += `
-                <div class="mt-3 bg-white/10 rounded-lg p-3">
-                    <div class="text-white text-sm font-medium mb-2">Objects Summary:</div>
-                    <div class="grid grid-cols-2 gap-2 text-xs">
-            `;
-
-            // Show by type
-            for (const [objType, counts] of Object.entries(objectSummary.by_type)) {
-                const successRate = counts.total > 0 ? Math.round((counts.validated / counts.total) * 100) : 0;
-                const statusColor = successRate === 100 ? 'text-green-300' : successRate > 0 ? 'text-yellow-300' : 'text-red-300';
+    // Fetch object-level summary for this session only (not cumulative)
+    if (status.session_id) {
+        try {
+            const objectSummary = await apiFetch(`/api/session/${status.session_id}/objects/summary`);
+            if (objectSummary && objectSummary.totals && objectSummary.totals.total > 0) {
                 html += `
-                    <div class="flex justify-between items-center bg-white/5 rounded px-2 py-1">
-                        <span class="text-indigo-100">${objType}</span>
-                        <span class="${statusColor}">${counts.validated}/${counts.total}</span>
+                    <div class="mt-3 bg-white/10 rounded-lg p-3">
+                        <div class="text-white text-sm font-medium mb-2">Objects Summary:</div>
+                        <div class="grid grid-cols-2 gap-2 text-xs">
+                `;
+
+                // Show by type
+                for (const [objType, counts] of Object.entries(objectSummary.by_type)) {
+                    const successRate = counts.total > 0 ? Math.round((counts.validated / counts.total) * 100) : 0;
+                    const statusColor = successRate === 100 ? 'text-green-300' : successRate > 0 ? 'text-yellow-300' : 'text-red-300';
+                    html += `
+                        <div class="flex justify-between items-center bg-white/5 rounded px-2 py-1">
+                            <span class="text-indigo-100">${objType}</span>
+                            <span class="${statusColor}">${counts.validated}/${counts.total}</span>
+                        </div>
+                    `;
+                }
+
+                html += `
+                        </div>
+                        <div class="mt-2 text-center text-indigo-200 text-xs">
+                            Total: ${objectSummary.totals.validated}/${objectSummary.totals.total} objects validated
+                        </div>
                     </div>
                 `;
             }
-
-            html += `
-                    </div>
-                    <div class="mt-2 text-center text-indigo-200 text-xs">
-                        Total: ${objectSummary.totals.validated}/${objectSummary.totals.total} objects validated
-                    </div>
-                </div>
-            `;
+        } catch (e) {
+            console.error('Failed to fetch object summary:', e);
         }
-    } catch (e) {
-        console.error('Failed to fetch object summary:', e);
     }
 
     if (status.errors && status.errors.length > 0) {
@@ -1198,11 +1553,11 @@ async function refreshSessions() {
         const sessions = await apiFetch(`/api/client/${state.currentClientId}/sessions`);
         state.sessions = sessions;
 
-        // Import and call renderSessionHistory if available
-        const sessionHistoryContainer = document.getElementById('session-history-container');
-        if (sessionHistoryContainer && sessions.length > 0) {
-            sessionHistoryContainer.classList.remove('hidden');
-        }
+        // Re-render the session history to show the new session
+        renderSessionHistory();
+
+        // Refresh migration history (token/cost tracking)
+        loadMigrationHistory();
 
         // Update tools status after migration completes
         updateToolsStatus();
@@ -1236,7 +1591,7 @@ async function loadDDLCacheStats() {
  */
 async function handleViewDDLCache() {
     if (!state.currentClientId) {
-        alert('Please select a client first');
+        showToast('Please select a client first', true);
         return;
     }
 
@@ -1279,7 +1634,7 @@ async function handleViewDDLCache() {
         document.getElementById('ddl-cache-modal').classList.remove('hidden');
     } catch (error) {
         console.error('Failed to load DDL cache:', error);
-        alert('Failed to load DDL cache: ' + error.message);
+        showToast('Failed to load DDL cache: ' + error.message, true);
     }
 }
 
@@ -1288,33 +1643,37 @@ async function handleViewDDLCache() {
  */
 async function handleClearDDLCache() {
     if (!state.currentClientId) {
-        alert('Please select a client first');
+        showToast('Please select a client first', true);
         return;
     }
 
-    if (!confirm('Are you sure you want to clear the DDL cache? This cannot be undone.')) {
-        return;
-    }
+    const confirmed = await showConfirmModal({
+        title: 'Clear DDL Cache',
+        message: 'Are you sure you want to clear the DDL cache?\n\nThis cannot be undone.',
+        confirmText: 'Clear Cache'
+    });
+    if (!confirmed) return;
 
     try {
         await apiFetch(`/api/client/${state.currentClientId}/ddl_cache`, { method: 'DELETE' });
         loadDDLCacheStats();
-        alert('DDL cache cleared successfully');
+        showToast('DDL cache cleared successfully');
     } catch (error) {
         console.error('Failed to clear DDL cache:', error);
-        alert('Failed to clear DDL cache: ' + error.message);
+        showToast('Failed to clear DDL cache: ' + error.message, true);
     }
 }
 
 /**
- * Gets the current session ID for tools (from state or finds the latest TABLE session).
+ * Gets the current session ID for tools (from state or finds the latest DDL/TABLE session).
  */
 function getCurrentSessionId() {
     if (state.currentSessionId) return state.currentSessionId;
-    // Find the latest TABLE session
+    // Find the latest DDL or TABLE session (sessions are already sorted by created_at DESC)
     if (state.sessions && state.sessions.length > 0) {
-        const tableSession = state.sessions.find(s => s.export_type === 'TABLE');
-        return tableSession ? tableSession.session_id : state.sessions[0].session_id;
+        // Prefer DDL or TABLE sessions, but fallback to most recent
+        const ddlSession = state.sessions.find(s => s.export_type === 'DDL' || s.export_type === 'TABLE');
+        return ddlSession ? ddlSession.session_id : state.sessions[0].session_id;
     }
     return null;
 }
@@ -1325,7 +1684,7 @@ function getCurrentSessionId() {
 async function handlePreviewRollback() {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
-        alert('No session selected. Please run a migration first.');
+        showToast('No session selected. Please run a migration first.', true);
         return;
     }
 
@@ -1333,7 +1692,7 @@ async function handlePreviewRollback() {
         const preview = await apiFetch(`/api/session/${sessionId}/rollback/preview`);
 
         if (preview.message) {
-            alert(preview.message);
+            showToast(preview.message, true);
             return;
         }
 
@@ -1361,7 +1720,7 @@ async function handlePreviewRollback() {
 
     } catch (error) {
         console.error('Failed to preview rollback:', error);
-        alert('Failed to preview rollback: ' + error.message);
+        showToast('Failed to preview rollback: ' + error.message, true);
     }
 }
 
@@ -1371,7 +1730,7 @@ async function handlePreviewRollback() {
 async function handleDownloadRollback() {
     const sessionId = state.currentRollbackSessionId || getCurrentSessionId();
     if (!sessionId) {
-        alert('No session selected.');
+        showToast('No session selected.', true);
         return;
     }
 
@@ -1388,7 +1747,7 @@ async function handleDownloadRollback() {
         window.URL.revokeObjectURL(url);
     } catch (error) {
         console.error('Failed to download rollback:', error);
-        alert('Failed to download rollback script: ' + error.message);
+        showToast('Failed to download rollback script: ' + error.message, true);
     }
 }
 
@@ -1402,10 +1761,10 @@ async function handleCopyRollback() {
     try {
         const data = await apiFetch(`/api/session/${sessionId}/rollback`);
         await navigator.clipboard.writeText(data.content);
-        alert('Rollback script copied to clipboard');
+        showToast('Rollback script copied to clipboard');
     } catch (error) {
         console.error('Failed to copy rollback:', error);
-        alert('Failed to copy rollback script');
+        showToast('Failed to copy rollback script', true);
     }
 }
 
@@ -1415,21 +1774,30 @@ async function handleCopyRollback() {
 async function handleExecuteRollback() {
     const sessionId = state.currentRollbackSessionId || getCurrentSessionId();
     if (!sessionId) {
-        alert('No session selected.');
+        showToast('No session selected.', true);
         return;
     }
 
     // Get object count for confirmation message
     const warningText = document.getElementById('rollback-warning-text')?.textContent || '';
 
-    if (!confirm(`⚠️ WARNING: This will execute the rollback script on PostgreSQL.\n\n${warningText}\n\nThis action cannot be undone. Continue?`)) {
-        return;
-    }
+    // First confirmation
+    const confirmed1 = await showConfirmModal({
+        title: '⚠️ Execute Rollback',
+        message: `This will execute the rollback script on PostgreSQL.\n\n${warningText}\n\nThis action cannot be undone.`,
+        confirmText: 'Continue',
+        confirmClass: 'bg-red-600 hover:bg-red-700'
+    });
+    if (!confirmed1) return;
 
     // Double confirmation for safety
-    if (!confirm('Are you SURE you want to drop these objects from the database?')) {
-        return;
-    }
+    const confirmed2 = await showConfirmModal({
+        title: '⚠️ Final Confirmation',
+        message: 'Are you ABSOLUTELY SURE you want to drop these objects from the database?\n\nThis cannot be undone!',
+        confirmText: 'Yes, Drop Objects',
+        confirmClass: 'bg-red-600 hover:bg-red-700'
+    });
+    if (!confirmed2) return;
 
     const executeBtn = document.getElementById('execute-rollback-btn');
     const originalText = executeBtn.innerHTML;
@@ -1444,16 +1812,16 @@ async function handleExecuteRollback() {
         });
 
         if (result.success) {
-            alert(`✅ ${result.message}`);
+            showToast(result.message);
             // Close modal and refresh
             document.getElementById('rollback-modal').classList.add('hidden');
             refreshSessions();
         } else {
-            alert(`❌ Rollback failed: ${result.error}\n\n${result.hint || ''}`);
+            showToast(`Rollback failed: ${result.error}`, true);
         }
     } catch (error) {
         console.error('Failed to execute rollback:', error);
-        alert(`❌ Failed to execute rollback: ${error.message}`);
+        showToast(`Failed to execute rollback: ${error.message}`, true);
     } finally {
         executeBtn.innerHTML = originalText;
         executeBtn.disabled = false;
@@ -1466,7 +1834,7 @@ async function handleExecuteRollback() {
 async function handleViewMigrationReport() {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
-        alert('No session selected. Please run a migration first.');
+        showToast('No session selected. Please run a migration first.', true);
         return;
     }
 
@@ -1477,7 +1845,7 @@ async function handleViewMigrationReport() {
         document.getElementById('report-modal').classList.remove('hidden');
     } catch (error) {
         console.error('Failed to load report:', error);
-        alert('Failed to load migration report: ' + error.message);
+        showToast('Failed to load migration report: ' + error.message, true);
     }
 }
 
@@ -1487,7 +1855,7 @@ async function handleViewMigrationReport() {
 async function handleDownloadMigrationReport() {
     const sessionId = state.currentReportSessionId || getCurrentSessionId();
     if (!sessionId) {
-        alert('No session selected.');
+        showToast('No session selected.', true);
         return;
     }
 
@@ -1504,7 +1872,7 @@ async function handleDownloadMigrationReport() {
         window.URL.revokeObjectURL(url);
     } catch (error) {
         console.error('Failed to download report:', error);
-        alert('Failed to download migration report: ' + error.message);
+        showToast('Failed to download migration report: ' + error.message, true);
     }
 }
 
@@ -1515,21 +1883,27 @@ async function handleCopyMigrationReport() {
     const reportText = document.getElementById('report-text').textContent;
     if (reportText) {
         await navigator.clipboard.writeText(reportText);
-        alert('Report copied to clipboard');
+        showToast('Report copied to clipboard');
     }
 }
 
 /**
- * Shows the objects modal with detailed list of migrated objects.
+ * Shows the objects modal with detailed list of migrated objects for the current session.
  */
 async function handleViewObjects() {
     if (!state.currentClientId) {
-        alert('Please select a client first');
+        showToast('Please select a client first', true);
+        return;
+    }
+
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
+        showToast('No session selected. Please run a migration first.', true);
         return;
     }
 
     try {
-        const summary = await apiFetch(`/api/client/${state.currentClientId}/objects/summary`);
+        const summary = await apiFetch(`/api/session/${sessionId}/objects/summary`);
 
         // Build modal content
         let html = `
@@ -1575,7 +1949,7 @@ async function handleViewObjects() {
 
     } catch (error) {
         console.error('Failed to load objects:', error);
-        alert('Failed to load objects: ' + error.message);
+        showToast('Failed to load objects: ' + error.message, true);
     }
 }
 
@@ -1586,15 +1960,113 @@ function updateToolsStatus() {
     const sessionId = getCurrentSessionId();
     if (sessionId) {
         const session = state.sessions?.find(s => s.session_id === sessionId);
-        const sessionName = session ? `Session ${sessionId} (${session.export_type})` : `Session ${sessionId}`;
-        document.getElementById('rollback-status').textContent = sessionName;
-        document.getElementById('report-status').textContent = sessionName;
+        // Use friendly session name, fallback to "Session X" if not found
+        const displayName = session?.session_name || `Session ${sessionId}`;
+        document.getElementById('rollback-status').textContent = displayName;
+        document.getElementById('report-status').textContent = displayName;
     } else {
         document.getElementById('rollback-status').textContent = 'Select a session to view rollback';
         document.getElementById('report-status').textContent = 'Select a session to generate report';
     }
 }
 
+
+/**
+ * Toggle the object preview section visibility.
+ */
+function handleToggleObjectPreview() {
+    const container = document.getElementById('object-preview-container');
+    const chevron = document.getElementById('preview-chevron');
+    if (container) {
+        const isHidden = container.classList.contains('hidden');
+        container.classList.toggle('hidden');
+        chevron?.classList.toggle('rotate-90', isHidden);
+    }
+}
+
+/**
+ * Refresh the object preview list by fetching objects from Oracle.
+ * @async
+ */
+async function handleRefreshObjectPreview() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const listContainer = document.getElementById('object-preview-list');
+    const refreshBtn = document.getElementById('refresh-object-preview');
+
+    if (listContainer) {
+        listContainer.innerHTML = '<p class="text-center py-4"><i class="fas fa-spinner fa-spin mr-2"></i>Discovering objects...</p>';
+    }
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+    }
+
+    try {
+        // Use the same endpoint as the object discovery feature
+        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+
+        if (!objectList || objectList.length === 0) {
+            listContainer.innerHTML = '<p class="text-center py-4">No objects found. Check your Oracle connection settings.</p>';
+            return;
+        }
+
+        // Group objects by type
+        const objectsByType = {};
+        for (const obj of objectList) {
+            const type = obj.type || 'UNKNOWN';
+            if (!objectsByType[type]) {
+                objectsByType[type] = [];
+            }
+            objectsByType[type].push(obj);
+        }
+
+        // Build summary of objects by type
+        let html = '<div class="grid grid-cols-2 sm:grid-cols-3 gap-2">';
+        const objectTypes = Object.keys(objectsByType).sort();
+
+        for (const type of objectTypes) {
+            const count = objectsByType[type].length;
+            html += `
+                <div class="bg-white/10 rounded px-3 py-2">
+                    <span class="font-medium">${type}</span>
+                    <span class="text-white/70 ml-2">${count}</span>
+                </div>
+            `;
+        }
+        html += '</div>';
+        html += `<p class="mt-3 text-xs text-white/60">${objectList.length} objects total will be migrated</p>`;
+
+        if (listContainer) {
+            listContainer.innerHTML = html;
+        }
+
+    } catch (error) {
+        console.error('Failed to fetch objects:', error);
+        if (listContainer) {
+            listContainer.innerHTML = `<p class="text-center py-4 text-red-300">Error: ${error.message}</p>`;
+        }
+    } finally {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+        }
+    }
+}
+
+/**
+ * Toggle the advanced tools section visibility.
+ */
+function handleToggleAdvancedTools() {
+    const content = document.getElementById('advanced-tools-content');
+    const chevron = document.getElementById('tools-chevron');
+    if (content) {
+        const isHidden = content.classList.contains('hidden');
+        content.classList.toggle('hidden');
+        chevron?.classList.toggle('rotate-180', isHidden);
+    }
+}
 
 /**
  * Initializes all the main event listeners for the application.
@@ -1720,16 +2192,20 @@ export function initEventListeners() {
             return;
         }
 
-        if (target.classList.contains('file-item')) {
+        // Handle file item clicks (use closest() to handle clicks on child elements)
+        const fileItem = target.closest('.file-item');
+        if (fileItem) {
             e.preventDefault();
-            const fileId = target.dataset.fileId;
+            const fileId = fileItem.dataset.fileId;
             handleFileClick(parseInt(fileId));
             return;
         }
-        
-        if (target.classList.contains('session-item')) {
+
+        // Handle session item clicks (use closest() to handle clicks on child elements)
+        const sessionItem = target.closest('.session-item');
+        if (sessionItem) {
             e.preventDefault();
-            const sessionId = target.dataset.sessionId;
+            const sessionId = sessionItem.dataset.sessionId;
             selectSession(parseInt(sessionId));
             return;
         }
@@ -1760,6 +2236,7 @@ export function initEventListeners() {
             case 'clear-workspace-btn': handleClearWorkspace(); break;
             case 'test-pg-conn-btn': handleTestPgConnection(); break;
             case 'test-ora-conn-btn': handleTestOra2PgConnection(); break;
+            case 'refresh-models-btn': handleRefreshAIModels(); break;
             case 'load-file-proxy-btn':
                 if (dom.filePicker) dom.filePicker.click();
                 break;
@@ -1780,6 +2257,12 @@ export function initEventListeners() {
             case 'close-report-modal': document.getElementById('report-modal').classList.add('hidden'); break;
             case 'copy-report-btn': handleCopyMigrationReport(); break;
             case 'download-report-modal-btn': handleDownloadMigrationReport(); break;
+            // Task-Based UI handlers
+            case 'toggle-object-preview': handleToggleObjectPreview(); break;
+            case 'refresh-object-preview': handleRefreshObjectPreview(); break;
+            case 'toggle-advanced-tools': handleToggleAdvancedTools(); break;
+            case 'open-workspace-btn': switchTab('workspace'); break;
+            case 'close-assessment-btn': document.getElementById('report-container')?.classList.add('hidden'); break;
         }
     });
     

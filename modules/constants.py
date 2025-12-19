@@ -150,6 +150,49 @@ WORKFLOW_STATUSES = [
 DEFAULT_AI_TEMPERATURE = 0.2
 DEFAULT_AI_MAX_OUTPUT_TOKENS = 8192
 
+# =============================================================================
+# AI Pricing (per 1M tokens, in USD)
+# =============================================================================
+
+# Pricing as of December 2024 - prices in USD per 1M tokens
+AI_MODEL_PRICING = {
+    # Anthropic models
+    'claude-3-5-sonnet-20241022': {'input': 3.00, 'output': 15.00},
+    'claude-3-5-sonnet-latest': {'input': 3.00, 'output': 15.00},
+    'claude-3-sonnet-20240229': {'input': 3.00, 'output': 15.00},
+    'claude-3-opus-20240229': {'input': 15.00, 'output': 75.00},
+    'claude-3-haiku-20240307': {'input': 0.25, 'output': 1.25},
+    'claude-3-5-haiku-20241022': {'input': 1.00, 'output': 5.00},
+    # OpenAI models
+    'gpt-4o': {'input': 2.50, 'output': 10.00},
+    'gpt-4o-2024-11-20': {'input': 2.50, 'output': 10.00},
+    'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
+    'gpt-4-turbo': {'input': 10.00, 'output': 30.00},
+    'gpt-4': {'input': 30.00, 'output': 60.00},
+    'gpt-3.5-turbo': {'input': 0.50, 'output': 1.50},
+    # Google models
+    'gemini-1.5-pro': {'input': 1.25, 'output': 5.00},
+    'gemini-1.5-flash': {'input': 0.075, 'output': 0.30},
+    'gemini-2.0-flash-exp': {'input': 0.10, 'output': 0.40},
+    # Default fallback for unknown models
+    '_default': {'input': 5.00, 'output': 15.00},
+}
+
+
+def calculate_ai_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """
+    Calculate the estimated cost for AI API usage.
+
+    :param model: AI model name
+    :param input_tokens: Number of input tokens
+    :param output_tokens: Number of output tokens
+    :return: Estimated cost in USD
+    """
+    pricing = AI_MODEL_PRICING.get(model, AI_MODEL_PRICING['_default'])
+    input_cost = (input_tokens / 1_000_000) * pricing['input']
+    output_cost = (output_tokens / 1_000_000) * pricing['output']
+    return round(input_cost + output_cost, 6)
+
 
 # =============================================================================
 # Sensitive Configuration Keys
@@ -190,3 +233,22 @@ def ensure_project_dir(client_id: int):
 def ensure_session_dir(client_id: int, session_id: int):
     """Ensure the session directory exists."""
     os.makedirs(get_session_dir(client_id, session_id), exist_ok=True)
+
+
+def mask_sensitive_config(config: dict) -> dict:
+    """
+    Create a copy of the config with sensitive values masked.
+
+    :param config: Configuration dictionary
+    :return: New dictionary with sensitive values masked
+    """
+    masked = config.copy()
+    for key in SENSITIVE_CONFIG_KEYS:
+        if key in masked and masked[key]:
+            # Show first 4 and last 4 chars for identification, mask the rest
+            value = str(masked[key])
+            if len(value) > 12:
+                masked[key] = f"{value[:4]}...{value[-4:]}"
+            else:
+                masked[key] = "****"
+    return masked

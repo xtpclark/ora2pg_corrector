@@ -16,7 +16,7 @@ from datetime import datetime
 from .db import get_db, execute_query, get_client_config, extract_ai_settings, ENCRYPTION_KEY
 from .sql_processing import Ora2PgAICorrector
 from .ddl_parser import parse_ddl_file, count_objects_by_type
-from .constants import OUTPUT_DIR
+from .constants import OUTPUT_DIR, calculate_ai_cost
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,146 @@ DDL_TYPE_ORDER = [
 ROLLBACK_TYPE_ORDER = list(reversed(DDL_TYPE_ORDER))
 
 
+def extract_table_dependencies(ddl_content, table_name):
+    """
+    Extract table names that this DDL depends on (via REFERENCES clauses).
+
+    Parses FK constraints like:
+      - REFERENCES employees(employee_id)
+      - REFERENCES hr.employees(employee_id)
+      - FOREIGN KEY (col) REFERENCES other_table
+
+    :param str ddl_content: The DDL content to parse
+    :param str table_name: The name of the table being created (to avoid self-refs)
+    :return: Set of table names this DDL depends on
+    :rtype: set
+    """
+    dependencies = set()
+
+    # Pattern to match REFERENCES table_name (handles schema.table and just table)
+    # Matches: REFERENCES table_name, REFERENCES schema.table_name
+    ref_pattern = r'REFERENCES\s+(?:[\w]+\.)?(\w+)\s*\('
+
+    for match in re.finditer(ref_pattern, ddl_content, re.IGNORECASE):
+        ref_table = match.group(1).upper()
+        # Don't add self-references
+        if ref_table != table_name.upper():
+            dependencies.add(ref_table)
+
+    return dependencies
+
+
+def topological_sort_files(files, get_content_func):
+    """
+    Sort TABLE files by FK dependency order, keeping other file types in original order.
+
+    Only TABLE files (individual .sql files, not output_*.sql) are sorted by FK dependencies.
+    Views, procedures, etc. are kept in their original order and placed AFTER all tables.
+
+    Handles circular dependencies by breaking cycles (common in schemas like HR where
+    EMPLOYEES.department_id -> DEPARTMENTS and DEPARTMENTS.manager_id -> EMPLOYEES).
+
+    :param list files: List of file records with 'file_id' and 'filename'
+    :param callable get_content_func: Function(file_id) -> (content, error, export_dir)
+    :return: Files sorted in dependency order (tables first, then others)
+    :rtype: list
+    """
+    # Separate TABLE files from other files (views, procedures, etc.)
+    # TABLE files are individual files like EMPLOYEES.sql, not output_view.sql
+    table_files = []
+    other_files = []
+
+    for f in files:
+        filename = f['filename']
+        # Individual table files don't start with 'output_' and don't contain 'view', 'procedure', etc.
+        if filename.lower().startswith('output_') or '_output_' in filename.lower():
+            other_files.append(f)
+        else:
+            table_files.append(f)
+
+    # If no table files to sort, return original order
+    if not table_files:
+        return files
+
+    # Build dependency graph for TABLE files only
+    table_to_file = {}
+    file_dependencies = {}  # file_id -> set of dependent table names
+
+    for file_record in table_files:
+        file_id = file_record['file_id']
+        filename = file_record['filename']
+
+        # Extract table name from filename (e.g., "EMPLOYEES.sql" -> "EMPLOYEES")
+        table_name = os.path.splitext(filename)[0].upper()
+
+        table_to_file[table_name] = file_record
+
+        # Get content and extract dependencies
+        content, error, _ = get_content_func(file_id)
+        if content and not error:
+            deps = extract_table_dependencies(content, table_name)
+            file_dependencies[file_id] = deps
+            if deps:
+                logger.debug(f"[Dependency] {table_name} depends on: {deps}")
+        else:
+            file_dependencies[file_id] = set()
+
+    # Kahn's algorithm for topological sort with cycle breaking
+    # Calculate in-degree (number of unresolved dependencies within this file set)
+    in_degree = {}
+    for file_record in table_files:
+        file_id = file_record['file_id']
+        deps = file_dependencies.get(file_id, set())
+        # Only count dependencies on tables IN this migration
+        count = sum(1 for dep in deps if dep in table_to_file)
+        in_degree[file_id] = count
+
+    # Start with files that have no dependencies (in_degree == 0)
+    queue = [f for f in table_files if in_degree[f['file_id']] == 0]
+    sorted_tables = []
+    processed_tables = set()
+
+    while queue or len(sorted_tables) < len(table_files):
+        if queue:
+            # Process file with no pending dependencies
+            current = queue.pop(0)
+        else:
+            # Cycle detected! Break it by picking the file with lowest in-degree
+            remaining = [f for f in table_files if f['file_id'] not in processed_tables]
+            if not remaining:
+                break
+            # Sort by in_degree, then by filename for deterministic ordering
+            remaining.sort(key=lambda f: (in_degree[f['file_id']], f['filename']))
+            current = remaining[0]
+            logger.warning(f"[Dependency] Breaking cycle: processing {current['filename']} "
+                          f"(in_degree={in_degree[current['file_id']]})")
+
+        sorted_tables.append(current)
+        processed_tables.add(current['file_id'])
+
+        # Get table name for this file
+        current_filename = current['filename']
+        current_table = os.path.splitext(current_filename)[0].upper()
+
+        # Reduce in-degree for files that depend on this one
+        for file_record in table_files:
+            file_id = file_record['file_id']
+            if file_id in processed_tables:
+                continue
+            deps = file_dependencies.get(file_id, set())
+            if current_table in deps:
+                in_degree[file_id] -= 1
+                if in_degree[file_id] == 0 and file_id not in processed_tables:
+                    queue.append(file_record)
+
+    # Log the table order
+    table_order = [os.path.splitext(f['filename'])[0] for f in sorted_tables]
+    logger.info(f"[Dependency] Table order: {' -> '.join(table_order)}")
+
+    # Return sorted tables first, then other files (views, procedures) in original order
+    return sorted_tables + other_files
+
+
 class MigrationOrchestrator:
     """
     Orchestrates the complete DDL migration workflow.
@@ -55,6 +195,7 @@ class MigrationOrchestrator:
         self.config = None
         self.corrector = None
         self.session_id = None
+        self.session_name = None
         self.results = {
             'status': 'pending',
             'phase': None,
@@ -86,28 +227,72 @@ class MigrationOrchestrator:
         execute_query(self.conn, query, (status, self.session_id))
         self.conn.commit()
 
-    def _update_file_status(self, file_id, status, corrected_content=None, error_message=None):
-        """Update the status and content of a migration file."""
-        if corrected_content and error_message:
-            query = '''UPDATE migration_files
-                       SET status = ?, corrected_content = ?, error_message = ?, last_modified = CURRENT_TIMESTAMP
-                       WHERE file_id = ?'''
-            execute_query(self.conn, query, (status, corrected_content, error_message, file_id))
-        elif corrected_content:
-            query = '''UPDATE migration_files
-                       SET status = ?, corrected_content = ?, last_modified = CURRENT_TIMESTAMP
-                       WHERE file_id = ?'''
-            execute_query(self.conn, query, (status, corrected_content, file_id))
-        elif error_message:
-            query = '''UPDATE migration_files
-                       SET status = ?, error_message = ?, last_modified = CURRENT_TIMESTAMP
-                       WHERE file_id = ?'''
-            execute_query(self.conn, query, (status, error_message, file_id))
-        else:
-            query = '''UPDATE migration_files
-                       SET status = ?, last_modified = CURRENT_TIMESTAMP
-                       WHERE file_id = ?'''
-            execute_query(self.conn, query, (status, file_id))
+    def _update_session_progress(self, phase=None, processed=None, total=None, current_file=None):
+        """
+        Update migration progress in the database.
+
+        This method stores progress in the database to fix the multi-worker race condition
+        where in-memory state wasn't shared across gunicorn workers.
+
+        :param str phase: Current phase (discovery, export, validating, fk_constraints, completed)
+        :param int processed: Number of files processed so far
+        :param int total: Total number of files to process
+        :param str current_file: Name of the file currently being processed
+        """
+        if not self.session_id:
+            return
+
+        # Build dynamic UPDATE query with only the fields that are being updated
+        updates = []
+        params = []
+
+        if phase is not None:
+            updates.append('current_phase = ?')
+            params.append(phase)
+        if processed is not None:
+            updates.append('processed_count = ?')
+            params.append(processed)
+        if total is not None:
+            updates.append('total_count = ?')
+            params.append(total)
+        if current_file is not None:
+            updates.append('current_file = ?')
+            params.append(current_file)
+
+        if not updates:
+            return
+
+        params.append(self.session_id)
+        query = f"UPDATE migration_sessions SET {', '.join(updates)} WHERE session_id = ?"
+        execute_query(self.conn, query, tuple(params))
+        self.conn.commit()
+
+    def _update_file_status(self, file_id, status, corrected_content=None, error_message=None,
+                            input_tokens=0, output_tokens=0, ai_attempts=0):
+        """Update the status and content of a migration file, including token metrics."""
+        # Build dynamic update query based on provided parameters
+        updates = ['status = ?', 'last_modified = CURRENT_TIMESTAMP']
+        params = [status]
+
+        if corrected_content is not None:
+            updates.append('corrected_content = ?')
+            params.append(corrected_content)
+        if error_message is not None:
+            updates.append('error_message = ?')
+            params.append(error_message)
+        if input_tokens > 0:
+            updates.append('input_tokens = ?')
+            params.append(input_tokens)
+        if output_tokens > 0:
+            updates.append('output_tokens = ?')
+            params.append(output_tokens)
+        if ai_attempts > 0:
+            updates.append('ai_attempts = ?')
+            params.append(ai_attempts)
+
+        params.append(file_id)
+        query = f"UPDATE migration_files SET {', '.join(updates)} WHERE file_id = ?"
+        execute_query(self.conn, query, tuple(params))
         self.conn.commit()
 
     def _get_file_content(self, file_id):
@@ -227,7 +412,8 @@ class MigrationOrchestrator:
         :rtype: dict
         """
         self.results['phase'] = 'discovery'
-        self._update_session_status('discovering')
+        # Note: session_id not yet available, so _update_session_* calls would no-op
+        # Progress will be updated once session is created during export
 
         logger.info(f"[Client {self.client_id}] Starting object discovery")
 
@@ -253,16 +439,20 @@ class MigrationOrchestrator:
 
         return objects_by_type
 
-    def export_ddl(self, objects_by_type):
+    def export_ddl(self, objects_by_type, auto_create_ddl=True):
         """
         Phase 2: Export DDL for all objects using Ora2Pg.
 
         :param dict objects_by_type: Objects grouped by type from discovery
+        :param bool auto_create_ddl: Whether auto-create DDL is enabled. When False,
+                                     forces file_per_table for TABLEs to enable
+                                     dependency-ordered validation.
         :return: List of exported file records
         :rtype: list
         """
         self.results['phase'] = 'export'
-        self._update_session_status('exporting')
+        # Note: session_id not yet available until first export completes
+        # Status/progress updates happen after session is created in the export loop
 
         logger.info(f"[Client {self.client_id}] Starting DDL export")
 
@@ -274,18 +464,33 @@ class MigrationOrchestrator:
             key=lambda t: DDL_TYPE_ORDER.index(t) if t in DDL_TYPE_ORDER else 999
         )
 
-        for obj_type in sorted_types:
+        for type_idx, obj_type in enumerate(sorted_types):
             obj_names = objects_by_type[obj_type]
             logger.info(f"[Client {self.client_id}] Exporting {len(obj_names)} {obj_type}(s)")
+            self._update_session_progress(processed=type_idx, current_file=f"Exporting {obj_type}...")
 
             # Configure for this type
             export_config = self.config.copy()
             export_config['type'] = obj_type
             export_config['ALLOW'] = ','.join(obj_names)
 
-            # Run export
+            # Force file_per_table for TABLEs when auto_create_ddl is OFF
+            # This enables dependency-ordered validation (tables created in FK order)
+            # BUT respect user's explicit FILE_PER_TABLE=0 setting for faster exports
+            # Note: file_per_table is a boolean after config loading (see BOOLEAN_CONFIG_KEYS)
+            user_file_per_table = self.config.get('file_per_table', True)
+            if obj_type == 'TABLE' and not auto_create_ddl and user_file_per_table:
+                export_config['file_per_table'] = True
+                logger.info(f"[Client {self.client_id}] Forcing file_per_table for dependency-ordered validation")
+            elif obj_type == 'TABLE' and not user_file_per_table:
+                export_config['file_per_table'] = False
+                logger.info(f"[Client {self.client_id}] Using FILE_PER_TABLE=0 per user setting (single file export)")
+
+            # Run export - first export creates session, subsequent exports add to it
             result, error = self.corrector.run_ora2pg_export(
-                self.client_id, self.conn, export_config
+                self.client_id, self.conn, export_config,
+                session_name=self.session_name if not self.session_id else None,
+                existing_session_id=self.session_id  # Add to existing session if we have one
             )
 
             if error:
@@ -294,16 +499,21 @@ class MigrationOrchestrator:
                 continue
 
             # Track the session from the first successful export
+            # Note: Progress updates happen inside run_ora2pg_export() during the table loop
             if not self.session_id and result.get('session_id'):
                 self.session_id = result['session_id']
 
             # Collect file info and register individual objects
             if result.get('files'):
                 session_id = result.get('session_id')
-                # Fetch file IDs from database
-                query = '''SELECT file_id, filename FROM migration_files
-                          WHERE session_id = ? ORDER BY file_id'''
-                cursor = execute_query(self.conn, query, (session_id,))
+                exported_filenames = result.get('files')  # Only files from THIS export
+
+                # Fetch file IDs only for files created by THIS export (not all session files)
+                placeholders = ','.join(['?' for _ in exported_filenames])
+                query = f'''SELECT file_id, filename FROM migration_files
+                           WHERE session_id = ? AND filename IN ({placeholders})
+                           ORDER BY file_id'''
+                cursor = execute_query(self.conn, query, (session_id, *exported_filenames))
                 files = [dict(row) for row in cursor.fetchall()]
 
                 # Parse each file and register individual objects
@@ -320,6 +530,14 @@ class MigrationOrchestrator:
                 self.results['total_objects'] = self.results.get('total_objects', 0) + total_objects
 
                 all_files.extend(files)
+
+        # If we exported multiple object types, update session to show "DDL" instead of just the first type
+        if len(sorted_types) > 1 and self.session_id:
+            execute_query(self.conn,
+                'UPDATE migration_sessions SET export_type = ? WHERE session_id = ?',
+                ('DDL', self.session_id))
+            self.conn.commit()
+            logger.info(f"[Client {self.client_id}] Updated session {self.session_id} export_type to 'DDL' (multi-type export)")
 
         logger.info(f"[Client {self.client_id}] Exported {len(all_files)} files with {self.results.get('total_objects', 0)} objects")
         return all_files
@@ -341,6 +559,7 @@ class MigrationOrchestrator:
         """
         self.results['phase'] = 'validating'
         self._update_session_status('validating')
+        self._update_session_progress(phase='validating', processed=0, total=len(files))
 
         if validation_options is None:
             validation_options = {
@@ -352,10 +571,29 @@ class MigrationOrchestrator:
         if not validation_dsn:
             logger.warning(f"[Client {self.client_id}] No validation DSN configured, skipping validation")
 
-        for file_record in files:
+        # Sort files by dependency order (tables with FKs come after tables they reference)
+        # This ensures that when we validate DEPARTMENTS, EMPLOYEES already exists
+        logger.info(f"[Client {self.client_id}] Sorting {len(files)} files by dependency order...")
+        sorted_files = topological_sort_files(files, self._get_file_content)
+
+        # Log the order for debugging
+        file_order = [f['filename'] for f in sorted_files]
+        logger.info(f"[Client {self.client_id}] Validation order: {', '.join(file_order)}")
+
+        # Collect deferred FK constraints to execute after all tables exist
+        all_deferred_fks = []
+
+        # Track total AI token usage for the session
+        session_input_tokens = 0
+        session_output_tokens = 0
+
+        for file_idx, file_record in enumerate(sorted_files):
             file_id = file_record['file_id']
             filename = file_record['filename']
             self.results['processed_objects'] += 1
+
+            # Update progress in database for cross-worker visibility
+            self._update_session_progress(processed=file_idx, current_file=filename)
 
             logger.info(f"[Client {self.client_id}] Processing file {filename} ({self.results['processed_objects']}/{len(files)})")
 
@@ -388,18 +626,34 @@ class MigrationOrchestrator:
                         'export_dir': export_dir
                     }
 
-                    is_valid, message, corrected_sql = self.corrector.validate_sql(
+                    # Metrics dict for tracking AI token usage per file
+                    file_metrics = {'input_tokens': 0, 'output_tokens': 0, 'ai_attempts': 0}
+
+                    is_valid, message, corrected_sql, deferred_fks = self.corrector.validate_sql(
                         content,
                         validation_dsn,
                         clean_slate=validation_options.get('clean_slate', False),
                         auto_create_ddl=validation_options.get('auto_create_ddl', True),
-                        cache_context=cache_context
+                        cache_context=cache_context,
+                        defer_fk=True,  # Defer FK constraints until all tables exist
+                        metrics=file_metrics  # Track AI tokens
                     )
+
+                    # Accumulate session-level token totals
+                    session_input_tokens += file_metrics.get('input_tokens', 0)
+                    session_output_tokens += file_metrics.get('output_tokens', 0)
+
+                    # Collect deferred FK constraints
+                    if deferred_fks:
+                        all_deferred_fks.extend([(filename, fk) for fk in deferred_fks])
 
                     if is_valid:
                         # corrected_sql is only set if AI made changes
                         final_content = corrected_sql if corrected_sql else content
-                        self._update_file_status(file_id, 'validated', corrected_content=final_content)
+                        self._update_file_status(file_id, 'validated', corrected_content=final_content,
+                                                input_tokens=file_metrics.get('input_tokens', 0),
+                                                output_tokens=file_metrics.get('output_tokens', 0),
+                                                ai_attempts=file_metrics.get('ai_attempts', 0))
                         self.results['successful'] += 1
 
                         # Update all objects in this file as validated
@@ -407,13 +661,16 @@ class MigrationOrchestrator:
                                                      ai_corrected=bool(corrected_sql))
 
                         if corrected_sql:
-                            logger.info(f"[Client {self.client_id}] Validated {filename} (AI-corrected)")
+                            logger.info(f"[Client {self.client_id}] Validated {filename} (AI-corrected, {file_metrics.get('ai_attempts', 0)} AI calls)")
                         else:
                             logger.info(f"[Client {self.client_id}] Validated {filename} (no AI needed)")
                     else:
                         self._update_file_status(file_id, 'failed',
                                                 corrected_content=corrected_sql,
-                                                error_message=message)
+                                                error_message=message,
+                                                input_tokens=file_metrics.get('input_tokens', 0),
+                                                output_tokens=file_metrics.get('output_tokens', 0),
+                                                ai_attempts=file_metrics.get('ai_attempts', 0))
                         self.results['failed'] += 1
                         self.results['errors'].append(f"{filename}: {message}")
 
@@ -439,6 +696,36 @@ class MigrationOrchestrator:
                 'status': 'validated' if validation_dsn else 'exported'
             })
 
+        # Phase 2: Execute deferred FK constraints now that all tables exist
+        if all_deferred_fks and validation_dsn:
+            logger.info(f"[Client {self.client_id}] Executing {len(all_deferred_fks)} deferred FK constraint(s)...")
+            self._update_session_progress(phase='fk_constraints', processed=0, total=len(all_deferred_fks), current_file='Applying FK constraints...')
+            import psycopg2
+            try:
+                with psycopg2.connect(validation_dsn) as conn:
+                    with conn.cursor() as cursor:
+                        conn.set_session(autocommit=True)
+                        for fk_idx, (source_file, fk_sql) in enumerate(all_deferred_fks):
+                            self._update_session_progress(processed=fk_idx, current_file=f'FK from {source_file}')
+                            try:
+                                cursor.execute(fk_sql)
+                                logger.info(f"[Client {self.client_id}] Applied FK from {source_file}")
+                            except psycopg2.Error as e:
+                                error_msg = str(e).strip()
+                                # If constraint already exists, that's fine
+                                if 'already exists' in error_msg:
+                                    logger.info(f"[Client {self.client_id}] FK from {source_file} already exists, skipping")
+                                else:
+                                    logger.error(f"[Client {self.client_id}] FK from {source_file} failed: {error_msg}")
+                                    self.results['errors'].append(f"FK constraint from {source_file}: {error_msg}")
+            except psycopg2.Error as e:
+                logger.error(f"[Client {self.client_id}] Failed to apply deferred FKs: {e}")
+                self.results['errors'].append(f"Deferred FK execution failed: {e}")
+
+        # Store session token totals in results for caller access
+        self.results['total_input_tokens'] = session_input_tokens
+        self.results['total_output_tokens'] = session_output_tokens
+
         return self.results
 
     def run_full_migration(self, options=None):
@@ -449,11 +736,15 @@ class MigrationOrchestrator:
             - clean_slate: Drop existing tables before validation (default: False)
             - auto_create_ddl: Auto-create missing tables during validation (default: True)
             - object_types: List of object types to migrate (default: all supported)
+            - session_name: Friendly name for the migration session (default: auto-generated)
         :return: Migration results
         :rtype: dict
         """
         if options is None:
             options = {}
+
+        # Store session name for use during export
+        self.session_name = options.get('session_name')
 
         try:
             # Initialize
@@ -481,7 +772,8 @@ class MigrationOrchestrator:
                 return self.results
 
             # Phase 2: Export
-            files = self.export_ddl(objects_by_type)
+            auto_create_ddl = options.get('auto_create_ddl', True)
+            files = self.export_ddl(objects_by_type, auto_create_ddl=auto_create_ddl)
             if not files:
                 self.results['status'] = 'completed'
                 self.results['message'] = 'No files exported'
@@ -499,12 +791,15 @@ class MigrationOrchestrator:
             if self.results['failed'] == 0:
                 self.results['status'] = 'completed'
                 self._update_session_status('completed')
+                self._update_session_progress(phase='completed', current_file='Migration complete')
             elif self.results['successful'] > 0:
                 self.results['status'] = 'partial'
                 self._update_session_status('partial')
+                self._update_session_progress(phase='completed', current_file='Migration partial')
             else:
                 self.results['status'] = 'failed'
                 self._update_session_status('failed')
+                self._update_session_progress(phase='failed', current_file='Migration failed')
 
             # Generate rollback script for successful/partial migrations
             if self.results['successful'] > 0:
@@ -521,6 +816,21 @@ class MigrationOrchestrator:
                                 self.results['rollback_generated'] = True
                 except Exception as e:
                     logger.warning(f"Failed to generate rollback script: {e}")
+
+            # Update session with token totals and cost estimate (from convert_and_validate results)
+            session_input_tokens = self.results.get('total_input_tokens', 0)
+            session_output_tokens = self.results.get('total_output_tokens', 0)
+            if session_input_tokens > 0 or session_output_tokens > 0:
+                ai_model = self.config.get('ai_model', '')
+                estimated_cost = calculate_ai_cost(ai_model, session_input_tokens, session_output_tokens)
+                query = '''UPDATE migration_sessions
+                           SET total_input_tokens = ?, total_output_tokens = ?,
+                               estimated_cost_usd = ?, completed_at = CURRENT_TIMESTAMP
+                           WHERE session_id = ?'''
+                execute_query(self.conn, query, (session_input_tokens, session_output_tokens,
+                                                  estimated_cost, self.session_id))
+                self.conn.commit()
+                logger.info(f"[Client {self.client_id}] Session tokens: {session_input_tokens} input, {session_output_tokens} output, est. cost: ${estimated_cost:.4f}")
 
             self.results['completed_at'] = datetime.now().isoformat()
             logger.info(f"[Client {self.client_id}] Migration completed: {self.results['successful']} successful, {self.results['failed']} failed")
@@ -542,7 +852,10 @@ class MigrationOrchestrator:
         :return: Current results/status
         :rtype: dict
         """
-        return self.results
+        # Include session_id in the status
+        status = self.results.copy()
+        status['session_id'] = self.session_id
+        return status
 
     # =================================================================
     # Rollback Script Generation Methods
