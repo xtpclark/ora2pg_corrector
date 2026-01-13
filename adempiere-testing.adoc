@@ -1,0 +1,345 @@
+= Adempiere Oracle-to-PostgreSQL Migration Testing
+:toc:
+:icons: font
+:source-highlighter: highlight.js
+
+== Overview
+
+This document describes testing the Ora2Pg Corrector application using the Adempiere ERP schema as a real-world Oracle DDL source. Adempiere is an open-source ERP system originally designed for Oracle 9i, making it an excellent test case for Oracle-to-PostgreSQL migrations.
+
+== Test Environment
+
+=== Adempiere DDL Source
+
+* *Project*: Adempiere ERP (ComPiere, Inc.)
+* *Version*: AD251h
+* *Original Target*: Oracle 9i
+* *Author*: Jorg Janke
+* *Date*: February 2005
+
+=== DDL Statistics
+
+[cols="1,1,1"]
+|===
+|Object Type |Count |Lines
+
+|Tables |465 |23,304
+|Views |107 |3,240
+|Sequences |~10 |52
+|Functions |~20 |283
+|*Total* |*~600* |*26,879*
+|===
+
+=== Container Setup
+
+* *Oracle Database*: Oracle Free 23ai (container: `ora2pg_corrector_oracle-free_1`)
+* *PostgreSQL*: PostgreSQL 15 (container: `ora2pg_corrector_postgres_1`)
+* *Application*: Ora2Pg Corrector (container: `ora2pg_corrector_app_1`)
+
+== Installation Steps
+
+=== Step 1: Obtain Adempiere DDL
+
+The Adempiere DDL files were downloaded from the Adempiere SourceForge repository:
+
+[source,bash]
+----
+# Download from SourceForge or extract from Adempiere distribution
+# Files needed:
+#   - Adempiere.sql (main table definitions)
+#   - Views.sql (view definitions)
+#   - Sequences.sql (sequence definitions)
+#   - functions-decl.sql (function declarations)
+----
+
+Place files in `/tmp/adempiere_ddl/`:
+
+[source,bash]
+----
+mkdir -p /tmp/adempiere_ddl
+# Copy DDL files to this directory
+----
+
+=== Step 2: Copy DDL to Oracle Container
+
+[source,bash]
+----
+podman cp /tmp/adempiere_ddl/Adempiere.sql ora2pg_corrector_oracle-free_1:/tmp/
+podman cp /tmp/adempiere_ddl/Views.sql ora2pg_corrector_oracle-free_1:/tmp/
+podman cp /tmp/adempiere_ddl/Sequences.sql ora2pg_corrector_oracle-free_1:/tmp/
+----
+
+=== Step 3: Create Oracle Schema and User
+
+Connect to Oracle and create the ADEMPIERE schema:
+
+[source,bash]
+----
+podman exec -it ora2pg_corrector_oracle-free_1 sqlplus sys/oracle@FREEPDB1 as sysdba
+----
+
+[source,sql]
+----
+-- Create user and grant privileges
+CREATE USER ADEMPIERE IDENTIFIED BY adempiere123
+    DEFAULT TABLESPACE USERS
+    TEMPORARY TABLESPACE TEMP
+    QUOTA UNLIMITED ON USERS;
+
+GRANT CONNECT, RESOURCE TO ADEMPIERE;
+GRANT CREATE VIEW TO ADEMPIERE;
+GRANT CREATE SEQUENCE TO ADEMPIERE;
+GRANT CREATE SESSION TO ADEMPIERE;
+GRANT CREATE TABLE TO ADEMPIERE;
+GRANT CREATE PROCEDURE TO ADEMPIERE;
+
+EXIT;
+----
+
+=== Step 4: Load DDL into Oracle
+
+[source,bash]
+----
+# Load tables
+podman exec -it ora2pg_corrector_oracle-free_1 sqlplus ADEMPIERE/adempiere123@FREEPDB1 @/tmp/Adempiere.sql
+
+# Load sequences
+podman exec -it ora2pg_corrector_oracle-free_1 sqlplus ADEMPIERE/adempiere123@FREEPDB1 @/tmp/Sequences.sql
+
+# Load views (after tables exist)
+podman exec -it ora2pg_corrector_oracle-free_1 sqlplus ADEMPIERE/adempiere123@FREEPDB1 @/tmp/Views.sql
+----
+
+=== Step 5: Verify Installation
+
+[source,bash]
+----
+podman exec -it ora2pg_corrector_oracle-free_1 sqlplus -s ADEMPIERE/adempiere123@FREEPDB1 <<'EOF'
+SELECT COUNT(*) AS table_count FROM user_tables;
+SELECT COUNT(*) AS view_count FROM user_views;
+SELECT COUNT(*) AS sequence_count FROM user_sequences;
+EOF
+----
+
+Expected output:
+----
+TABLE_COUNT
+-----------
+        463
+
+VIEW_COUNT
+----------
+       107
+
+SEQUENCE_COUNT
+--------------
+         10
+----
+
+== Ora2Pg Corrector Configuration
+
+=== Client Setup
+
+Create a new client in the Ora2Pg Corrector UI:
+
+* *Client Name*: `Adempiere-Test`
+* *Oracle DSN*: `dbi:Oracle:host=oracle-free;sid=FREEPDB1;port=1521`
+* *Oracle User*: `ADEMPIERE`
+* *Oracle Password*: `adempiere123`
+* *Oracle Schema*: `ADEMPIERE`
+
+=== AI Configuration (Optional)
+
+For AI-assisted correction of Oracle-specific syntax:
+
+* *AI Provider*: Anthropic Claude (or other configured provider)
+* *AI Model*: claude-sonnet-4-20250514 (recommended for cost/quality balance)
+* *Auto-create DDL*: Enabled (generates missing table DDL during validation)
+
+== Migration Testing Results
+
+=== Migration Sessions
+
+[cols="1,2,1,1,1"]
+|===
+|Session |Name |Status |Files |Date
+
+|75 |Test-50 |partial |1548/1549 |2025-12-13
+|74 |Dashboard_Test |partial |473/474 |2025-12-12
+|68 |Reserved words fix |partial |~470 |2025-12-12
+|67 |Initial test |partial |~470 |2025-12-12
+|===
+
+=== Key Findings
+
+==== 1. PostgreSQL Reserved Words
+
+Several Adempiere columns use PostgreSQL reserved words that require quoting:
+
+* `Value` - reserved in PostgreSQL
+* `Name` - reserved in PostgreSQL
+* `Level` - reserved in PostgreSQL
+* `Comment` - reserved in PostgreSQL
+
+*Solution*: Ora2Pg Corrector automatically quotes these columns during validation.
+
+==== 2. Oracle-Specific Syntax
+
+The following Oracle-specific constructs were converted:
+
+[cols="1,1"]
+|===
+|Oracle |PostgreSQL
+
+|`NUMBER(10,0)` |`INTEGER` or `BIGINT`
+|`NUMBER` |`NUMERIC`
+|`NVARCHAR2(n)` |`VARCHAR(n)`
+|`DATE` |`TIMESTAMP`
+|`CHAR(1)` |`CHAR(1)` (unchanged)
+|`SYSDATE` |`CURRENT_TIMESTAMP`
+|===
+
+==== 3. FILE_PER_TABLE Mode
+
+The migration uses FILE_PER_TABLE mode for better granularity:
+
+* Each table exported to individual `.sql` file
+* Enables per-table validation and correction
+* Allows partial migration resumption
+
+==== 4. Performance Observations
+
+* *Export Speed*: ~30-40 seconds per table (due to connection overhead)
+* *Total Tables*: 463 tables
+* *Estimated Export Time*: ~4-5 hours for full export
+* *Validation*: Near-instant per file
+
+== Running the Migration
+
+=== Via UI
+
+1. Open http://localhost:8000/
+2. Select "Adempiere-Test" client
+3. Navigate to Migration tab
+4. Click "Start Migration"
+5. Monitor progress in the Running Migrations dashboard
+
+=== Via CLI/curl
+
+[source,bash]
+----
+# Start migration
+curl -X POST "http://localhost:8000/api/client/2/start_migration" \
+  -H "Content-Type: application/json" \
+  -d '{"session_name":"Adempiere_Full_Migration"}'
+
+# Check status
+curl -s http://localhost:8000/api/client/2/migration_status | python3 -m json.tool
+
+# View all running migrations
+curl -s http://localhost:8000/api/running_migrations | python3 -m json.tool
+----
+
+=== Monitor Progress
+
+The Running Migrations dashboard shows real-time progress:
+
+* Current phase (export/validate/convert)
+* Progress count (e.g., 45/463)
+* Current file being processed
+* Progress bar with percentage
+
+== Validation Against PostgreSQL
+
+=== Target Database
+
+* *Host*: postgres (container)
+* *Database*: ora2pg_test
+* *User*: ora2pg
+* *Password*: ora2pg
+
+=== Validation Process
+
+1. Exported DDL is parsed and analyzed
+2. PostgreSQL reserved words are automatically quoted
+3. DDL is tested against target PostgreSQL database
+4. Missing dependencies (referenced tables) are auto-generated via AI
+5. Results stored in migration_files table
+
+== Troubleshooting
+
+=== Common Issues
+
+==== Oracle Connection Errors
+
+[source]
+----
+ORA-12541: TNS:no listener
+----
+
+*Solution*: Ensure Oracle container is running and listener is started:
+
+[source,bash]
+----
+podman exec ora2pg_corrector_oracle-free_1 lsnrctl status
+----
+
+==== Permission Denied
+
+[source]
+----
+ORA-01031: insufficient privileges
+----
+
+*Solution*: Grant additional privileges to ADEMPIERE user:
+
+[source,sql]
+----
+GRANT SELECT ANY TABLE TO ADEMPIERE;
+GRANT SELECT ANY DICTIONARY TO ADEMPIERE;
+----
+
+==== Stale Migration Sessions
+
+If a migration appears stuck (container restart killed the process):
+
+[source,bash]
+----
+# Check and fix via Python
+podman exec ora2pg_corrector_app_1 python3 -c "
+import sqlite3
+conn = sqlite3.connect('/app/data/settings.db')
+# Mark stale sessions as failed
+conn.execute(\"\"\"
+    UPDATE migration_sessions
+    SET workflow_status = 'failed',
+        current_file = 'Process killed'
+    WHERE workflow_status IN ('exporting', 'validating')
+    AND session_id = <SESSION_ID>
+\"\"\")
+conn.commit()
+"
+----
+
+== Conclusion
+
+The Adempiere schema provides an excellent real-world test case for Oracle-to-PostgreSQL migrations:
+
+* *465 tables* with complex relationships
+* *107 views* with Oracle-specific syntax
+* Uses Oracle datatypes (NUMBER, NVARCHAR2, DATE)
+* Uses PostgreSQL reserved words as column names
+
+The Ora2Pg Corrector successfully handles:
+
+* Automatic reserved word quoting
+* Oracle-to-PostgreSQL datatype conversion
+* Per-table export and validation
+* Real-time progress monitoring
+* AI-assisted DDL generation for missing objects
+
+== References
+
+* https://www.adempiere.net/[Adempiere Project]
+* https://ora2pg.darold.net/[Ora2Pg Documentation]
+* https://github.com/xtpclark/ora2pg_corrector[Ora2Pg Corrector Repository]

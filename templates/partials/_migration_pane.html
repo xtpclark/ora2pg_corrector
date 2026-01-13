@@ -1,118 +1,298 @@
 <div id="migration-tab" class="tab-pane">
     <div class="space-y-6">
-        <!-- One-Click Migration Section -->
-        <div class="bg-gradient-to-r from-indigo-600 to-purple-600 p-6 rounded-lg shadow-lg">
-            <div class="flex items-center justify-between">
-                <div>
-                    <h3 class="text-xl font-bold text-white mb-1">One-Click DDL Migration</h3>
-                    <p class="text-indigo-100 text-sm">Discover, export, convert, and validate all DDL objects automatically</p>
-                </div>
-                <button id="start-migration-btn" class="bg-white hover:bg-gray-100 text-indigo-600 font-bold py-3 px-6 rounded-lg transition-colors shadow-md flex items-center">
-                    <i class="fas fa-rocket mr-2"></i>Start Migration
-                </button>
-            </div>
+        <!-- Task Cards Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
-            <!-- Migration Options (collapsible) -->
-            <div id="migration-options" class="mt-4 hidden">
-                <div class="bg-white/10 rounded-lg p-4">
-                    <div class="flex flex-wrap gap-4">
-                        <label class="flex items-center cursor-pointer text-white text-sm">
-                            <input id="migration-auto-create-ddl" type="checkbox" checked class="h-4 w-4 text-indigo-600 rounded mr-2">
-                            <span>Auto-create missing tables</span>
-                        </label>
-                        <label class="flex items-center cursor-pointer text-white text-sm">
-                            <input id="migration-clean-slate" type="checkbox" class="h-4 w-4 text-indigo-600 rounded mr-2">
-                            <span>Clean slate (drop existing)</span>
-                        </label>
+            <!-- TASK 1: Migrate Schema (Primary Action) -->
+            <div class="lg:col-span-2 bg-gradient-to-r from-indigo-600 to-purple-600 p-6 rounded-lg shadow-lg">
+                <div class="flex items-start justify-between">
+                    <div class="flex-1">
+                        <div class="flex items-center mb-2">
+                            <i class="fas fa-rocket text-2xl text-white mr-3"></i>
+                            <h3 class="text-xl font-bold text-white">Migrate Schema</h3>
+                            <span class="ml-3 px-2 py-0.5 bg-white/20 text-white text-xs rounded-full">Recommended</span>
+                        </div>
+                        <p class="text-indigo-100 text-sm mb-4">Automatically discover, export, convert, and validate your Oracle schema to PostgreSQL</p>
+
+                        <!-- Migration Options (always visible) -->
+                        <div class="bg-white/10 rounded-lg p-4 space-y-3">
+                            <!-- Session Name Input -->
+                            <div class="flex items-center gap-3">
+                                <label for="migration-session-name" class="text-white text-sm whitespace-nowrap">Session Name:</label>
+                                <input id="migration-session-name" type="text"
+                                    placeholder="e.g., Initial HR Schema Migration"
+                                    class="flex-1 px-3 py-1.5 text-sm rounded bg-white/20 border border-white/30 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/50">
+                            </div>
+                            <!-- Options Checkboxes -->
+                            <div class="flex flex-wrap gap-4">
+                                <label class="flex items-center cursor-pointer text-white text-sm">
+                                    <input id="migration-auto-create-ddl" type="checkbox" checked class="h-4 w-4 text-indigo-600 rounded mr-2">
+                                    <span>Auto-create missing tables</span>
+                                </label>
+                                <label class="flex items-center cursor-pointer text-white text-sm">
+                                    <input id="migration-clean-slate" type="checkbox" class="h-4 w-4 text-indigo-600 rounded mr-2">
+                                    <span>Clean slate (drop existing)</span>
+                                </label>
+                            </div>
+                            <!-- Preview Objects Toggle -->
+                            <div class="pt-2 border-t border-white/20">
+                                <button id="toggle-object-preview" class="text-white/80 hover:text-white text-sm flex items-center">
+                                    <i class="fas fa-chevron-right mr-2 transition-transform" id="preview-chevron"></i>
+                                    <span>Preview objects to migrate...</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <button id="start-migration-btn" class="ml-4 bg-white hover:bg-gray-100 text-indigo-600 font-bold py-3 px-6 rounded-lg transition-colors shadow-md flex items-center whitespace-nowrap">
+                        <i class="fas fa-play mr-2"></i>Start Migration
+                    </button>
+                </div>
+
+                <!-- Object Preview (collapsible) -->
+                <div id="object-preview-container" class="hidden mt-4">
+                    <div class="bg-white/10 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-white text-sm font-medium">Objects discovered in Oracle:</span>
+                            <button id="refresh-object-preview" class="text-white/80 hover:text-white text-xs">
+                                <i class="fas fa-sync-alt mr-1"></i>Refresh
+                            </button>
+                        </div>
+                        <div id="object-preview-list" class="text-sm text-indigo-100">
+                            <p class="text-center py-4">Click "Refresh" to discover objects</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Migration Progress (shown when running) -->
+                <div id="migration-progress" class="mt-4 hidden">
+                    <div class="bg-white/10 rounded-lg p-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <span id="migration-phase" class="text-white font-medium">Starting...</span>
+                            <span id="migration-counts" class="text-indigo-100 text-sm">0 / 0 objects</span>
+                        </div>
+                        <div class="w-full bg-white/20 rounded-full h-3">
+                            <div id="migration-progress-bar" class="bg-white rounded-full h-3 transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                        <div id="migration-status-text" class="mt-2 text-indigo-100 text-sm"></div>
+                    </div>
+                </div>
+
+                <!-- Migration Results (shown when complete) -->
+                <div id="migration-results" class="mt-4 hidden">
+                    <div id="migration-results-content" class="bg-white/10 rounded-lg p-4">
+                        <!-- Results will be rendered here -->
                     </div>
                 </div>
             </div>
 
-            <!-- Migration Progress (shown when running) -->
-            <div id="migration-progress" class="mt-4 hidden">
-                <div class="bg-white/10 rounded-lg p-4">
-                    <div class="flex items-center justify-between mb-2">
-                        <span id="migration-phase" class="text-white font-medium">Starting...</span>
-                        <span id="migration-counts" class="text-indigo-100 text-sm">0 / 0 objects</span>
+            <!-- TASK 2: Convert Specific SQL -->
+            <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-purple-400 dark:hover:border-purple-500 transition-colors">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center mr-4">
+                        <i class="fas fa-code text-purple-600 dark:text-purple-400 text-xl"></i>
                     </div>
-                    <div class="w-full bg-white/20 rounded-full h-3">
-                        <div id="migration-progress-bar" class="bg-white rounded-full h-3 transition-all duration-300" style="width: 0%"></div>
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">Convert SQL</h3>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Manually convert specific Oracle SQL to PostgreSQL with AI assistance</p>
+                        <button id="open-workspace-btn" class="text-sm bg-purple-600 hover:bg-purple-700 text-white py-2 px-4 rounded transition-colors">
+                            <i class="fas fa-external-link-alt mr-2"></i>Open Workspace
+                        </button>
                     </div>
-                    <div id="migration-status-text" class="mt-2 text-indigo-100 text-sm"></div>
                 </div>
             </div>
 
-            <!-- Migration Results (shown when complete) -->
-            <div id="migration-results" class="mt-4 hidden">
-                <div id="migration-results-content" class="bg-white/10 rounded-lg p-4">
-                    <!-- Results will be rendered here -->
+            <!-- TASK 3: Assess Complexity -->
+            <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-lg flex items-center justify-center mr-4">
+                        <i class="fas fa-chart-bar text-blue-600 dark:text-blue-400 text-xl"></i>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">Assess Complexity</h3>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Analyze your Oracle schema to estimate migration effort and identify potential issues</p>
+                        <div class="flex space-x-2">
+                            <button id="run-report-btn" class="text-sm bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded transition-colors">
+                                <i class="fas fa-play mr-2"></i>Generate Report
+                            </button>
+                            <button id="export-report-btn" disabled class="text-sm bg-gray-500 hover:bg-gray-600 text-white py-2 px-4 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                <i class="fas fa-download mr-2"></i>Export
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Migration Tools Section -->
-        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
-            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Migration Tools</h3>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <!-- DDL Cache Card -->
-                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-                    <div class="flex items-center mb-3">
-                        <i class="fas fa-database text-blue-500 text-xl mr-3"></i>
-                        <h4 class="font-semibold text-gray-900 dark:text-white">DDL Cache</h4>
+        <!-- Assessment Report Results (shown when generated) -->
+        <div id="report-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Assessment Results</h3>
+                <button id="close-assessment-btn" class="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div id="report-table-container" class="overflow-x-auto">
+                <!-- Report table will be rendered here -->
+            </div>
+        </div>
+
+        <!-- Advanced Tools Section (Collapsible) -->
+        <div class="bg-white dark:bg-gray-900 rounded-lg">
+            <button id="toggle-advanced-tools" class="w-full p-4 flex items-center justify-between text-left hover:bg-gray-50 dark:hover:bg-gray-800 rounded-lg transition-colors">
+                <div class="flex items-center">
+                    <i class="fas fa-tools text-gray-500 dark:text-gray-400 mr-3"></i>
+                    <span class="font-semibold text-gray-700 dark:text-gray-300">Advanced Tools</span>
+                </div>
+                <i class="fas fa-chevron-down text-gray-500 dark:text-gray-400 transition-transform" id="tools-chevron"></i>
+            </button>
+
+            <div id="advanced-tools-content" class="hidden px-4 pb-4">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                    <!-- DDL Cache Card -->
+                    <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center mb-3">
+                            <i class="fas fa-database text-blue-500 text-lg mr-3"></i>
+                            <h4 class="font-medium text-gray-900 dark:text-white">DDL Cache</h4>
+                        </div>
+                        <p class="text-xs text-gray-600 dark:text-gray-400 mb-2">View and manage AI-generated DDL cache</p>
+                        <div id="ddl-cache-stats" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                            <span id="ddl-cache-count">0 entries</span> | <span id="ddl-cache-hits">0 hits</span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button id="view-ddl-cache-btn" class="flex-1 text-xs bg-blue-600 hover:bg-blue-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-eye mr-1"></i>View
+                            </button>
+                            <button id="clear-ddl-cache-btn" class="text-xs bg-red-600 hover:bg-red-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-trash mr-1"></i>Clear
+                            </button>
+                        </div>
                     </div>
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">View and manage AI-generated DDL cache</p>
-                    <div id="ddl-cache-stats" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
-                        <span id="ddl-cache-count">0 entries</span> | <span id="ddl-cache-hits">0 hits</span>
+
+                    <!-- Rollback Script Card -->
+                    <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center mb-3">
+                            <i class="fas fa-undo-alt text-orange-500 text-lg mr-3"></i>
+                            <h4 class="font-medium text-gray-900 dark:text-white">Rollback Script</h4>
+                        </div>
+                        <p class="text-xs text-gray-600 dark:text-gray-400 mb-2">Preview and download rollback SQL</p>
+                        <div id="rollback-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                            Select a session to view rollback
+                        </div>
+                        <div class="flex space-x-2">
+                            <button id="preview-rollback-btn" class="flex-1 text-xs bg-orange-600 hover:bg-orange-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-search mr-1"></i>Preview
+                            </button>
+                            <button id="download-rollback-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-download mr-1"></i>Download
+                            </button>
+                        </div>
                     </div>
-                    <div class="flex space-x-2">
-                        <button id="view-ddl-cache-btn" class="flex-1 text-xs bg-blue-600 hover:bg-blue-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-eye mr-1"></i>View
-                        </button>
-                        <button id="clear-ddl-cache-btn" class="text-xs bg-red-600 hover:bg-red-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-trash mr-1"></i>Clear
-                        </button>
+
+                    <!-- Migration Report Card -->
+                    <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                        <div class="flex items-center mb-3">
+                            <i class="fas fa-file-alt text-green-500 text-lg mr-3"></i>
+                            <h4 class="font-medium text-gray-900 dark:text-white">Migration Report</h4>
+                        </div>
+                        <p class="text-xs text-gray-600 dark:text-gray-400 mb-2">Generate AsciiDoc migration report</p>
+                        <div id="report-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
+                            Select a session to generate report
+                        </div>
+                        <div class="flex space-x-2">
+                            <button id="view-report-btn" class="flex-1 text-xs bg-green-600 hover:bg-green-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-eye mr-1"></i>View
+                            </button>
+                            <button id="download-report-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-2 rounded transition-colors">
+                                <i class="fas fa-download mr-1"></i>Download
+                            </button>
+                        </div>
                     </div>
                 </div>
 
-                <!-- Rollback Script Card -->
-                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-                    <div class="flex items-center mb-3">
-                        <i class="fas fa-undo-alt text-orange-500 text-xl mr-3"></i>
-                        <h4 class="font-semibold text-gray-900 dark:text-white">Rollback Script</h4>
-                    </div>
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Preview and download rollback SQL</p>
-                    <div id="rollback-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
-                        Select a session to view rollback
-                    </div>
-                    <div class="flex space-x-2">
-                        <button id="preview-rollback-btn" class="flex-1 text-xs bg-orange-600 hover:bg-orange-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-search mr-1"></i>Preview
-                        </button>
-                        <button id="download-rollback-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-download mr-1"></i>Download
+                <!-- Object Discovery (moved to Advanced) -->
+                <div class="mt-4 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+                    <div class="flex items-center justify-between mb-3">
+                        <div class="flex items-center">
+                            <i class="fas fa-search text-purple-500 text-lg mr-3"></i>
+                            <h4 class="font-medium text-gray-900 dark:text-white">Object Discovery</h4>
+                        </div>
+                        <button id="run-ora2pg-btn" class="text-xs bg-purple-600 hover:bg-purple-700 text-white py-1.5 px-3 rounded transition-colors">
+                            <i class="fas fa-search mr-1"></i>Discover
                         </button>
                     </div>
-                </div>
+                    <p class="text-xs text-gray-600 dark:text-gray-400 mb-3">Browse and export Oracle objects individually</p>
 
-                <!-- Migration Report Card -->
-                <div class="bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-                    <div class="flex items-center mb-3">
-                        <i class="fas fa-file-alt text-green-500 text-xl mr-3"></i>
-                        <h4 class="font-semibold text-gray-900 dark:text-white">Migration Report</h4>
-                    </div>
-                    <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Generate AsciiDoc migration report</p>
-                    <div id="report-status" class="text-xs text-gray-500 dark:text-gray-500 mb-3">
-                        Select a session to generate report
-                    </div>
-                    <div class="flex space-x-2">
-                        <button id="view-report-btn" class="flex-1 text-xs bg-green-600 hover:bg-green-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-eye mr-1"></i>View
-                        </button>
-                        <button id="download-report-btn" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-2 px-3 rounded transition-colors">
-                            <i class="fas fa-download mr-1"></i>Download
-                        </button>
+                    <!-- Object Selector (Master-Detail View) -->
+                    <div id="object-selector-container" class="hidden">
+                        <div class="grid grid-cols-12 gap-4">
+                            <!-- Left: Object Type Tree -->
+                            <div class="col-span-3 bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700">
+                                <h5 class="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">Object Types</h5>
+                                <div id="object-type-tree" class="text-xs text-gray-600 dark:text-gray-400">
+                                    <!-- Tree will be rendered here -->
+                                </div>
+                            </div>
+
+                            <!-- Right: Object List -->
+                            <div class="col-span-9">
+                                <div class="flex items-center justify-between mb-2">
+                                    <div class="flex items-center space-x-2">
+                                        <label class="flex items-center cursor-pointer text-xs">
+                                            <input id="ddl-format-pretty" type="checkbox" class="h-3 w-3 text-purple-600 rounded mr-1">
+                                            <span class="text-gray-700 dark:text-gray-300">Pretty DDL</span>
+                                        </label>
+                                    </div>
+                                    <div class="flex space-x-2">
+                                        <button id="select-all-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1 px-2 rounded transition-colors">All</button>
+                                        <button id="select-none-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1 px-2 rounded transition-colors">Clear</button>
+                                        <button id="download-original-ddl-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white py-1 px-2 rounded transition-colors">
+                                            <i class="fas fa-download mr-1"></i>DDL
+                                        </button>
+                                        <button id="export-selected-btn" class="text-xs bg-green-600 hover:bg-green-700 text-white py-1 px-2 rounded transition-colors">
+                                            <i class="fas fa-file-export mr-1"></i>Export
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="object-list" class="bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-200 dark:border-gray-700 max-h-64 overflow-y-auto">
+                                    <p class="text-gray-500 dark:text-gray-400 text-center py-8 text-xs">Select an object type to see objects</p>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Migration History Section (Token/Cost Tracking) -->
+        <div id="migration-history-section" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <div class="flex items-center">
+                    <i class="fas fa-history text-indigo-500 mr-3"></i>
+                    <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Recent Migrations</h3>
+                </div>
+                <span class="text-xs text-gray-500 dark:text-gray-400">Last 5 completed migrations</span>
+            </div>
+            <div id="migration-history-container" class="text-gray-900 dark:text-white">
+                <!-- Migration history table will be rendered here -->
+            </div>
+        </div>
+
+        <!-- Session History Section -->
+        <div id="session-history-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-lg font-semibold text-gray-900 dark:text-white">Session History</h3>
+                <span class="text-xs text-gray-500 dark:text-gray-400">Click a session to load its files</span>
+            </div>
+            <div id="session-list" class="space-y-2">
+                <!-- Session items will be rendered here -->
+            </div>
+        </div>
+
+        <!-- File Browser Section -->
+        <div id="file-browser-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-4">Session Files</h3>
+            <div id="migration-file-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                <!-- File items will be rendered here -->
             </div>
         </div>
 
@@ -185,88 +365,6 @@
                         <i class="fas fa-download mr-1"></i>Download .adoc
                     </button>
                 </div>
-            </div>
-        </div>
-
-        <!-- Assessment Report Section -->
-        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Assessment Report</h3>
-                <div class="flex space-x-3">
-                    <button id="run-report-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
-                        <i class="fas fa-chart-bar mr-2"></i>Generate Report
-                    </button>
-                    <button id="export-report-btn" disabled class="bg-gray-600 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                        <i class="fas fa-download mr-2"></i>Export
-                    </button>
-                </div>
-            </div>
-            <div id="report-container" class="hidden mt-4 overflow-x-auto">
-                <!-- Report table will be rendered here -->
-            </div>
-        </div>
-
-        <!-- Object Discovery & Export Section -->
-        <div class="bg-white dark:bg-gray-900 p-6 rounded-lg">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Object Discovery</h3>
-                <button id="run-ora2pg-btn" class="bg-purple-600 hover:bg-purple-700 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
-                    <i class="fas fa-search mr-2"></i>Discover Objects
-                </button>
-            </div>
-            
-            <!-- Object Selector (Master-Detail View) -->
-            <div id="object-selector-container" class="hidden mt-4">
-                <div class="grid grid-cols-12 gap-4">
-                    <!-- Left: Object Type Tree -->
-                    <div class="col-span-3 bg-gray-50 dark:bg-gray-800 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-                        <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Object Types</h4>
-                        <div id="object-type-tree" class="text-sm text-gray-600 dark:text-gray-400">
-                            <!-- Tree will be rendered here -->
-                        </div>
-                    </div>
-                    
-                    <!-- Right: Object List -->
-                    <div class="col-span-9">
-                        <div class="flex items-center justify-between mb-3">
-                            <div class="flex items-center space-x-2">
-                                <label class="flex items-center cursor-pointer text-sm">
-                                    <input id="ddl-format-pretty" type="checkbox" class="h-4 w-4 text-purple-600 rounded mr-2">
-                                    <span class="text-gray-700 dark:text-gray-300">Pretty DDL Format</span>
-                                </label>
-                            </div>
-                            <div class="flex space-x-2">
-                                <button id="select-all-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-3 rounded transition-colors">Select All</button>
-                                <button id="select-none-objects" class="text-xs bg-gray-600 hover:bg-gray-700 text-white py-1.5 px-3 rounded transition-colors">Clear</button>
-                                <button id="download-original-ddl-btn" class="text-xs bg-blue-600 hover:bg-blue-700 text-white py-1.5 px-3 rounded transition-colors">
-                                    <i class="fas fa-download mr-1"></i>Download DDL
-                                </button>
-                                <button id="export-selected-btn" class="text-xs bg-green-600 hover:bg-green-700 text-white py-1.5 px-3 rounded transition-colors">
-                                    <i class="fas fa-file-export mr-1"></i>Export Selected
-                                </button>
-                            </div>
-                        </div>
-                        <div id="object-list" class="bg-white dark:bg-gray-900 p-4 rounded-lg border border-gray-200 dark:border-gray-700 max-h-96 overflow-y-auto">
-                            <p class="text-gray-500 dark:text-gray-400 text-center py-16">Select an object type to see objects</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Session History Section -->
-        <div id="session-history-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
-            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Previous Sessions</h3>
-            <div id="session-list" class="space-y-2">
-                <!-- Session items will be rendered here -->
-            </div>
-        </div>
-
-        <!-- File Browser Section -->
-        <div id="file-browser-container" class="hidden bg-white dark:bg-gray-900 p-6 rounded-lg">
-            <h3 class="text-xl font-semibold text-gray-900 dark:text-white mb-4">Session Files</h3>
-            <div id="migration-file-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                <!-- File items will be rendered here -->
             </div>
         </div>
     </div>

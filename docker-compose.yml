@@ -15,6 +15,9 @@ services:
       - ./ora2pg_config:/app/ora2pg_config:z
       - ./ai_config:/app/ai_config:z
       - ./static:/app/static:z
+      - ./templates:/app/templates:z
+      - ./modules:/app/modules:z
+      - ./routes:/app/routes:z
       - /home/pclark/git/conversions:/app/project_output:z
     env_file:
       - .env

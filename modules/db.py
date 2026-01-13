@@ -174,6 +174,12 @@ def init_db():
                 export_directory TEXT NOT NULL,
                 export_type TEXT,
                 workflow_status TEXT DEFAULT 'pending',
+                current_phase TEXT,
+                processed_count INTEGER DEFAULT 0,
+                total_count INTEGER DEFAULT 0,
+                current_file TEXT,
+                rollback_script TEXT,
+                rollback_generated_at {ts_type},
                 created_at {ts_type} DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
             )''')
@@ -254,6 +260,22 @@ def _run_schema_migrations(conn):
         # Rollback script support
         ('migration_sessions', 'rollback_script', 'TEXT'),
         ('migration_sessions', 'rollback_generated_at', 'TIMESTAMP'),
+        # Progress tracking columns (for multi-worker race condition fix)
+        ('migration_sessions', 'current_phase', 'TEXT'),
+        ('migration_sessions', 'processed_count', 'INTEGER DEFAULT 0'),
+        ('migration_sessions', 'total_count', 'INTEGER DEFAULT 0'),
+        ('migration_sessions', 'current_file', 'TEXT'),
+        # Migration history feature - config snapshot and token tracking
+        ('migration_sessions', 'config_snapshot', 'TEXT'),
+        ('migration_sessions', 'total_input_tokens', 'INTEGER DEFAULT 0'),
+        ('migration_sessions', 'total_output_tokens', 'INTEGER DEFAULT 0'),
+        ('migration_sessions', 'estimated_cost_usd', 'REAL DEFAULT 0'),
+        ('migration_sessions', 'ai_model', 'TEXT'),
+        ('migration_sessions', 'completed_at', 'TIMESTAMP'),
+        # Per-file token tracking
+        ('migration_files', 'input_tokens', 'INTEGER DEFAULT 0'),
+        ('migration_files', 'output_tokens', 'INTEGER DEFAULT 0'),
+        ('migration_files', 'ai_attempts', 'INTEGER DEFAULT 0'),
     ]
 
     for table_name, column_name, column_def in migrations:
@@ -338,6 +360,11 @@ def extract_ai_settings(config):
         'ai_model': config.get('ai_model'),
         'ai_api_key': config.get('ai_api_key'),
         'ai_temperature': float(config.get('ai_temperature', DEFAULT_AI_TEMPERATURE)),
-        'ai_max_output_tokens': int(config.get('ai_max_output_tokens', DEFAULT_AI_MAX_OUTPUT_TOKENS))
+        'ai_max_output_tokens': int(config.get('ai_max_output_tokens', DEFAULT_AI_MAX_OUTPUT_TOKENS)),
+        # Corporate proxy settings
+        'ai_user': config.get('ai_user', 'anonymous'),
+        'ai_user_header': config.get('ai_user_header', ''),
+        'ssl_cert_path': config.get('ssl_cert_path', ''),
+        'ai_ssl_verify': config.get('ai_ssl_verify', True)
     }
 

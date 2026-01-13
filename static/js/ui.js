@@ -16,6 +16,142 @@ export function showToast(message, isError = false) {
 }
 
 /**
+ * Shows a confirmation modal dialog (replaces browser confirm).
+ * @param {Object} options - Configuration options
+ * @param {string} options.title - Modal title
+ * @param {string} options.message - Confirmation message
+ * @param {string} [options.confirmText] - Text for confirm button (default: "Confirm")
+ * @param {string} [options.confirmClass] - CSS class for confirm button (default: red)
+ * @returns {Promise<boolean>} - Resolves with true if confirmed, false if cancelled
+ */
+export function showConfirmModal({ title, message, confirmText = 'Confirm', confirmClass = 'bg-red-600 hover:bg-red-700' }) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('confirm-modal');
+        const titleEl = document.getElementById('confirm-modal-title');
+        const messageEl = document.getElementById('confirm-modal-message');
+        const confirmBtn = document.getElementById('confirm-modal-confirm');
+        const cancelBtn = document.getElementById('confirm-modal-cancel');
+
+        titleEl.textContent = title;
+        messageEl.innerHTML = message.replace(/\n/g, '<br>');
+        confirmBtn.textContent = confirmText;
+        confirmBtn.className = `px-4 py-2 text-white rounded transition-colors ${confirmClass}`;
+
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+
+        const cleanup = () => {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            confirmBtn.removeEventListener('click', handleConfirm);
+            cancelBtn.removeEventListener('click', handleCancel);
+            modal.removeEventListener('click', handleBackdrop);
+            document.removeEventListener('keydown', handleKeydown);
+        };
+
+        const handleConfirm = () => {
+            cleanup();
+            resolve(true);
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(false);
+        };
+
+        const handleKeydown = (e) => {
+            if (e.key === 'Escape') {
+                handleCancel();
+            } else if (e.key === 'Enter') {
+                handleConfirm();
+            }
+        };
+
+        const handleBackdrop = (e) => {
+            if (e.target === modal) {
+                handleCancel();
+            }
+        };
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        cancelBtn.addEventListener('click', handleCancel);
+        modal.addEventListener('click', handleBackdrop);
+        document.addEventListener('keydown', handleKeydown);
+    });
+}
+
+/**
+ * Shows an input modal dialog (replaces browser prompt).
+ * @param {Object} options - Configuration options
+ * @param {string} options.title - Modal title
+ * @param {string} [options.message] - Optional message/description
+ * @param {string} [options.placeholder] - Input placeholder text
+ * @param {string} [options.defaultValue] - Default input value
+ * @returns {Promise<string|null>} - Resolves with input value or null if cancelled
+ */
+export function showInputModal({ title, message = '', placeholder = '', defaultValue = '' }) {
+    return new Promise((resolve) => {
+        const modal = document.getElementById('input-modal');
+        const titleEl = document.getElementById('input-modal-title');
+        const messageEl = document.getElementById('input-modal-message');
+        const input = document.getElementById('input-modal-input');
+        const confirmBtn = document.getElementById('input-modal-confirm');
+        const cancelBtn = document.getElementById('input-modal-cancel');
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        messageEl.style.display = message ? 'block' : 'none';
+        input.placeholder = placeholder;
+        input.value = defaultValue;
+
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        input.focus();
+        input.select();
+
+        const cleanup = () => {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+            confirmBtn.removeEventListener('click', handleConfirm);
+            cancelBtn.removeEventListener('click', handleCancel);
+            input.removeEventListener('keydown', handleKeydown);
+            modal.removeEventListener('click', handleBackdrop);
+        };
+
+        const handleConfirm = () => {
+            const value = input.value.trim();
+            cleanup();
+            resolve(value || null);
+        };
+
+        const handleCancel = () => {
+            cleanup();
+            resolve(null);
+        };
+
+        const handleKeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                handleConfirm();
+            } else if (e.key === 'Escape') {
+                handleCancel();
+            }
+        };
+
+        const handleBackdrop = (e) => {
+            if (e.target === modal) {
+                handleCancel();
+            }
+        };
+
+        confirmBtn.addEventListener('click', handleConfirm);
+        cancelBtn.addEventListener('click', handleCancel);
+        input.addEventListener('keydown', handleKeydown);
+        modal.addEventListener('click', handleBackdrop);
+    });
+}
+
+/**
  * Toggles the loading state of a button, showing a spinner and disabling it.
  * @export
  * @param {HTMLElement} button - The button element to toggle.
@@ -207,7 +343,14 @@ export function renderSettingsForms(config) {
             </div>
             <div>
                 <label for="ai_model" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI Model</label>
-                <input type="text" name="ai_model" id="ai_model" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_model || ''}">
+                <div class="flex gap-2">
+                    <select name="ai_model" id="ai_model" class="form-input flex-1 rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100">
+                        ${config.ai_model ? `<option value="${config.ai_model}" selected>${config.ai_model}</option>` : '<option value="">Select a model...</option>'}
+                    </select>
+                    <button type="button" id="refresh-models-btn" class="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-sm" title="Fetch available models from API">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    </button>
+                </div>
             </div>
             <div>
                 <label for="ai_api_key" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI API Key</label>
@@ -226,6 +369,29 @@ export function renderSettingsForms(config) {
                 <input type="number" step="1" name="ai_max_output_tokens" id="ai_max_output_tokens" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_max_output_tokens || '8192'}">
             </div>
         </div>
+        <details class="mt-4">
+            <summary class="cursor-pointer text-sm font-medium text-gray-600 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200">
+                Corporate Proxy Settings (Optional)
+            </summary>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mt-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                <div>
+                    <label for="ai_user" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">AI User</label>
+                    <input type="text" name="ai_user" id="ai_user" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_user || 'anonymous'}" placeholder="User ID for tracking">
+                </div>
+                <div>
+                    <label for="ai_user_header" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">User Header Name</label>
+                    <input type="text" name="ai_user_header" id="ai_user_header" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ai_user_header || ''}" placeholder="e.g., X-User-ID">
+                </div>
+                <div>
+                    <label for="ssl_cert_path" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">SSL Cert Path</label>
+                    <input type="text" name="ssl_cert_path" id="ssl_cert_path" class="form-input w-full rounded-md bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-900 dark:text-gray-100" value="${config.ssl_cert_path || ''}" placeholder="/path/to/ca-bundle.crt">
+                </div>
+                <div class="flex items-center pt-6">
+                    <input type="checkbox" name="ai_ssl_verify" id="ai_ssl_verify" class="form-checkbox h-4 w-4 text-purple-600 rounded" ${config.ai_ssl_verify !== false && config.ai_ssl_verify !== 'false' ? 'checked' : ''}>
+                    <label for="ai_ssl_verify" class="ml-2 block text-sm text-gray-700 dark:text-gray-300">Verify SSL</label>
+                </div>
+            </div>
+        </details>
     `);
 
     const ora2pgContainer = document.getElementById('ora2pg-settings-container');
@@ -348,14 +514,14 @@ export function renderFileBrowser(files) {
     }
 
     const statusColors = {
-        'generated': 'border-gray-700',
+        'generated': 'border-gray-400 dark:border-gray-700',
         'corrected': 'border-blue-500',
         'validated': 'border-green-500',
         'failed': 'border-red-500'
     };
 
     const fileItemsHtml = files.map(file => `
-        <a href="#" data-file-id="${file.file_id}" class="file-item bg-gray-800 p-3 rounded-lg text-gray-300 hover:bg-blue-600 hover:text-white transition-colors duration-200 truncate flex items-center border-l-4 ${statusColors[file.status] || 'border-gray-700'}">
+        <a href="#" data-file-id="${file.file_id}" class="file-item bg-gray-100 dark:bg-gray-800 p-3 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-blue-500 hover:text-white transition-colors duration-200 truncate flex items-center border-l-4 cursor-pointer ${statusColors[file.status] || 'border-gray-400 dark:border-gray-700'}">
             <i class="fas fa-file-alt mr-2 text-gray-500"></i>
             <span class="truncate" title="${file.filename}">${file.filename}</span>
         </a>
@@ -383,19 +549,19 @@ export function renderSessionHistory() {
     state.sessions.forEach(session => {
         const item = document.createElement('a');
         item.href = '#';
-        item.className = 'session-item block bg-gray-800 p-3 rounded-lg hover:bg-gray-700';
+        item.className = 'session-item block bg-gray-100 dark:bg-gray-800 p-3 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 cursor-pointer border border-gray-200 dark:border-gray-700';
         item.dataset.sessionId = session.session_id;
 
         if (session.session_id === state.currentSessionId) {
-            item.classList.add('active-session');
+            item.classList.add('ring-2', 'ring-purple-500');
         }
 
         item.innerHTML = `
             <div class="flex justify-between items-center">
-                <span class="font-semibold text-white">${session.session_name}</span>
-                <span class="text-xs bg-gray-700 text-gray-300 px-2 py-1 rounded-full">${session.export_type || 'N/A'}</span>
+                <span class="font-semibold text-gray-900 dark:text-white">${session.session_name}</span>
+                <span class="text-xs bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-2 py-1 rounded-full">${session.export_type || 'N/A'}</span>
             </div>
-            <div class="text-xs text-gray-400 mt-1">${new Date(session.created_at).toLocaleString()}</div>
+            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${new Date(session.created_at).toLocaleString()}</div>
         `;
         listEl.appendChild(item);
     });
@@ -523,4 +689,325 @@ export function renderObjectTypeTree() {
     // Reset the right-hand pane
     listEl.innerHTML = `<p class="text-gray-500 text-center py-16">Select an object type from the tree to see the list of objects.</p>`;
     container.classList.remove('hidden');
+}
+
+/**
+ * Renders the migration history table.
+ * @param {Array} migrations - Array of migration objects from the API
+ * @param {Function} onSessionClick - Callback when a session is clicked for details
+ */
+export function renderMigrationHistory(migrations, onSessionClick) {
+    const container = document.getElementById('migration-history-container');
+    if (!container) return;
+
+    if (!migrations || migrations.length === 0) {
+        container.innerHTML = `
+            <div class="text-gray-500 text-center py-8">
+                No completed migrations yet.
+            </div>`;
+        return;
+    }
+
+    const formatDate = (dateStr) => {
+        if (!dateStr) return '-';
+        const date = new Date(dateStr);
+        return date.toLocaleString('en-US', {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+    };
+
+    const statusBadge = (status) => {
+        const badges = {
+            'completed': 'bg-green-600 text-white',
+            'partial': 'bg-yellow-600 text-white',
+            'failed': 'bg-red-600 text-white'
+        };
+        return `<span class="px-2 py-0.5 rounded text-xs font-medium ${badges[status] || 'bg-gray-600 text-white'}">${status}</span>`;
+    };
+
+    const formatCost = (cost) => {
+        if (!cost || cost === 0) return '-';
+        return `$${cost.toFixed(4)}`;
+    };
+
+    const formatTokens = (input, output) => {
+        if (input === 0 && output === 0) return '-';
+        return `${(input + output).toLocaleString()}`;
+    };
+
+    let html = `
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                        <th class="py-2 px-2">Date</th>
+                        <th class="py-2 px-2">Type</th>
+                        <th class="py-2 px-2">Status</th>
+                        <th class="py-2 px-2 text-center">Files</th>
+                        <th class="py-2 px-2 text-right">Tokens</th>
+                        <th class="py-2 px-2 text-right">Est. Cost</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+    migrations.forEach(m => {
+        html += `
+            <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer migration-history-row"
+                data-session-id="${m.session_id}">
+                <td class="py-2 px-2 text-gray-700 dark:text-gray-300">${formatDate(m.created_at)}</td>
+                <td class="py-2 px-2 text-gray-700 dark:text-gray-300">${m.export_type}</td>
+                <td class="py-2 px-2">${statusBadge(m.workflow_status)}</td>
+                <td class="py-2 px-2 text-center">
+                    <span class="text-green-600 dark:text-green-400">${m.successful_files}</span>/<span class="text-red-600 dark:text-red-400">${m.failed_files}</span>/<span class="text-gray-500 dark:text-gray-400">${m.total_files}</span>
+                </td>
+                <td class="py-2 px-2 text-right text-gray-700 dark:text-gray-300">${formatTokens(m.total_input_tokens, m.total_output_tokens)}</td>
+                <td class="py-2 px-2 text-right text-gray-700 dark:text-gray-300">${formatCost(m.estimated_cost_usd)}</td>
+            </tr>`;
+    });
+
+    html += `
+                </tbody>
+            </table>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">Click a row to view session details</p>`;
+
+    container.innerHTML = html;
+
+    // Add click handlers
+    container.querySelectorAll('.migration-history-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const sessionId = row.dataset.sessionId;
+            if (onSessionClick) {
+                onSessionClick(parseInt(sessionId));
+            }
+        });
+    });
+}
+
+/**
+ * Shows a modal with session details.
+ * @param {Object} sessionData - Session data from the API
+ * @param {Array} files - File details from the API
+ */
+export function showSessionDetailsModal(sessionData, files) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('session-details-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'session-details-modal';
+        modal.className = 'fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50';
+        modal.innerHTML = `
+            <div class="bg-gray-800 rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+                <div class="flex justify-between items-center px-6 py-4 border-b border-gray-700">
+                    <h3 id="session-details-title" class="text-lg font-semibold text-white">Session Details</h3>
+                    <button id="session-details-close" class="text-gray-400 hover:text-white">&times;</button>
+                </div>
+                <div id="session-details-content" class="p-6 overflow-y-auto flex-1"></div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        // Close handlers
+        modal.querySelector('#session-details-close').addEventListener('click', () => {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        });
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+        });
+    }
+
+    const content = modal.querySelector('#session-details-content');
+    const formatDate = (dateStr) => {
+        if (!dateStr) return '-';
+        return new Date(dateStr).toLocaleString();
+    };
+
+    let configHtml = '';
+    if (sessionData.config_snapshot) {
+        const config = sessionData.config_snapshot;
+        configHtml = `
+            <details class="mt-4">
+                <summary class="cursor-pointer text-gray-400 hover:text-white">Configuration Snapshot</summary>
+                <div class="mt-2 bg-gray-900 rounded p-4 text-xs font-mono overflow-x-auto">
+                    <pre>${JSON.stringify(config, null, 2)}</pre>
+                </div>
+            </details>`;
+    }
+
+    let filesHtml = '';
+    if (files && files.length > 0) {
+        filesHtml = `
+            <div class="mt-4">
+                <h4 class="text-sm font-medium text-gray-300 mb-2">Files (${files.length})</h4>
+                <div class="max-h-64 overflow-y-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-left text-gray-500">
+                                <th class="py-1 px-2">Filename</th>
+                                <th class="py-1 px-2">Status</th>
+                                <th class="py-1 px-2 text-right">AI Calls</th>
+                                <th class="py-1 px-2 text-right">Tokens</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${files.map(f => `
+                                <tr class="border-t border-gray-800">
+                                    <td class="py-1 px-2 truncate max-w-xs" title="${f.filename}">${f.filename}</td>
+                                    <td class="py-1 px-2">
+                                        <span class="px-1.5 py-0.5 rounded text-xs ${f.status === 'validated' ? 'bg-green-600' : f.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'}">${f.status}</span>
+                                    </td>
+                                    <td class="py-1 px-2 text-right">${f.ai_attempts || 0}</td>
+                                    <td class="py-1 px-2 text-right">${((f.input_tokens || 0) + (f.output_tokens || 0)).toLocaleString()}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+            </div>`;
+    }
+
+    content.innerHTML = `
+        <div class="grid grid-cols-2 gap-4 text-sm">
+            <div>
+                <span class="text-gray-400">Session Name:</span>
+                <span class="text-white ml-2">${sessionData.session_name}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Export Type:</span>
+                <span class="text-white ml-2">${sessionData.export_type}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Status:</span>
+                <span class="ml-2 px-2 py-0.5 rounded text-xs ${sessionData.workflow_status === 'completed' ? 'bg-green-600' : sessionData.workflow_status === 'failed' ? 'bg-red-600' : 'bg-yellow-600'}">${sessionData.workflow_status}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">AI Model:</span>
+                <span class="text-white ml-2">${sessionData.ai_model || '-'}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Started:</span>
+                <span class="text-white ml-2">${formatDate(sessionData.created_at)}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Completed:</span>
+                <span class="text-white ml-2">${formatDate(sessionData.completed_at)}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Input Tokens:</span>
+                <span class="text-white ml-2">${(sessionData.total_input_tokens || 0).toLocaleString()}</span>
+            </div>
+            <div>
+                <span class="text-gray-400">Output Tokens:</span>
+                <span class="text-white ml-2">${(sessionData.total_output_tokens || 0).toLocaleString()}</span>
+            </div>
+            <div class="col-span-2">
+                <span class="text-gray-400">Estimated Cost:</span>
+                <span class="text-white ml-2">$${(sessionData.estimated_cost_usd || 0).toFixed(4)}</span>
+            </div>
+        </div>
+        ${configHtml}
+        ${filesHtml}`;
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+/**
+ * Renders the global migration history table (all clients).
+ * @param {Array} migrations - Array of migration objects from the API
+ * @param {Function} onSessionClick - Callback when a session is clicked for details
+ */
+export function renderGlobalMigrationHistory(migrations, onSessionClick) {
+    const container = document.getElementById('global-migration-history-container');
+    if (!container) return;
+
+    if (!migrations || migrations.length === 0) {
+        container.innerHTML = `
+            <div class="text-gray-500 dark:text-gray-400 text-center py-8">
+                <i class="fas fa-history text-4xl mb-3 opacity-50"></i>
+                <p>No completed migrations yet.</p>
+                <p class="text-sm mt-1">Run a migration to see it here.</p>
+            </div>`;
+        return;
+    }
+
+    const formatDate = (dateStr) => {
+        if (!dateStr) return '-';
+        const date = new Date(dateStr);
+        return date.toLocaleString('en-US', {
+            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+    };
+
+    const statusBadge = (status) => {
+        const badges = {
+            'completed': 'bg-green-600 text-white',
+            'partial': 'bg-yellow-600 text-white',
+            'failed': 'bg-red-600 text-white'
+        };
+        return `<span class="px-2 py-0.5 rounded text-xs font-medium ${badges[status] || 'bg-gray-600 text-white'}">${status}</span>`;
+    };
+
+    const formatCost = (cost) => {
+        if (!cost || cost === 0) return '-';
+        return `$${cost.toFixed(4)}`;
+    };
+
+    const formatTokens = (input, output) => {
+        if (input === 0 && output === 0) return '-';
+        return `${(input + output).toLocaleString()}`;
+    };
+
+    let html = `
+        <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+                <thead>
+                    <tr class="text-left text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                        <th class="py-2 px-2">Date</th>
+                        <th class="py-2 px-2">Client</th>
+                        <th class="py-2 px-2">Type</th>
+                        <th class="py-2 px-2">Status</th>
+                        <th class="py-2 px-2 text-center">Files</th>
+                        <th class="py-2 px-2 text-right">Tokens</th>
+                        <th class="py-2 px-2 text-right">Est. Cost</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+    migrations.forEach(m => {
+        html += `
+            <tr class="border-b border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer global-migration-history-row"
+                data-session-id="${m.session_id}" data-client-id="${m.client_id}">
+                <td class="py-2 px-2 text-gray-700 dark:text-gray-300">${formatDate(m.created_at)}</td>
+                <td class="py-2 px-2 text-gray-700 dark:text-gray-300 truncate max-w-[120px]" title="${m.client_name}">${m.client_name}</td>
+                <td class="py-2 px-2 text-gray-700 dark:text-gray-300">${m.export_type}</td>
+                <td class="py-2 px-2">${statusBadge(m.workflow_status)}</td>
+                <td class="py-2 px-2 text-center">
+                    <span class="text-green-600 dark:text-green-400">${m.successful_files}</span>/<span class="text-red-600 dark:text-red-400">${m.failed_files}</span>/<span class="text-gray-500 dark:text-gray-400">${m.total_files}</span>
+                </td>
+                <td class="py-2 px-2 text-right text-gray-700 dark:text-gray-300">${formatTokens(m.total_input_tokens, m.total_output_tokens)}</td>
+                <td class="py-2 px-2 text-right text-gray-700 dark:text-gray-300">${formatCost(m.estimated_cost_usd)}</td>
+            </tr>`;
+    });
+
+    html += `
+                </tbody>
+            </table>
+        </div>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">Click a row to view session details</p>`;
+
+    container.innerHTML = html;
+
+    // Add click handlers
+    container.querySelectorAll('.global-migration-history-row').forEach(row => {
+        row.addEventListener('click', () => {
+            const sessionId = row.dataset.sessionId;
+            if (onSessionClick) {
+                onSessionClick(parseInt(sessionId));
+            }
+        });
+    });
 }

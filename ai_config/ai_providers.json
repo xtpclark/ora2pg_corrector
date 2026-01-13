@@ -15,18 +15,11 @@
             "notes": "For GPT-4, GPT-3.5, etc."
         },
         {
-            "name": "Groq",
-            "api_endpoint": "https://api.groq.com/openai/v1/",
-            "default_model": "llama3-70b-8192",
-            "key_url": "https://console.groq.com/keys",
-            "notes": "High-speed inference."
-        },
-        {
             "name": "Anthropic (Claude)",
             "api_endpoint": "https://api.anthropic.com/v1/",
-            "default_model": "claude-3-opus-20240229",
+            "default_model": "claude-sonnet-4-20250514",
             "key_url": "https://console.anthropic.com/settings/keys",
-            "notes": "Custom API connector."
+            "notes": "For Claude models. Also: claude-3-5-sonnet-20241022, claude-3-5-haiku-20241022"
         },
         {
             "name": "xAI (Grok)",

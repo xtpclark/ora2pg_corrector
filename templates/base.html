@@ -131,7 +131,7 @@
         
         <!-- Version -->
         <div class="mt-auto pt-4 border-t border-gray-200 dark:border-gray-700">
-            <p class="text-xs text-center text-gray-500 dark:text-gray-400">v2.8</p>
+            <p class="text-xs text-center text-gray-500 dark:text-gray-400">v2.9</p>
         </div>
     </aside>
 
@@ -156,6 +156,21 @@
             </div>
         </div>
     </div>
+
+    <!-- Input Modal (replaces browser prompt) -->
+    <div id="input-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 max-w-md mx-4 w-full">
+            <h3 class="text-lg font-bold text-gray-900 dark:text-white mb-2" id="input-modal-title">Enter Value</h3>
+            <p class="text-gray-600 dark:text-gray-300 mb-4 text-sm" id="input-modal-message"></p>
+            <input type="text" id="input-modal-input"
+                class="w-full px-4 py-2 mb-4 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent outline-none"
+                placeholder="">
+            <div class="flex justify-end space-x-3">
+                <button id="input-modal-cancel" class="px-4 py-2 bg-gray-300 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded hover:bg-gray-400 dark:hover:bg-gray-500 transition-colors">Cancel</button>
+                <button id="input-modal-confirm" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded transition-colors">OK</button>
+            </div>
+        </div>
+    </div>
     
     <script>
         document.getElementById('theme-toggle')?.addEventListener('click', function() {
@@ -176,6 +191,6 @@
         });
     </script>
     
-    <script type="module" src="{{ url_for('static', filename='js/app.js') }}?v=4"></script>
+    <script type="module" src="{{ url_for('static', filename='js/app.js') }}?v=9"></script>
 </body>
 </html>

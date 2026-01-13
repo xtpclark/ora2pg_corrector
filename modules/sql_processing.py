@@ -6,16 +6,109 @@ import logging
 import requests
 import tempfile
 import shutil
+import certifi
 from cryptography.fernet import Fernet
 import psycopg2
 from psycopg2 import sql as psql
 import json
 from datetime import datetime
 from .db import execute_query, is_postgres, insert_returning_id
-from .constants import get_session_dir
+from .constants import get_session_dir, mask_sensitive_config, calculate_ai_cost
+from .oracle_preprocessing import preprocess_oracle_sql
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# PostgreSQL reserved words that must be quoted when used as identifiers
+PG_RESERVED_WORDS = {
+    'all', 'analyse', 'analyze', 'and', 'any', 'array', 'as', 'asc', 'asymmetric',
+    'authorization', 'binary', 'both', 'case', 'cast', 'check', 'collate', 'collation',
+    'column', 'concurrently', 'constraint', 'create', 'cross', 'current_catalog',
+    'current_date', 'current_role', 'current_schema', 'current_time', 'current_timestamp',
+    'current_user', 'default', 'deferrable', 'desc', 'distinct', 'do', 'else', 'end',
+    'except', 'exists', 'extract', 'false', 'fetch', 'for', 'foreign', 'freeze', 'from',
+    'full', 'grant', 'group', 'having', 'ilike', 'in', 'index', 'initially', 'inner',
+    'insert', 'intersect', 'into', 'is', 'isnull', 'join', 'lateral', 'leading', 'left',
+    'like', 'limit', 'localtime', 'localtimestamp', 'natural', 'not', 'notnull', 'null',
+    'off', 'offset', 'on', 'only', 'or', 'order', 'outer', 'over', 'overlaps', 'partition',
+    'placing', 'precision', 'primary', 'references', 'returning', 'right', 'select',
+    'session_user', 'set', 'similar', 'some', 'symmetric', 'table', 'tablesample', 'then',
+    'to', 'trailing', 'true', 'union', 'unique', 'update', 'user', 'using', 'values',
+    'variadic', 'verbose', 'when', 'where', 'window', 'with'
+}
+
+
+def quote_reserved_words(sql):
+    """
+    Quote PostgreSQL reserved words used as identifiers (column/table names).
+
+    This handles cases like:
+    - Column definitions: limit bigint -> "limit" bigint
+    - ALTER TABLE: ALTER COLUMN limit -> ALTER COLUMN "limit"
+
+    :param str sql: SQL to process
+    :return: SQL with reserved words quoted
+    :rtype: str
+    """
+    # Pattern to match column definitions in CREATE TABLE
+    # Matches: word followed by data type (bigint, varchar, etc.)
+    def quote_column_def(match):
+        col_name = match.group(1)
+        rest = match.group(2)
+        # Don't quote "WITH" when it's part of a timestamp type specifier (WITH TIME ZONE)
+        # or other SQL keywords that commonly appear in type definitions
+        # Note: rest only contains " time" (the captured type), so check for TIME or LOCAL
+        if col_name.lower() == 'with' and re.match(r'\s+(?:time|local)\b', rest, re.IGNORECASE):
+            return match.group(0)
+        if col_name.lower() in PG_RESERVED_WORDS:
+            return f'"{col_name}"{rest}'
+        return match.group(0)
+
+    # Pattern: word at start of column definition (after comma/paren, optional whitespace)
+    # followed by a data type keyword
+    col_def_pattern = r'(?<=[\(\,\s])(\b\w+\b)(\s+(?:bigint|smallint|integer|int|numeric|decimal|real|double|boolean|bool|char|varchar|text|bytea|timestamp|date|time|interval|uuid|json|jsonb|xml|array|serial|bigserial)\b)'
+    sql = re.sub(col_def_pattern, quote_column_def, sql, flags=re.IGNORECASE)
+
+    # Pattern for ALTER COLUMN statements
+    def quote_alter_column(match):
+        prefix = match.group(1)
+        col_name = match.group(2)
+        rest = match.group(3)
+        if col_name.lower() in PG_RESERVED_WORDS:
+            return f'{prefix}"{col_name}"{rest}'
+        return match.group(0)
+
+    alter_col_pattern = r'(ALTER\s+(?:TABLE\s+\w+\s+)?COLUMN\s+)(\b\w+\b)(\s)'
+    sql = re.sub(alter_col_pattern, quote_alter_column, sql, flags=re.IGNORECASE)
+
+    # Pattern for INDEX definitions: ON table (column_name)
+    def quote_index_col(match):
+        prefix = match.group(1)
+        col_name = match.group(2)
+        suffix = match.group(3)
+        if col_name.lower() in PG_RESERVED_WORDS:
+            return f'{prefix}"{col_name}"{suffix}'
+        return match.group(0)
+
+    # Match column names in index definitions (inside parentheses after ON table)
+    index_col_pattern = r'(\bON\s+\w+\s*\([^)]*?)(\b\w+\b)(\s*(?:,|\)))'
+    sql = re.sub(index_col_pattern, quote_index_col, sql, flags=re.IGNORECASE)
+
+    # Pattern for PRIMARY KEY, UNIQUE, FOREIGN KEY column lists
+    def quote_constraint_col(match):
+        prefix = match.group(1)
+        col_name = match.group(2)
+        suffix = match.group(3)
+        if col_name.lower() in PG_RESERVED_WORDS:
+            return f'{prefix}"{col_name}"{suffix}'
+        return match.group(0)
+
+    # Match column names in PRIMARY KEY, UNIQUE, or FOREIGN KEY (column_list)
+    constraint_col_pattern = r'(\b(?:PRIMARY\s+KEY|UNIQUE|FOREIGN\s+KEY)\s*\([^)]*?)(\b\w+\b)(\s*(?:,|\)))'
+    sql = re.sub(constraint_col_pattern, quote_constraint_col, sql, flags=re.IGNORECASE)
+
+    return sql
+
 
 class Ora2PgAICorrector:
     """
@@ -376,9 +469,12 @@ class Ora2PgAICorrector:
             logger.error(f"Unexpected error during DDL fetch: {e}", exc_info=True)
             return None, str(e)
 
-    def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None):
+    def run_ora2pg_export(self, client_id, db_conn, client_config, extra_args=None, session_name=None, existing_session_id=None):
         """
         Manages the full Ora2Pg export process, including session creation and file persistence.
+
+        :param session_name: Optional friendly name for the session (defaults to timestamp)
+        :param existing_session_id: Optional session_id to add files to an existing session
         """
         is_report = extra_args and any(arg in extra_args for arg in ['SHOW_REPORT', 'SHOW_VERSION'])
         if is_report:
@@ -387,23 +483,41 @@ class Ora2PgAICorrector:
             return {'sql_output': stdout}, None
 
         try:
-            session_name = f"Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             export_type = client_config.get('type', 'TABLE').upper()
-            
-            session_id = insert_returning_id(
-                db_conn, 'migration_sessions',
-                ('client_id', 'session_name', 'export_directory', 'export_type'),
-                (client_id, session_name, "pending", export_type),
-                'session_id'
-            )
 
-            persistent_export_dir = get_session_dir(client_id, session_id)
-            os.makedirs(persistent_export_dir, exist_ok=True)
+            # Use existing session or create a new one
+            if existing_session_id:
+                session_id = existing_session_id
+                # Get the existing session's export directory
+                cursor = execute_query(db_conn, 'SELECT export_directory FROM migration_sessions WHERE session_id = ?', (session_id,))
+                row = cursor.fetchone()
+                if row:
+                    persistent_export_dir = row[0]
+                else:
+                    return {}, f"Session {session_id} not found"
+                logger.info(f"Adding to existing session {session_id} at {persistent_export_dir}")
+            else:
+                if not session_name:
+                    session_name = f"Export - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
-            execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
-            
-            db_conn.commit()
-            logger.info(f"Created persistent session {session_id} at {persistent_export_dir}")
+                # Capture config snapshot with sensitive values masked
+                config_snapshot = json.dumps(mask_sensitive_config(client_config))
+                ai_model = client_config.get('ai_model', '')
+
+                session_id = insert_returning_id(
+                    db_conn, 'migration_sessions',
+                    ('client_id', 'session_name', 'export_directory', 'export_type', 'config_snapshot', 'ai_model'),
+                    (client_id, session_name, "pending", export_type, config_snapshot, ai_model),
+                    'session_id'
+                )
+
+                persistent_export_dir = get_session_dir(client_id, session_id)
+                os.makedirs(persistent_export_dir, exist_ok=True)
+
+                execute_query(db_conn, 'UPDATE migration_sessions SET export_directory = ? WHERE session_id = ?', (persistent_export_dir, session_id))
+
+                db_conn.commit()
+                logger.info(f"Created persistent session {session_id} at {persistent_export_dir}")
 
             file_per_table = str(client_config.get('file_per_table', '0')) in ['true', 'True', '1']
             run_config = client_config.copy()
@@ -412,39 +526,72 @@ class Ora2PgAICorrector:
                 logger.info("Executing multi-file DDL export strategy (looping).")
                 generated_files = []
                 tables = [t.strip() for t in run_config['ALLOW'].split(',')]
-                for table_name in tables:
+                total_tables = len(tables)
+
+                # Update session status to exporting now that we have a session
+                execute_query(db_conn,
+                    'UPDATE migration_sessions SET workflow_status = ?, current_phase = ?, total_count = ? WHERE session_id = ?',
+                    ('exporting', 'export', total_tables, session_id))
+                db_conn.commit()
+
+                for idx, table_name in enumerate(tables):
+                    # Update progress for each table being exported
+                    execute_query(db_conn,
+                        'UPDATE migration_sessions SET processed_count = ?, current_file = ? WHERE session_id = ?',
+                        (idx, f"Exporting {table_name}...", session_id))
+                    db_conn.commit()
+
                     single_table_config = run_config.copy()
                     single_table_config['ALLOW'] = table_name
                     single_table_config['OUTPUT'] = os.path.join(persistent_export_dir, f"{table_name}.sql")
                     single_table_config.pop('OUTPUT_DIR', None)
-                    
+
                     _, error, returncode = self._run_single_ora2pg_command(single_table_config)
                     if returncode == 0:
                         generated_files.append(f"{table_name}.sql")
                     else:
                         logger.warning(f"Skipping table {table_name} for session {session_id} due to export error: {error}")
+
+                # Mark export phase complete
+                execute_query(db_conn,
+                    'UPDATE migration_sessions SET processed_count = ?, current_file = ? WHERE session_id = ?',
+                    (total_tables, 'Export complete', session_id))
+                db_conn.commit()
             else:
                 logger.info("Executing single-command export strategy.")
-                if file_per_table:
-                    run_config['OUTPUT_DIR'] = persistent_export_dir
-                    run_config['OUTPUT'] = f"output_{export_type.lower()}.sql"
-                else:
-                    run_config['OUTPUT'] = os.path.join(persistent_export_dir, f"output_{export_type.lower()}.sql")
-                    run_config.pop('OUTPUT_DIR', None)
+                # Always use OUTPUT_DIR + OUTPUT separately to avoid Ora2Pg path bugs
+                # with IDENTITY columns (AUTOINCREMENT file path construction)
+                run_config['OUTPUT_DIR'] = persistent_export_dir
+                run_config['OUTPUT'] = f"output_{export_type.lower()}.sql"
+
+                # Get list of files BEFORE export to detect new files
+                files_before = set(os.listdir(persistent_export_dir)) if os.path.exists(persistent_export_dir) else set()
 
                 _, stderr, returncode = self._run_single_ora2pg_command(run_config)
-                
+
                 if returncode != 0:
-                    logger.error(f"Ora2Pg command failed. Rolling back session {session_id}.")
-                    execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = ?', (session_id,))
-                    db_conn.commit()
-                    shutil.rmtree(persistent_export_dir)
+                    # Only rollback if this is a new session (not adding to existing)
+                    if not existing_session_id:
+                        logger.error(f"Ora2Pg command failed. Rolling back session {session_id}.")
+                        execute_query(db_conn, 'DELETE FROM migration_sessions WHERE session_id = ?', (session_id,))
+                        db_conn.commit()
+                        shutil.rmtree(persistent_export_dir)
                     return {}, stderr
-                
-                generated_files = [f for f in os.listdir(persistent_export_dir) if f.endswith('.sql')]
+
+                # Track ALL new .sql files created by this export (ora2pg may create multiple files)
+                # e.g., for views: output_view.sql AND EMP_DETAILS_VIEW_output_view.sql
+                files_after = set(os.listdir(persistent_export_dir))
+                new_files = files_after - files_before
+                generated_files = [f for f in new_files if f.endswith('.sql')]
+                logger.info(f"Export created {len(generated_files)} file(s): {generated_files}")
 
             for filename in generated_files:
-                execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
+                # Avoid duplicate entries - only insert if file doesn't already exist for this session
+                cursor = execute_query(db_conn,
+                    'SELECT file_id FROM migration_files WHERE session_id = ? AND filename = ?',
+                    (session_id, filename))
+                if not cursor.fetchone():
+                    execute_query(db_conn, 'INSERT INTO migration_files (session_id, filename) VALUES (?, ?)', (session_id, filename))
             db_conn.commit()
             
             if not file_per_table and len(generated_files) == 1:
@@ -481,7 +628,8 @@ class Ora2PgAICorrector:
 
     def _extract_table_names(self, sql):
         """
-        Extracts table names from a SQL query, ignoring CTEs.
+        Extracts table names from a SQL query (FROM/JOIN clauses), ignoring CTEs.
+        Used for auto_create_ddl to find referenced tables.
         """
         cte_pattern = re.compile(r'\bWITH\s+(?:RECURSIVE\s+)?([\w\s,]+)\bAS', re.IGNORECASE | re.DOTALL)
         cte_match = cte_pattern.search(sql)
@@ -492,16 +640,83 @@ class Ora2PgAICorrector:
                 name_match = re.search(r'(\w+)\s*\(?.*', part.strip())
                 if name_match:
                     cte_names.add(name_match.group(1).lower())
-        
+
         table_pattern = re.compile(
             r'\b(?:FROM|JOIN)\s+([\w\.]+)[\s\w]*?(?:\s+AS\s+[\w]+)?',
             re.IGNORECASE | re.MULTILINE
         )
         matches = table_pattern.findall(sql)
-        
+
         table_names = {name for name in matches if name.lower() not in cte_names}
-        logger.info(f"Extracted table names for cleanup: {table_names} (ignoring CTEs: {cte_names})")
+        logger.info(f"Extracted referenced tables: {table_names} (ignoring CTEs: {cte_names})")
         return table_names
+
+    def _split_fk_constraints(self, sql):
+        """
+        Splits SQL into non-FK statements and FK constraint statements.
+        FK constraints need to be deferred when there are circular dependencies.
+
+        Returns tuple: (main_sql, fk_statements)
+        - main_sql: SQL with FK constraints removed
+        - fk_statements: List of FK constraint statements
+        """
+        # Pattern to match ALTER TABLE ADD CONSTRAINT ... FOREIGN KEY statements
+        fk_pattern = re.compile(
+            r'ALTER\s+TABLE\s+[\w\.]+\s+ADD\s+CONSTRAINT\s+[\w]+\s+FOREIGN\s+KEY[^;]+;',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        fk_statements = fk_pattern.findall(sql)
+        main_sql = fk_pattern.sub('', sql)
+
+        # Clean up any extra whitespace
+        main_sql = re.sub(r'\n\s*\n', '\n\n', main_sql)
+
+        if fk_statements:
+            logger.info(f"Split out {len(fk_statements)} FK constraint(s) for deferred execution")
+
+        return main_sql.strip(), fk_statements
+
+    def _extract_created_objects(self, sql):
+        """
+        Extracts objects being CREATED from DDL statements.
+        Used for clean_slate to drop only the object being created, not referenced tables.
+
+        Returns list of tuples: [(object_type, object_name), ...]
+        """
+        objects = []
+
+        # Patterns for different CREATE statements
+        patterns = [
+            # CREATE TABLE [IF NOT EXISTS] [schema.]name
+            (r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\w]+\.)?([\w]+)', 'TABLE'),
+            # CREATE [OR REPLACE] VIEW [schema.]name
+            (r'CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+(?:[\w]+\.)?([\w]+)', 'VIEW'),
+            # CREATE [OR REPLACE] [MATERIALIZED] VIEW
+            (r'CREATE\s+(?:OR\s+REPLACE\s+)?MATERIALIZED\s+VIEW\s+(?:[\w]+\.)?([\w]+)', 'MATERIALIZED VIEW'),
+            # CREATE [OR REPLACE] FUNCTION [schema.]name
+            (r'CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:[\w]+\.)?([\w]+)', 'FUNCTION'),
+            # CREATE [OR REPLACE] PROCEDURE [schema.]name
+            (r'CREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\s+(?:[\w]+\.)?([\w]+)', 'PROCEDURE'),
+            # CREATE [UNIQUE] INDEX [CONCURRENTLY] [IF NOT EXISTS] name
+            (r'CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([\w]+)', 'INDEX'),
+            # CREATE SEQUENCE [IF NOT EXISTS] [schema.]name
+            (r'CREATE\s+SEQUENCE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:[\w]+\.)?([\w]+)', 'SEQUENCE'),
+            # CREATE TYPE [schema.]name
+            (r'CREATE\s+TYPE\s+(?:[\w]+\.)?([\w]+)', 'TYPE'),
+            # CREATE [OR REPLACE] TRIGGER name
+            (r'CREATE\s+(?:OR\s+REPLACE\s+)?TRIGGER\s+([\w]+)', 'TRIGGER'),
+        ]
+
+        for pattern, obj_type in patterns:
+            for match in re.finditer(pattern, sql, re.IGNORECASE):
+                obj_name = match.group(1)
+                objects.append((obj_type, obj_name))
+
+        if objects:
+            logger.info(f"Extracted objects being created: {objects}")
+
+        return objects
 
     def ai_correct_sql(self, sql, source_dialect='oracle'):
         """
@@ -513,7 +728,7 @@ class Ora2PgAICorrector:
         :rtype: tuple
         """
         if not sql:
-            return sql, {'status': 'no_content', 'tokens_used': 0}
+            return sql, {'status': 'no_content', 'tokens_used': 0, 'input_tokens': 0, 'output_tokens': 0}
         
         # Map dialect values to readable names
         dialect_names = {
@@ -544,9 +759,29 @@ IMPORTANT REQUIREMENTS:
 1. Output only pure PostgreSQL SQL - no psql metacommands (lines starting with \\)
 2. Remove any lines like: \\set, \\i, \\copy, \\encoding, etc.
 3. Keep valid SQL commands like: SET client_encoding, CREATE TABLE, etc.
-4. Convert Oracle data types: NUMBER→numeric, VARCHAR2→varchar, CLOB→text, etc.
-5. Convert Oracle functions: NVL→COALESCE, SYSDATE→CURRENT_TIMESTAMP, etc.
-6. For PL/SQL: Convert to PL/pgSQL (CREATE OR REPLACE FUNCTION/PROCEDURE)
+4. Convert Oracle data types:
+   - NUMBER→NUMERIC, VARCHAR2→VARCHAR, NVARCHAR2→VARCHAR
+   - CLOB→TEXT, NCLOB→TEXT, BLOB→BYTEA, RAW→BYTEA
+   - LONG→TEXT, LONG RAW→BYTEA
+   - TIMESTAMP WITH LOCAL TIME ZONE→TIMESTAMPTZ or TIMESTAMP WITH TIME ZONE
+   - TIMESTAMP(n) WITH LOCAL TIME ZONE→TIMESTAMP(n) WITH TIME ZONE
+5. Convert Oracle functions: NVL→COALESCE, SYSDATE→CURRENT_TIMESTAMP
+   - NVL2(expr,val1,val2)→CASE WHEN expr IS NOT NULL THEN val1 ELSE val2 END
+6. Convert Oracle TYPE definitions:
+   - CREATE TYPE name AS OBJECT (...)→CREATE TYPE name AS (...)
+   - VARRAY(n) OF type→type[] (array syntax)
+   - CREATE TYPE name AS VARRAY(n) OF type→CREATE DOMAIN name AS type[]
+7. For PL/SQL: Convert to PL/pgSQL (CREATE OR REPLACE FUNCTION/PROCEDURE)
+8. CRITICAL: Quote PostgreSQL reserved words used as identifiers with double quotes. Reserved words include:
+   ALL, AND, ANY, ARRAY, AS, ASC, AUTHORIZATION, BOTH, CASE, CAST, CHECK, COLLATE, COLUMN,
+   CONCURRENTLY, CONSTRAINT, CREATE, CROSS, CURRENT, DEFAULT, DEFERRABLE, DESC, DISTINCT, DO,
+   ELSE, END, EXCEPT, EXISTS, EXTRACT, FALSE, FETCH, FOR, FOREIGN, FROM, FULL, GRANT, GROUP,
+   HAVING, ILIKE, IN, INDEX, INNER, INSERT, INTERSECT, INTO, IS, ISNULL, JOIN, LEADING, LEFT,
+   LIKE, LIMIT, LOCALTIME, LOCALTIMESTAMP, NATURAL, NOT, NOTNULL, NULL, OFF, OFFSET, ON, ONLY,
+   OR, ORDER, OUTER, OVER, PARTITION, PRECISION, PRIMARY, REFERENCES, RETURNING, RIGHT, SELECT,
+   SESSION_USER, SET, SOME, TABLE, THEN, TO, TRAILING, TRUE, UNION, UNIQUE, UPDATE, USER, USING,
+   VALUES, WHEN, WHERE, WINDOW, WITH
+   Example: A column named "limit" must be quoted as "limit" in CREATE TABLE and all references.
 
 Original {source_name} SQL:
 ```sql
@@ -557,15 +792,17 @@ Original {source_name} SQL:
             return self._make_ai_call(system_instruction, full_prompt)
         except Exception as e:
             logger.error(f"AI SQL conversion from {source_name} failed: {e}", exc_info=False)
-            return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0}
+            return sql, {'status': 'error', 'error_message': str(e), 'tokens_used': 0, 'input_tokens': 0, 'output_tokens': 0}
 
 
     def _get_ddl_from_ai(self, failed_sql, error_message, object_name):
         """
         Asks the AI to generate a DDL statement for a missing object.
+
+        :return: Tuple of (ddl_sql, metrics) where metrics contains token counts
         """
         system_instruction = "You are a PostgreSQL expert. Your task is to generate the necessary DDL to resolve a missing object error."
-        
+
         full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
 The missing object is named '{object_name}'. Please generate the necessary CREATE TABLE or CREATE TYPE statement for the '{object_name}' object AND ONLY THAT OBJECT.
 Infer column names and reasonable data types from the query context.
@@ -575,11 +812,55 @@ Query:
 {failed_sql}
 ```"""
         try:
-            ddl_sql, _ = self._make_ai_call(system_instruction, full_prompt)
-            return ddl_sql
+            ddl_sql, metrics = self._make_ai_call(system_instruction, full_prompt)
+            return ddl_sql, metrics
         except Exception as e:
             logger.error(f"AI DDL generation failed for object '{object_name}': {e}", exc_info=False)
-            return None
+            return None, {'input_tokens': 0, 'output_tokens': 0}
+
+    def _get_type_ddl_from_ai(self, failed_sql, error_message, type_name):
+        """
+        Asks the AI to generate a CREATE TYPE statement for a missing PostgreSQL type.
+
+        This handles Oracle composite types (TYPE AS OBJECT) and array types (VARRAY)
+        that need to be converted to PostgreSQL equivalents.
+
+        :return: Tuple of (ddl_sql, metrics) where metrics contains token counts
+        """
+        system_instruction = """You are a PostgreSQL expert specializing in Oracle-to-PostgreSQL migration.
+Your task is to generate CREATE TYPE statements for missing PostgreSQL composite types.
+
+Common Oracle-to-PostgreSQL type conversions:
+- Oracle TYPE AS OBJECT -> PostgreSQL CREATE TYPE AS (composite type)
+- Oracle VARRAY -> PostgreSQL array type (type[]) or CREATE DOMAIN
+- VARCHAR2 -> VARCHAR
+- NUMBER -> NUMERIC
+- CLOB -> TEXT
+- BLOB -> BYTEA
+- DATE -> TIMESTAMP (Oracle DATE includes time)"""
+
+        full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
+The missing type is named '{type_name}'.
+
+Please generate the necessary CREATE TYPE statement for '{type_name}'.
+Infer the type structure (fields and their data types) from the query context.
+
+Guidelines:
+1. Use PostgreSQL composite type syntax: CREATE TYPE name AS (field1 type1, field2 type2, ...);
+2. Convert Oracle data types to PostgreSQL equivalents
+3. If the type appears to be an array/collection type, use CREATE DOMAIN name AS element_type[];
+4. Provide only the raw DDL SQL code, with no explanations or markdown
+
+Query:
+```sql
+{failed_sql}
+```"""
+        try:
+            ddl_sql, metrics = self._make_ai_call(system_instruction, full_prompt)
+            return ddl_sql, metrics
+        except Exception as e:
+            logger.error(f"AI TYPE DDL generation failed for type '{type_name}': {e}", exc_info=False)
+            return None, {'input_tokens': 0, 'output_tokens': 0}
 
     def _get_consolidated_ddl_from_ai(self, sql_query, missing_tables):
         """
@@ -607,6 +888,8 @@ Query:
     def _get_query_fix_from_ai(self, failed_sql, error_message):
         """
         Asks the AI to fix a SQL query based on an error message.
+
+        :return: Tuple of (fixed_sql, metrics) where metrics contains token counts
         """
         system_instruction = "You are a PostgreSQL expert. Your task is to correct a SQL query that failed validation. Output only valid PostgreSQL SQL that can be executed directly via a database driver (not psql CLI)."
         full_prompt = f"""The following PostgreSQL query failed with the error: `{error_message}`.
@@ -617,17 +900,26 @@ IMPORTANT:
 - Remove any psql metacommands (lines starting with \\) like \\set, \\i, \\copy
 - Keep valid SQL statements like SET, CREATE, INSERT, etc.
 - Output pure PostgreSQL SQL only
+- CRITICAL: If the error mentions "syntax error" near a word, check if it's a PostgreSQL reserved word.
+  Reserved words used as column/table names MUST be quoted with double quotes.
+  Common reserved words: ALL, AND, ANY, ARRAY, AS, ASC, BOTH, CASE, CAST, CHECK, COLLATE, COLUMN,
+  CONSTRAINT, CREATE, CROSS, CURRENT, DEFAULT, DESC, DISTINCT, DO, ELSE, END, EXCEPT, EXISTS,
+  FALSE, FETCH, FOR, FOREIGN, FROM, FULL, GRANT, GROUP, HAVING, IN, INDEX, INNER, INSERT,
+  INTERSECT, INTO, IS, JOIN, LEADING, LEFT, LIKE, LIMIT, NATURAL, NOT, NULL, OFFSET, ON, ONLY,
+  OR, ORDER, OUTER, OVER, PARTITION, PRIMARY, REFERENCES, RETURNING, RIGHT, SELECT, SET, SOME,
+  TABLE, THEN, TO, TRAILING, TRUE, UNION, UNIQUE, UPDATE, USER, USING, VALUES, WHEN, WHERE, WITH
+  Example: A column named "limit" must be quoted as "limit" everywhere it appears.
 
 Failed Query:
 ```sql
 {failed_sql}
 ```"""
         try:
-            fixed_sql, _ = self._make_ai_call(system_instruction, full_prompt)
-            return fixed_sql
+            fixed_sql, metrics = self._make_ai_call(system_instruction, full_prompt)
+            return fixed_sql, metrics
         except Exception as e:
             logger.error(f"AI query fix generation failed: {e}", exc_info=False)
-            return None
+            return None, {'input_tokens': 0, 'output_tokens': 0}
 
     # --- DDL Cache Methods ---
 
@@ -782,16 +1074,50 @@ Failed Query:
     def _make_ai_call(self, system_instruction, full_prompt):
         """
         Makes a generic call to the configured AI service.
+        Supports: Google AI, Anthropic, and OpenAI-compatible APIs.
+
+        Corporate proxy settings:
+        - ai_user: User identifier for tracking/auditing
+        - ai_user_header: Custom header name to send the user identifier
+        - ssl_cert_path: Path to SSL certificate for corporate proxies
+        - ai_ssl_verify: Whether to verify SSL certificates (default: True)
         """
         api_key = self.ai_settings.get('ai_api_key')
         api_endpoint = self.ai_settings.get('ai_endpoint')
         ai_model = self.ai_settings.get('ai_model')
-        headers = {}
-        
+        headers = {'Content-Type': 'application/json'}
+
         if not api_key or not api_endpoint or not ai_model:
             raise ValueError("AI settings (API Key, Endpoint, Model) are not fully configured.")
 
-        if "generativelanguage.googleapis.com" in api_endpoint:
+        # Corporate proxy settings
+        ai_user = self.ai_settings.get('ai_user', 'anonymous')
+        ai_user_header = self.ai_settings.get('ai_user_header', '')
+        ssl_cert_path = self.ai_settings.get('ssl_cert_path', '')
+        ai_ssl_verify = self.ai_settings.get('ai_ssl_verify', True)
+
+        # Handle ai_ssl_verify as string 'true'/'false' or boolean
+        if isinstance(ai_ssl_verify, str):
+            ai_ssl_verify = ai_ssl_verify.lower() in ('true', '1', 'yes')
+
+        # Add custom user header if configured (for corporate tracking)
+        if ai_user_header:
+            headers[ai_user_header] = ai_user
+
+        # Determine SSL verification setting
+        # Priority: 1) Custom cert path, 2) certifi bundle (helps macOS/Homebrew), 3) system default
+        verify_ssl = ai_ssl_verify
+        if verify_ssl:
+            if ssl_cert_path:
+                verify_ssl = ssl_cert_path  # Use custom cert path
+            else:
+                verify_ssl = certifi.where()  # Use certifi bundle as fallback
+
+        # Determine provider type from endpoint
+        is_google = "generativelanguage.googleapis.com" in api_endpoint
+        is_anthropic = "anthropic.com" in api_endpoint
+
+        if is_google:
             model_name = ai_model.replace('-latest', '')
             api_url = f"{api_endpoint.rstrip('/')}/models/{model_name}:generateContent?key={api_key}"
             payload = {
@@ -799,25 +1125,62 @@ Failed Query:
                 "systemInstruction": {"parts": [{"text": system_instruction}]},
                 "generationConfig": { "temperature": float(self.ai_settings.get('ai_temperature', 0.2)), "maxOutputTokens": int(self.ai_settings.get('ai_max_output_tokens', 8192)) }
             }
+        elif is_anthropic:
+            # Anthropic Messages API
+            api_url = f"{api_endpoint.rstrip('/')}/messages"
+            headers['x-api-key'] = api_key
+            headers['anthropic-version'] = '2023-06-01'
+            headers['content-type'] = 'application/json'
+            payload = {
+                "model": ai_model,
+                "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)),
+                "system": system_instruction,
+                "messages": [{"role": "user", "content": full_prompt}]
+            }
+            # Add temperature if not using default
+            temp = float(self.ai_settings.get('ai_temperature', 0.2))
+            if temp > 0:
+                payload["temperature"] = temp
         else:
+            # OpenAI-compatible API
             api_url = f"{api_endpoint.rstrip('/')}/chat/completions"
             headers['Authorization'] = f'Bearer {api_key}'
-            payload = { "model": ai_model, "messages": [{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}], "temperature": float(self.ai_settings.get('ai_temperature', 0.2)), "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)) }
-        
+            payload = {
+                "model": ai_model,
+                "messages": [
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": full_prompt}
+                ],
+                "temperature": float(self.ai_settings.get('ai_temperature', 0.2)),
+                "max_tokens": int(self.ai_settings.get('ai_max_output_tokens', 4096)),
+                "user": ai_user  # For corporate tracking/auditing
+            }
+
         try:
-            response = requests.post(api_url, json=payload, headers=headers, timeout=300)
+            response = requests.post(api_url, json=payload, headers=headers, timeout=300, verify=verify_ssl)
             response.raise_for_status()
             response_data = response.json()
             generated_text = ""
             max_token_error_msg = "The AI model stopped generating because the maximum token limit was reached. Try increasing the 'Max Output Tokens' in your settings or switch to an AI model with a larger context window (e.g., gpt-4-turbo)."
 
-            if "generativelanguage.googleapis.com" in api_endpoint:
+            if is_google:
                 candidates = response_data.get('candidates', [])
                 if not candidates: raise ValueError(f"AI response is missing 'candidates'. Full response: {response_data}")
                 finish_reason = candidates[0].get('finishReason')
                 if finish_reason == 'MAX_TOKENS': raise ValueError(max_token_error_msg)
                 if 'content' in candidates[0] and 'parts' in candidates[0]['content'] and candidates[0]['content']['parts']: generated_text = candidates[0]['content']['parts'][0].get('text', '').strip()
                 else: raise ValueError(f"Unexpected response structure from Google AI: {response_data}")
+            elif is_anthropic:
+                # Anthropic response format
+                content = response_data.get('content', [])
+                if not content: raise ValueError(f"AI response is missing 'content'. Full response: {response_data}")
+                stop_reason = response_data.get('stop_reason')
+                if stop_reason == 'max_tokens': raise ValueError(max_token_error_msg)
+                # Extract text from content blocks
+                for block in content:
+                    if block.get('type') == 'text':
+                        generated_text += block.get('text', '')
+                generated_text = generated_text.strip()
             else:
                 choices = response_data.get('choices', [])
                 if not choices: raise ValueError(f"AI response is missing 'choices'. Full response: {response_data}")
@@ -829,14 +1192,37 @@ Failed Query:
             generated_text = re.sub(r'^```sql\n|```$', '', generated_text, flags=re.MULTILINE).strip()
             if not generated_text: raise ValueError("AI returned an empty response.")
 
-            metrics = { 'status': 'success', 'tokens_used': response_data.get('usage', {}).get('total_tokens', 0) if 'usage' in response_data else response_data.get('usageMetadata', {}).get('totalTokenCount', 0) }
+            # Extract token usage - different providers have different structures
+            if is_google:
+                usage_meta = response_data.get('usageMetadata', {})
+                input_tokens = usage_meta.get('promptTokenCount', 0)
+                output_tokens = usage_meta.get('candidatesTokenCount', 0)
+                total_tokens = usage_meta.get('totalTokenCount', input_tokens + output_tokens)
+            elif is_anthropic:
+                usage = response_data.get('usage', {})
+                input_tokens = usage.get('input_tokens', 0)
+                output_tokens = usage.get('output_tokens', 0)
+                total_tokens = input_tokens + output_tokens
+            else:
+                # OpenAI-compatible API
+                usage = response_data.get('usage', {})
+                input_tokens = usage.get('prompt_tokens', 0)
+                output_tokens = usage.get('completion_tokens', 0)
+                total_tokens = usage.get('total_tokens', input_tokens + output_tokens)
+
+            metrics = {
+                'status': 'success',
+                'tokens_used': total_tokens,
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens
+            }
             return generated_text, metrics
         except requests.exceptions.Timeout:
             logger.error("AI request timed out.")
             raise ValueError('AI service request timed out.')
         
     def validate_sql(self, sql, pg_dsn, clean_slate=False, auto_create_ddl=True,
-                      cache_context=None):
+                      cache_context=None, defer_fk=False, metrics=None):
         """
         Validates SQL against a PostgreSQL database, with AI-powered retry logic.
 
@@ -848,30 +1234,76 @@ Failed Query:
             - db_conn: App database connection for cache
             - client_id: Client ID for cache key
             - export_dir: Directory to save DDL files for review
+        :param bool defer_fk: If True, split out FK constraints and return them
+                              for deferred execution (handles circular dependencies)
+        :param dict metrics: Optional dict to accumulate token metrics:
+            - input_tokens: Total input tokens used
+            - output_tokens: Total output tokens used
+            - ai_attempts: Number of AI calls made
+        :return: Tuple of (success, message, corrected_sql, deferred_fk_statements)
+                 If defer_fk=False, deferred_fk_statements is None
         """
+        # Initialize metrics if provided
+        if metrics is not None:
+            metrics.setdefault('input_tokens', 0)
+            metrics.setdefault('output_tokens', 0)
+            metrics.setdefault('ai_attempts', 0)
         # Strip psql metacommands (like \set) that can't be executed via psycopg2
         sql = self._strip_psql_metacommands(sql)
 
+        # Apply Oracle-to-PostgreSQL preprocessing (timestamps, types, etc.)
+        sql = preprocess_oracle_sql(sql)
+
+        # Quote PostgreSQL reserved words used as identifiers
+        sql = quote_reserved_words(sql)
+
+        # If deferring FK constraints, split them out
+        deferred_fk_statements = []
+        if defer_fk:
+            sql, deferred_fk_statements = self._split_fk_constraints(sql)
+
         if clean_slate:
-            table_names = self._extract_table_names(sql)
-            if table_names:
+            # Extract objects being CREATED (not referenced tables)
+            created_objects = self._extract_created_objects(sql)
+            if created_objects:
                 try:
                     with psycopg2.connect(pg_dsn) as conn:
                         with conn.cursor() as cursor:
                             conn.set_session(autocommit=True)
-                            for table in table_names:
-                                parts = table.split('.')
-                                if len(parts) > 1:
-                                    identifier = psql.Identifier(parts[0], parts[1])
+                            for obj_type, obj_name in created_objects:
+                                # Build appropriate DROP statement for each object type
+                                identifier = psql.Identifier(obj_name)
+
+                                if obj_type == 'TABLE':
+                                    drop_sql = psql.SQL("DROP TABLE IF EXISTS {} CASCADE")
+                                elif obj_type == 'VIEW':
+                                    drop_sql = psql.SQL("DROP VIEW IF EXISTS {} CASCADE")
+                                elif obj_type == 'MATERIALIZED VIEW':
+                                    drop_sql = psql.SQL("DROP MATERIALIZED VIEW IF EXISTS {} CASCADE")
+                                elif obj_type == 'FUNCTION':
+                                    # Functions need () to drop all overloads
+                                    drop_sql = psql.SQL("DROP FUNCTION IF EXISTS {} CASCADE")
+                                elif obj_type == 'PROCEDURE':
+                                    drop_sql = psql.SQL("DROP PROCEDURE IF EXISTS {} CASCADE")
+                                elif obj_type == 'INDEX':
+                                    drop_sql = psql.SQL("DROP INDEX IF EXISTS {} CASCADE")
+                                elif obj_type == 'SEQUENCE':
+                                    drop_sql = psql.SQL("DROP SEQUENCE IF EXISTS {} CASCADE")
+                                elif obj_type == 'TYPE':
+                                    drop_sql = psql.SQL("DROP TYPE IF EXISTS {} CASCADE")
+                                elif obj_type == 'TRIGGER':
+                                    # Triggers need ON table, but we can't easily determine it
+                                    # Skip trigger drops in clean_slate
+                                    continue
                                 else:
-                                    identifier = psql.Identifier(parts[0])
-                                
-                                drop_statement = psql.SQL("DROP TABLE IF EXISTS {} CASCADE").format(identifier)
+                                    continue
+
+                                drop_statement = drop_sql.format(identifier)
                                 logger.info(f"Executing clean slate: {drop_statement.as_string(conn)}")
                                 cursor.execute(drop_statement)
                 except psycopg2.Error as e:
                     logger.error(f"Clean slate failed: {e}")
-                    return False, f"Clean slate pre-validation step failed: {e}", None
+                    return False, f"Clean slate pre-validation step failed: {e}", None, []
 
         if auto_create_ddl:
             try:
@@ -951,12 +1383,14 @@ Failed Query:
                 if current_sql != sql:
                     final_message = "Validation successful after applying AI corrections to the query."
 
-                return True, final_message, current_sql if current_sql != sql else None
+                return True, final_message, current_sql if current_sql != sql else None, deferred_fk_statements
             
             except psycopg2.Error as e:
                 error_message = str(e).strip()
+                logger.info(f"PostgreSQL error: {error_message}")
                 missing_relation_match = re.search(r'relation "([\w\.]+)" does not exist', error_message)
-                
+                missing_type_match = re.search(r'type "([\w\.]+)(?:\[\])?" does not exist', error_message)
+
                 if missing_relation_match:
                     if auto_create_ddl:
                         object_name = missing_relation_match.group(1)
@@ -977,10 +1411,15 @@ Failed Query:
                         # If not in cache, ask AI
                         if not ddl_to_execute:
                             logger.info(f"Attempt {attempt + 1}/{max_retries}: Missing relation '{object_name}'. Asking AI for DDL.")
-                            ddl_to_execute = self._get_ddl_from_ai(current_sql, error_message, object_name)
+                            ddl_to_execute, ai_metrics = self._get_ddl_from_ai(current_sql, error_message, object_name)
+                            # Accumulate metrics if provided
+                            if metrics is not None:
+                                metrics['input_tokens'] += ai_metrics.get('input_tokens', 0)
+                                metrics['output_tokens'] += ai_metrics.get('output_tokens', 0)
+                                metrics['ai_attempts'] += 1
 
                         if not ddl_to_execute:
-                            return False, f"Validation failed: AI could not generate DDL for '{object_name}'.", None
+                            return False, f"Validation failed: AI could not generate DDL for '{object_name}'.", None, []
                         try:
                             with psycopg2.connect(pg_dsn) as conn_ddl:
                                 with conn_ddl.cursor() as cursor_ddl:
@@ -999,19 +1438,76 @@ Failed Query:
                                 )
 
                         except psycopg2.Error as ddl_error:
-                            return False, f"Validation failed: AI-generated DDL was invalid. Error: {ddl_error}", None
+                            return False, f"Validation failed: AI-generated DDL was invalid. Error: {ddl_error}", None, []
                     else:
                         logger.error(f"Validation failed: {error_message}. Auto-create DDL is disabled.")
-                        return False, f"Validation failed: {error_message}. Auto-create DDL is disabled.", None
+                        return False, f"Validation failed: {error_message}. Auto-create DDL is disabled.", None, []
+                elif missing_type_match:
+                    if auto_create_ddl:
+                        type_name = missing_type_match.group(1)
+
+                        # Check cache first
+                        ddl_to_execute = None
+                        from_cache = False
+                        if cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                            ddl_to_execute = self._check_ddl_cache(
+                                cache_context['db_conn'],
+                                cache_context['client_id'],
+                                type_name
+                            )
+                            if ddl_to_execute:
+                                from_cache = True
+                                logger.info(f"Attempt {attempt + 1}/{max_retries}: Using cached DDL for type '{type_name}'.")
+
+                        # If not in cache, ask AI
+                        if not ddl_to_execute:
+                            logger.info(f"Attempt {attempt + 1}/{max_retries}: Missing type '{type_name}'. Asking AI for TYPE DDL.")
+                            ddl_to_execute, ai_metrics = self._get_type_ddl_from_ai(current_sql, error_message, type_name)
+                            # Accumulate metrics if provided
+                            if metrics is not None:
+                                metrics['input_tokens'] += ai_metrics.get('input_tokens', 0)
+                                metrics['output_tokens'] += ai_metrics.get('output_tokens', 0)
+                                metrics['ai_attempts'] += 1
+
+                        if not ddl_to_execute:
+                            return False, f"Validation failed: AI could not generate DDL for type '{type_name}'.", None, []
+
+                        try:
+                            with psycopg2.connect(pg_dsn) as conn_ddl:
+                                with conn_ddl.cursor() as cursor_ddl:
+                                    conn_ddl.set_session(autocommit=True)
+                                    cursor_ddl.execute(ddl_to_execute)
+                            logger.info(f"Applied TYPE DDL for '{type_name}'. Retrying.")
+
+                            # Cache the DDL if it came from AI (not from cache)
+                            if not from_cache and cache_context and cache_context.get('db_conn') and cache_context.get('client_id'):
+                                self._store_ddl_cache(
+                                    cache_context['db_conn'],
+                                    cache_context['client_id'],
+                                    type_name,
+                                    ddl_to_execute,
+                                    export_dir=cache_context.get('export_dir')
+                                )
+
+                        except psycopg2.Error as ddl_error:
+                            return False, f"Validation failed: AI-generated TYPE DDL was invalid. Error: {ddl_error}", None, []
+                    else:
+                        logger.error(f"Validation failed: {error_message}. Auto-create DDL is disabled.")
+                        return False, f"Validation failed: {error_message}. Auto-create DDL is disabled.", None, []
                 else:
                     logger.info(f"Attempt {attempt + 1}/{max_retries}: Non-relation error encountered. Asking AI to fix query.")
-                    new_sql = self._get_query_fix_from_ai(current_sql, error_message)
+                    new_sql, ai_metrics = self._get_query_fix_from_ai(current_sql, error_message)
+                    # Accumulate metrics if provided
+                    if metrics is not None:
+                        metrics['input_tokens'] += ai_metrics.get('input_tokens', 0)
+                        metrics['output_tokens'] += ai_metrics.get('output_tokens', 0)
+                        metrics['ai_attempts'] += 1
                     if not new_sql:
-                         return False, f"Validation failed: AI could not fix the query error: {error_message}", None
+                         return False, f"Validation failed: AI could not fix the query error: {error_message}", None, []
                     logger.info("AI provided a potential query fix. Retrying validation with the new query.")
                     current_sql = new_sql
 
-        return False, f"Validation failed after {max_retries} attempts.", None
+        return False, f"Validation failed after {max_retries} attempts.", None, []
 
     def save_corrected_file(self, original_sql, corrected_sql, filename="corrected_output.sql"):
         """

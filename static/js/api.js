@@ -27,7 +27,11 @@ export async function apiFetch(url, options = {}) {
         const response = await fetch(url, options);
         if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+            // Create an error object that preserves all response data
+            const error = new Error(errorData.error || errorData.message || `HTTP error! status: ${response.status}`);
+            // Copy additional properties from the error response
+            Object.assign(error, errorData);
+            throw error;
         }
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.indexOf("application/json") !== -1) {
@@ -38,4 +42,17 @@ export async function apiFetch(url, options = {}) {
         console.error('API Fetch Error:', error);
         throw error; // Re-throw the error for the caller to handle
     }
+}
+
+// Migration History API functions
+export async function getMigrationHistory(clientId, limit = 5) {
+    return apiFetch(`/api/client/${clientId}/migration_history?limit=${limit}`);
+}
+
+export async function getSessionDetails(sessionId) {
+    return apiFetch(`/api/session/${sessionId}/details`);
+}
+
+export async function getAllMigrationHistory(limit = 20) {
+    return apiFetch(`/api/migrations/history?limit=${limit}`);
 }

@@ -71,7 +71,7 @@ def validate_sql():
             encryption_key=ENCRYPTION_KEY
         )
 
-        is_valid, message, new_sql = corrector.validate_sql(
+        is_valid, message, new_sql, _ = corrector.validate_sql(
             sql_to_validate,
             validation_dsn,
             clean_slate=clean_slate,
@@ -128,8 +128,85 @@ def test_pg_connection():
                 pg_version = cursor.fetchone()[0]
         return success_response({'status': 'success', 'message': f'Connection successful! PostgreSQL version: {pg_version}'})
     except psycopg2.OperationalError as e:
+        error_msg = str(e)
         logger.error(f"PostgreSQL connection test failed for DSN {pg_dsn}: {e}")
+
+        # Check if this is a "database does not exist" error
+        if 'does not exist' in error_msg and 'database' in error_msg.lower():
+            # Extract database name from DSN
+            db_name = _extract_dbname_from_dsn(pg_dsn)
+            return jsonify({
+                'status': 'error',
+                'message': f'Database "{db_name}" does not exist.',
+                'database_missing': True,
+                'database_name': db_name
+            }), 400
+
         return error_response(f'Connection failed: {e}')
     except Exception as e:
         logger.error(f"An unexpected error occurred during PostgreSQL connection test: {e}")
         return server_error_response('PostgreSQL connection test failed', str(e))
+
+
+def _extract_dbname_from_dsn(dsn):
+    """Extract database name from a DSN string."""
+    import re
+    # Handle key=value format: dbname=mydb
+    match = re.search(r'dbname=(\S+)', dsn)
+    if match:
+        return match.group(1)
+    # Handle URI format: postgresql://user:pass@host/dbname
+    match = re.search(r'/([^/?]+)(?:\?|$)', dsn)
+    if match:
+        return match.group(1)
+    return None
+
+
+@sql_ops_bp.route('/create_pg_database', methods=['POST'])
+def create_pg_database():
+    """Create a new PostgreSQL database."""
+    data = request.json
+    pg_dsn = data.get('pg_dsn')
+
+    if not pg_dsn:
+        return validation_error_response('PostgreSQL DSN is required')
+
+    db_name = _extract_dbname_from_dsn(pg_dsn)
+    if not db_name:
+        return validation_error_response('Could not extract database name from DSN')
+
+    try:
+        # Connect to 'postgres' database to create the new database
+        # Replace the dbname in DSN with 'postgres'
+        import re
+        admin_dsn = re.sub(r'dbname=\S+', 'dbname=postgres', pg_dsn)
+        if admin_dsn == pg_dsn:
+            # URI format - replace database name
+            admin_dsn = re.sub(r'/[^/?]+(\?|$)', r'/postgres\1', pg_dsn)
+
+        # Need autocommit for CREATE DATABASE
+        conn = psycopg2.connect(admin_dsn)
+        conn.autocommit = True
+
+        with conn.cursor() as cursor:
+            # Use safe identifier quoting
+            cursor.execute(f'CREATE DATABASE "{db_name}"')
+
+        conn.close()
+
+        logger.info(f"Created PostgreSQL database: {db_name}")
+        return success_response({
+            'status': 'success',
+            'message': f'Database "{db_name}" created successfully!'
+        })
+    except psycopg2.errors.DuplicateDatabase:
+        return success_response({
+            'status': 'success',
+            'message': f'Database "{db_name}" already exists.'
+        })
+    except psycopg2.OperationalError as e:
+        logger.error(f"Failed to create database {db_name}: {e}")
+        return error_response(f'Failed to create database: {e}')
+    except Exception as e:
+        logger.error(f"Unexpected error creating database {db_name}: {e}", exc_info=True)
+        return server_error_response('Failed to create database', str(e))
