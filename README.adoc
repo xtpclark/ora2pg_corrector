@@ -408,6 +408,130 @@ Converting a procedure with `BULK COLLECT` and `FORALL`:
 
 IMPORTANT: The application uses `SET check_function_bodies = false` during DDL creation to allow dependent objects to be created in any order. This means procedures are accepted syntactically but may fail at runtime if they contain unconverted Oracle syntax. Always test procedures by executing them after migration.
 
+== DATA Migration
+
+After migrating DDL (schema structure), the next step is migrating actual data using Ora2Pg's COPY or INSERT export types.
+
+=== Export Types Comparison
+
+[cols="1,2,2,1", options="header"]
+|===
+|Type |Description |Best For |AI Required
+
+|**COPY**
+|PostgreSQL COPY format (tab-separated)
+|Large datasets, bulk loading
+|No
+
+|**INSERT**
+|Individual INSERT statements
+|Small datasets, debugging
+|Sometimes (INTERVAL types)
+|===
+
+=== COPY Export (Recommended)
+
+COPY format is the fastest and most reliable method for data migration:
+
+[source,sql]
+----
+COPY media_files (file_id,file_name,file_type,...) FROM STDIN;
+1	company_logo.png	image/png	\N	...
+2	product_brochure.pdf	application/pdf	\N	...
+\.
+----
+
+**Advantages:**
+
+* Fastest loading method (bulk insert)
+* Handles INTERVAL types correctly (`+01-00` → `1 year`)
+* CLOB/NCLOB text preserved (including Unicode)
+* NULL values represented as `\N`
+
+**Limitations:**
+
+* Tables with nested tables may fail to export
+* BLOB data exported as NULL unless specifically configured
+
+=== INSERT Export
+
+INSERT statements are more readable but may require AI correction:
+
+[source,sql]
+----
+-- Ora2Pg output (INTERVAL issue)
+INSERT INTO products (...,warranty_period,...) VALUES (...,+01-00,...);
+
+-- AI-corrected
+INSERT INTO products (...,warranty_period,...) VALUES (...,INTERVAL '1 year',...);
+----
+
+**When AI Is Needed:**
+
+* INTERVAL values exported as `+01-00` (interpreted as arithmetic)
+* AI converts to proper `INTERVAL '1 year'` syntax
+* ~969 tokens per INSERT statement correction
+
+=== Unsupported Scenarios
+
+Some Oracle data structures cannot be directly exported:
+
+[cols="1,2", options="header"]
+|===
+|Structure |Workaround
+
+|**Nested Tables**
+|Flatten to regular table or export parent/child separately
+
+|**Object Type Columns**
+|Export as JSON or decompose into scalar columns
+
+|**BFILE References**
+|Export file paths only; copy files separately
+
+|**Large BLOBs (>1GB)**
+|Use `--lo_import` flag for large object import
+|===
+
+=== DATA Migration Workflow
+
+. **Export DDL first** and validate schema exists in PostgreSQL
+. **Configure DATA export**:
+   * Set TYPE to `COPY` (recommended) or `INSERT`
+   * Optionally set `DATA_LIMIT` to limit rows per batch
+   * Optionally set `WHERE` clause to filter data
+. **Run Ora2Pg export** for each table
+. **Execute COPY/INSERT** statements in PostgreSQL
+. **Verify row counts** match between Oracle and PostgreSQL
+. **Test procedures** with migrated data
+
+=== Ora2Pg DATA Options
+
+[cols="1,1,3", options="header"]
+|===
+|Option |Default |Description
+
+|`DATA_LIMIT`
+|10000
+|Rows to buffer before writing (affects memory usage)
+
+|`NOESCAPE`
+|0
+|Disable escaping of special characters
+
+|`NULL`
+|NULL
+|String to use for NULL values in COPY
+
+|`PG_NUMERIC_TYPE`
+|1
+|Use PostgreSQL numeric types in COPY
+
+|`BLOB_LIMIT`
+|0
+|Maximum BLOB size to export (0 = unlimited)
+|===
+
 == Configuration
 
 === Ora2Pg Options (Dynamic Configuration)

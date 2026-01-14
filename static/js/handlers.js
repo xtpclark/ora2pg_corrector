@@ -1543,6 +1543,214 @@ function resetMigrationUI() {
 }
 
 /**
+ * Starts a data export (COPY or INSERT) for the current client.
+ * @async
+ */
+async function handleStartDataExport() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('start-data-export-btn');
+    const formatSelect = document.getElementById('data-export-format');
+    const tablesInput = document.getElementById('data-export-tables');
+    const whereInput = document.getElementById('data-export-where');
+    const autoLoadCheckbox = document.getElementById('data-auto-load');
+    const exactCountsCheckbox = document.getElementById('data-exact-counts');
+    const resultsDiv = document.getElementById('data-export-results');
+
+    // Get values from the form
+    const exportType = formatSelect?.value || 'COPY';
+    const tablesStr = tablesInput?.value?.trim() || '';
+    const whereClause = whereInput?.value?.trim() || '';
+    const autoLoad = autoLoadCheckbox?.checked ?? true;
+    const useExactCounts = exactCountsCheckbox?.checked ?? false;
+
+    // Parse tables into array (comma-separated)
+    const tables = tablesStr ? tablesStr.split(',').map(t => t.trim().toUpperCase()).filter(t => t) : null;
+
+    // Update button to show loading state
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Exporting...';
+
+    // Hide previous results
+    if (resultsDiv) resultsDiv.classList.add('hidden');
+
+    try {
+        // Build request body
+        const requestBody = {
+            type: exportType,
+            session_name: `Data Export (${exportType}) - ${new Date().toLocaleString()}`
+        };
+        if (tables && tables.length > 0) {
+            requestBody.tables = tables;
+        }
+        if (whereClause) {
+            requestBody.where_clause = whereClause;
+        }
+
+        // Call the run_ora2pg endpoint
+        const result = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
+            method: 'POST',
+            body: JSON.stringify(requestBody)
+        });
+
+        const fileCount = result.files?.length || 0;
+        const sessionId = result.session_id;
+
+        // Extract table names from exported files for counting
+        // File names are like "TABLE_NAME_output_copy.sql" or "output_copy.sql"
+        const exportedTables = result.files
+            ?.map(f => f.replace(/_output_(copy|insert)\.sql$/i, ''))
+            .filter(t => t && !t.startsWith('output_'))
+            .map(t => t.toUpperCase()) || [];
+
+        const tablesToCount = tables || exportedTables;
+
+        // Initialize results display
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `
+                <div class="text-xs font-medium text-green-600 dark:text-green-400 mb-2">
+                    <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                </div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        // Auto-load into PostgreSQL if enabled
+        let loadResult = null;
+        if (autoLoad && sessionId) {
+            button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Loading into PG...';
+
+            if (resultsDiv) {
+                resultsDiv.innerHTML += `
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                        <i class="fas fa-spinner fa-spin mr-1"></i>Loading data into PostgreSQL...
+                    </div>`;
+            }
+
+            try {
+                loadResult = await apiFetch(`/api/session/${sessionId}/load_data`, {
+                    method: 'POST'
+                });
+            } catch (loadError) {
+                // Load failed - show warning but continue
+                if (resultsDiv) {
+                    resultsDiv.innerHTML += `
+                        <div class="text-xs text-yellow-500 mt-2">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>Load failed: ${loadError.message}
+                        </div>`;
+                }
+            }
+        }
+
+        // Get counts and display final results
+        if (tablesToCount.length > 0 && resultsDiv) {
+            try {
+                const countResult = await apiFetch(`/api/client/${state.currentClientId}/table_counts`, {
+                    method: 'POST',
+                    body: JSON.stringify({ tables: tablesToCount, exact: useExactCounts })
+                });
+
+                // Build results table
+                let resultsHtml = `
+                    <div class="text-xs font-medium text-green-600 dark:text-green-400 mb-2">
+                        <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                    </div>`;
+
+                if (loadResult) {
+                    resultsHtml += `
+                        <div class="text-xs font-medium text-blue-600 dark:text-blue-400 mb-2">
+                            <i class="fas fa-database mr-1"></i>Loaded ${loadResult.loaded_files} file(s) into PostgreSQL
+                        </div>`;
+                }
+
+                resultsHtml += `
+                    <div class="text-xs text-gray-700 dark:text-gray-300">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="border-b border-gray-200 dark:border-gray-700">
+                                    <th class="text-left py-1">Table</th>
+                                    <th class="text-right py-1">Rows in PG</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                for (const [table, data] of Object.entries(countResult.counts)) {
+                    const countStr = data.count.toLocaleString();
+                    const exactBadge = data.exact ? '' : '<span class="text-gray-400 ml-1">~</span>';
+                    const errorClass = data.error ? 'text-red-500' : '';
+                    resultsHtml += `
+                        <tr class="border-b border-gray-100 dark:border-gray-800">
+                            <td class="py-1 ${errorClass}">${table}</td>
+                            <td class="text-right py-1 ${errorClass}">${countStr}${exactBadge}</td>
+                        </tr>`;
+                }
+
+                resultsHtml += `
+                            </tbody>
+                            <tfoot>
+                                <tr class="font-medium">
+                                    <td class="py-1">Total</td>
+                                    <td class="text-right py-1">${countResult.total.toLocaleString()}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        <p class="text-gray-400 mt-1 text-xs">~ = approximate count (use ANALYZE for exact)</p>
+                    </div>`;
+
+                resultsDiv.innerHTML = resultsHtml;
+
+            } catch (countError) {
+                // Count failed but export succeeded
+                let statusHtml = `
+                    <div class="text-xs font-medium text-green-600 dark:text-green-400">
+                        <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                    </div>`;
+                if (loadResult) {
+                    statusHtml += `
+                        <div class="text-xs font-medium text-blue-600 dark:text-blue-400 mt-1">
+                            <i class="fas fa-database mr-1"></i>Loaded ${loadResult.total_rows.toLocaleString()} rows
+                        </div>`;
+                }
+                statusHtml += `
+                    <div class="text-xs text-yellow-500 mt-1">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>Could not get row counts: ${countError.message}
+                    </div>`;
+                resultsDiv.innerHTML = statusHtml;
+            }
+        } else {
+            const msg = loadResult
+                ? `Data export and load completed! ${loadResult.total_rows.toLocaleString()} rows loaded.`
+                : `Data export completed! ${fileCount} file(s) generated.`;
+            showToast(msg);
+        }
+
+        // Refresh sessions to show the new export
+        refreshSessions();
+
+        // Clear the inputs after successful export
+        if (tablesInput) tablesInput.value = '';
+        if (whereInput) whereInput.value = '';
+
+    } catch (error) {
+        showToast(error.message || 'Data export failed', true);
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `
+                <div class="text-xs text-red-500">
+                    <i class="fas fa-times-circle mr-1"></i>Export failed: ${error.message}
+                </div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        // Reset button state
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
  * Refreshes the sessions list after migration.
  * @async
  */
@@ -2263,6 +2471,8 @@ export function initEventListeners() {
             case 'toggle-advanced-tools': handleToggleAdvancedTools(); break;
             case 'open-workspace-btn': switchTab('workspace'); break;
             case 'close-assessment-btn': document.getElementById('report-container')?.classList.add('hidden'); break;
+            // Data Migration handler
+            case 'start-data-export-btn': handleStartDataExport(); break;
         }
     });
     

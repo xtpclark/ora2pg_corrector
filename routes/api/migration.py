@@ -523,10 +523,38 @@ def generate_ora2pg_report(client_id):
 
 @migration_bp.route('/client/<int:client_id>/run_ora2pg', methods=['POST'])
 def run_ora2pg(client_id):
-    """Run ora2pg export using stored client configuration."""
+    """
+    Run ora2pg export using stored client configuration.
+
+    Request body (optional):
+    {
+        "type": "COPY",  // Override export type (TABLE, COPY, INSERT, etc.)
+        "tables": ["TABLE1", "TABLE2"],  // Limit export to specific tables
+        "where_clause": "created_date > '2024-01-01'",  // Filter data (for COPY/INSERT)
+        "session_name": "My Export"  // Custom session name
+    }
+    """
     try:
         conn = get_db()
         config = get_client_config(client_id, conn, decrypt_keys=['oracle_pwd'])
+
+        # Get optional parameters from request
+        data = request.get_json(silent=True) or {}
+        export_type = data.get('type')
+        tables = data.get('tables')
+        where_clause = data.get('where_clause')
+        session_name = data.get('session_name')
+
+        # Override export type if specified
+        if export_type:
+            config['type'] = export_type.upper()
+
+        # Build extra args for ora2pg command
+        extra_args = []
+        if tables:
+            config['ALLOW'] = ','.join(tables)
+        if where_clause:
+            extra_args.extend(['-W', where_clause])
 
         ai_settings = extract_ai_settings(config)
         corrector = Ora2PgAICorrector(
@@ -535,7 +563,11 @@ def run_ora2pg(client_id):
             encryption_key=ENCRYPTION_KEY
         )
 
-        result, error = corrector.run_ora2pg_export(client_id, conn, config)
+        result, error = corrector.run_ora2pg_export(
+            client_id, conn, config,
+            extra_args=extra_args if extra_args else None,
+            session_name=session_name
+        )
 
         if error:
             log_audit(client_id, 'run_ora2pg', f'Export failed: {error}')
@@ -559,6 +591,253 @@ def run_ora2pg(client_id):
     except Exception as e:
         logger.error(f"Failed to run Ora2Pg for client {client_id}: {e}", exc_info=True)
         return server_error_response('Failed to run Ora2Pg export', str(e))
+
+
+@migration_bp.route('/client/<int:client_id>/table_counts', methods=['POST'])
+def get_table_counts(client_id):
+    """
+    Get row counts for tables in the PostgreSQL validation database.
+
+    Uses pg_class.reltuples for fast approximate counts by default.
+    Set exact=true for precise counts (slower on large tables).
+
+    Request body:
+    {
+        "tables": ["TABLE1", "TABLE2"],  // Tables to count (required)
+        "exact": false  // Use exact COUNT(*) instead of estimates (default: false)
+    }
+
+    Returns:
+    {
+        "counts": {
+            "table1": {"count": 1000, "exact": false},
+            "table2": {"count": 500, "exact": false}
+        },
+        "total": 1500
+    }
+    """
+    import psycopg2
+
+    try:
+        conn = get_db()
+        config = get_client_config(client_id, conn)
+
+        pg_dsn = config.get('validation_pg_dsn')
+        if not pg_dsn:
+            return validation_error_response('PostgreSQL validation DSN not configured')
+
+        data = request.get_json(silent=True) or {}
+        tables = data.get('tables', [])
+        use_exact = data.get('exact', False)
+
+        if not tables:
+            return validation_error_response('No tables specified')
+
+        counts = {}
+        total = 0
+
+        with psycopg2.connect(pg_dsn) as pg_conn:
+            with pg_conn.cursor() as cursor:
+                for table in tables:
+                    table_lower = table.lower()
+                    try:
+                        if use_exact:
+                            # Exact count - slower but accurate
+                            cursor.execute(f'SELECT COUNT(*) FROM "{table_lower}"')
+                            row_count = cursor.fetchone()[0]
+                        else:
+                            # Fast approximate count using pg_class
+                            cursor.execute('''
+                                SELECT COALESCE(reltuples::bigint, 0)
+                                FROM pg_class
+                                WHERE relname = %s AND relkind = 'r'
+                            ''', (table_lower,))
+                            result = cursor.fetchone()
+                            row_count = result[0] if result else 0
+
+                            # If reltuples is 0 or negative (never analyzed), try exact count
+                            if row_count <= 0:
+                                cursor.execute(f'SELECT COUNT(*) FROM "{table_lower}"')
+                                row_count = cursor.fetchone()[0]
+
+                        counts[table] = {'count': row_count, 'exact': use_exact or row_count == 0}
+                        total += row_count
+
+                    except psycopg2.Error as e:
+                        # Table might not exist yet
+                        counts[table] = {'count': 0, 'exact': True, 'error': str(e)}
+
+        return success_response({
+            'counts': counts,
+            'total': total
+        })
+
+    except Exception as e:
+        logger.error(f"Failed to get table counts for client {client_id}: {e}", exc_info=True)
+        return server_error_response('Failed to get table counts', str(e))
+
+
+@migration_bp.route('/session/<int:session_id>/load_data', methods=['POST'])
+def load_session_data(session_id):
+    """
+    Load exported COPY/INSERT data from a session into PostgreSQL.
+
+    Executes the SQL files from the session against the validation database.
+
+    Returns:
+    {
+        "loaded_files": 3,
+        "total_rows": 1500,
+        "tables": {
+            "employees": {"rows": 100, "status": "success"},
+            "departments": {"rows": 50, "status": "success"}
+        }
+    }
+    """
+    import psycopg2
+    import os
+    import re
+
+    try:
+        conn = get_db()
+
+        # Get session info
+        cursor = execute_query(conn, '''
+            SELECT client_id, export_directory, export_type
+            FROM migration_sessions
+            WHERE session_id = ?
+        ''', (session_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return error_response(f'Session {session_id} not found', status_code=404)
+
+        client_id = row['client_id']
+        export_dir = row['export_directory']
+        export_type = row['export_type']
+
+        # Get PG DSN from client config
+        config = get_client_config(client_id, conn)
+        pg_dsn = config.get('validation_pg_dsn')
+
+        if not pg_dsn:
+            return validation_error_response('PostgreSQL validation DSN not configured')
+
+        if export_type not in ['COPY', 'INSERT']:
+            return validation_error_response(f'Session type {export_type} is not a data export')
+
+        if not export_dir or not os.path.exists(export_dir):
+            return error_response(f'Export directory not found: {export_dir}', status_code=404)
+
+        # Get SQL files from disk (data exports store content on disk, not DB)
+        sql_files = [f for f in os.listdir(export_dir) if f.endswith('.sql') and 'output_' in f]
+
+        if not sql_files:
+            return error_response('No data files found in session', status_code=404)
+
+        results = {
+            'loaded_files': 0,
+            'total_rows': 0,
+            'tables': {},
+            'errors': []
+        }
+
+        with psycopg2.connect(pg_dsn) as pg_conn:
+            with pg_conn.cursor() as pg_cursor:
+                for filename in sql_files:
+                    # Skip aggregate files that use \i commands
+                    if filename.startswith('output_'):
+                        continue
+
+                    # Read SQL content from disk
+                    file_path = os.path.join(export_dir, filename)
+                    try:
+                        with open(file_path, 'r') as f:
+                            sql_content = f.read()
+                    except Exception as e:
+                        results['errors'].append(f'{filename}: Could not read file: {e}')
+                        continue
+
+                    if not sql_content or not sql_content.strip():
+                        results['errors'].append(f'{filename}: Empty file')
+                        continue
+
+                    # Extract table name from filename (e.g., EMPLOYEES_output_copy.sql)
+                    table_match = re.match(r'([A-Za-z_][A-Za-z0-9_]*)_output_', filename)
+                    table_name = table_match.group(1).lower() if table_match else 'unknown'
+
+                    try:
+                        # Handle COPY FROM STDIN format using copy_expert
+                        if 'COPY' in sql_content and 'FROM STDIN' in sql_content:
+                            from io import StringIO
+
+                            # Execute SET commands first
+                            for line in sql_content.split('\n'):
+                                stripped = line.strip().upper()
+                                if stripped.startswith('SET '):
+                                    pg_cursor.execute(line)
+
+                            # Find the COPY statement and extract data section
+                            copy_match = re.search(
+                                r'(COPY\s+\S+\s*\([^)]+\)\s*FROM\s+STDIN[^;]*;?)\s*\n(.*)',
+                                sql_content,
+                                re.IGNORECASE | re.DOTALL
+                            )
+
+                            if copy_match:
+                                copy_cmd = copy_match.group(1).rstrip(';')
+                                data_section = copy_match.group(2)
+                                # Remove trailing \. marker if present
+                                data_section = re.sub(r'\n\\.\s*$', '', data_section)
+
+                                # Use copy_expert with the COPY command and data
+                                pg_cursor.copy_expert(
+                                    f"{copy_cmd} ",
+                                    StringIO(data_section)
+                                )
+
+                            rows_affected = pg_cursor.rowcount if pg_cursor.rowcount > 0 else 0
+                        else:
+                            # Regular SQL (INSERT statements)
+                            pg_cursor.execute(sql_content)
+                            rows_affected = pg_cursor.rowcount if pg_cursor.rowcount > 0 else 0
+
+                        # Get actual count from table
+                        if table_name != 'unknown':
+                            try:
+                                pg_cursor.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+                                rows_affected = pg_cursor.fetchone()[0]
+                            except:
+                                pass
+
+                        results['tables'][table_name] = {
+                            'rows': rows_affected,
+                            'status': 'success'
+                        }
+                        results['loaded_files'] += 1
+                        results['total_rows'] += rows_affected
+
+                    except psycopg2.Error as e:
+                        error_msg = str(e).split('\n')[0]
+                        results['tables'][table_name] = {
+                            'rows': 0,
+                            'status': 'failed',
+                            'error': error_msg
+                        }
+                        results['errors'].append(f'{table_name}: {error_msg}')
+                        # Continue with other files
+                        pg_conn.rollback()
+
+                pg_conn.commit()
+
+        log_audit(client_id, 'load_data',
+                 f'Session {session_id}: Loaded {results["loaded_files"]} files, {results["total_rows"]} rows')
+
+        return success_response(results)
+
+    except Exception as e:
+        logger.error(f"Failed to load data for session {session_id}: {e}", exc_info=True)
+        return server_error_response('Failed to load data', str(e))
 
 
 # =============================================================================

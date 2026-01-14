@@ -85,7 +85,62 @@
                 </div>
             </div>
 
-            <!-- TASK 2: Convert Specific SQL -->
+            <!-- TASK 2: Migrate Data -->
+            <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-green-400 dark:hover:border-green-500 transition-colors">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center mr-4">
+                        <i class="fas fa-database text-green-600 dark:text-green-400 text-xl"></i>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">Migrate Data</h3>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Export data from Oracle using COPY format for fast PostgreSQL loading</p>
+
+                        <!-- Data Migration Options -->
+                        <div class="space-y-2 mb-3">
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs text-gray-600 dark:text-gray-400">Format:</label>
+                                <select id="data-export-format" class="text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2">
+                                    <option value="COPY">COPY (Recommended)</option>
+                                    <option value="INSERT">INSERT</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs text-gray-600 dark:text-gray-400">Tables:</label>
+                                <input id="data-export-tables" type="text" placeholder="All tables (or comma-separated list)"
+                                    class="flex-1 text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs text-gray-600 dark:text-gray-400">Filter:</label>
+                                <input id="data-export-where" type="text" placeholder="WHERE clause (optional)"
+                                    class="flex-1 text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="flex items-center cursor-pointer text-xs text-gray-600 dark:text-gray-400">
+                                    <input id="data-auto-load" type="checkbox" checked class="h-3 w-3 rounded text-green-600 mr-2">
+                                    Auto-load into PostgreSQL after export
+                                </label>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="flex items-center cursor-pointer text-xs text-gray-600 dark:text-gray-400">
+                                    <input id="data-exact-counts" type="checkbox" class="h-3 w-3 rounded text-green-600 mr-2">
+                                    Use exact COUNT(*) instead of estimates
+                                </label>
+                            </div>
+                        </div>
+
+                        <button id="start-data-export-btn" class="text-sm bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded transition-colors">
+                            <i class="fas fa-download mr-2"></i>Export Data
+                        </button>
+
+                        <!-- Data Export Results -->
+                        <div id="data-export-results" class="hidden mt-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <!-- Results will be rendered here by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TASK 3: Convert Specific SQL -->
             <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-purple-400 dark:hover:border-purple-500 transition-colors">
                 <div class="flex items-start">
                     <div class="flex-shrink-0 w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center mr-4">
