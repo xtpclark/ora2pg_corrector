@@ -216,6 +216,198 @@ docker-compose up --build
 . **Export Selected**: Run Ora2Pg with your selections
 . **Click files** in session history to load into Workspace for further refinement
 
+== Ora2Pg vs AI: When Each Is Used
+
+Understanding when Ora2Pg handles conversions natively versus when AI intervention is needed helps predict token costs and migration complexity.
+
+=== Ora2Pg Native Handling (No AI Required)
+
+Ora2Pg v24.3 handles most Oracle-to-PostgreSQL conversions automatically with high accuracy:
+
+==== DDL Structures
+
+[cols="1,2", options="header"]
+|===
+|Category |Examples
+
+|**Tables & Columns**
+|CREATE TABLE, column definitions, NOT NULL constraints
+
+|**Data Types**
+|VARCHAR2→VARCHAR, NUMBER→NUMERIC/INTEGER, DATE→TIMESTAMP, CLOB→TEXT, BLOB→BYTEA, NCLOB→TEXT, BFILE→BYTEA, XMLTYPE→XML
+
+|**Constraints**
+|PRIMARY KEY, FOREIGN KEY, UNIQUE, CHECK constraints
+
+|**Indexes**
+|B-tree indexes, unique indexes (converted automatically)
+
+|**Sequences**
+|Oracle sequences to PostgreSQL sequences
+
+|**Comments**
+|Table and column comments preserved
+|===
+
+==== Simple PL/SQL
+
+[cols="1,1", options="header"]
+|===
+|Oracle |PostgreSQL (Ora2Pg)
+
+|`NVL(x, y)`
+|`COALESCE(x, y)`
+
+|`DECODE(x, a, b, c, d, e)`
+|`CASE WHEN x=a THEN b WHEN x=c THEN d ELSE e END`
+
+|`SYSDATE`
+|`CURRENT_TIMESTAMP` or `statement_timestamp()`
+
+|`ROWNUM <= n`
+|`LIMIT n`
+
+|`SYS_REFCURSOR`
+|`REFCURSOR`
+
+|`DBMS_OUTPUT.PUT_LINE()`
+|`RAISE NOTICE`
+
+|`VARCHAR2(n)`
+|`VARCHAR(n)`
+
+|`NUMBER`
+|`BIGINT` or `NUMERIC`
+|===
+
+==== Migration Results (Real-World Example)
+
+Testing against the Adempiere ERP schema (464 tables, 138 indexes, 3 sequences):
+
+[cols="1,1,1", options="header"]
+|===
+|Metric |Value |AI Tokens
+
+|Total Objects
+|604
+|0
+
+|Validated Successfully
+|604 (100%)
+|0
+
+|AI Corrections Needed
+|0
+|0
+|===
+
+*Conclusion*: For DDL-only migrations, Ora2Pg produces PostgreSQL-compatible output that validates directly without AI intervention.
+
+=== AI Required: Complex PL/SQL Patterns
+
+AI conversion is needed for Oracle-specific PL/SQL constructs that have no direct PostgreSQL equivalent:
+
+==== Collection Types & Bulk Operations
+
+[cols="1,1", options="header"]
+|===
+|Oracle (Requires AI) |PostgreSQL (AI Output)
+
+|`TYPE tab IS TABLE OF NUMBER`
+|`NUMERIC[]` (array type)
+
+|`BULK COLLECT INTO collection`
+|`SELECT ARRAY_AGG(col) INTO array_var`
+
+|`FORALL i IN 1..collection.COUNT`
+|`UPDATE ... WHERE col = ANY(array_var)`
+
+|`collection(i)` (index access)
+|Array operations with `ANY()`, `ALL()`, or `unnest()`
+|===
+
+==== Package Conversion
+
+Oracle packages must be decomposed into separate PostgreSQL functions:
+
+[source,sql]
+----
+-- Oracle Package
+CREATE PACKAGE my_pkg AS
+    c_constant CONSTANT NUMBER := 100;
+    TYPE rec_type IS RECORD (...);
+    PROCEDURE do_something(p_in NUMBER);
+    FUNCTION get_value RETURN NUMBER;
+END my_pkg;
+
+-- PostgreSQL (AI converts to)
+-- Constants become session variables or config table
+-- Types become composite types
+-- Each procedure/function becomes standalone
+CREATE FUNCTION my_pkg_do_something(p_in NUMERIC) RETURNS VOID ...
+CREATE FUNCTION my_pkg_get_value() RETURNS NUMERIC ...
+----
+
+==== Other AI-Required Patterns
+
+[cols="1,2", options="header"]
+|===
+|Pattern |Why AI Is Needed
+
+|**Autonomous Transactions**
+|`PRAGMA AUTONOMOUS_TRANSACTION` → Requires `dblink` or separate connection
+
+|**MERGE Statement**
+|Complex MERGE → `INSERT ... ON CONFLICT` with conditions
+
+|**Hierarchical Queries**
+|`CONNECT BY` → Recursive CTEs (WITH RECURSIVE)
+
+|**Object Types with Methods**
+|Oracle object methods → PostgreSQL functions
+
+|**Associative Arrays**
+|`INDEX BY VARCHAR2` → `hstore` or JSONB
+
+|**Pipelined Functions**
+|`PIPELINED RETURN` → `RETURNS SETOF` with `RETURN NEXT`
+
+|**Dynamic SQL with EXECUTE IMMEDIATE**
+|May need adjustment for parameter binding style
+|===
+
+=== Token Usage Example
+
+Converting a procedure with `BULK COLLECT` and `FORALL`:
+
+[cols="1,1", options="header"]
+|===
+|Metric |Value
+
+|Input Tokens
+|~1,000
+
+|Output Tokens
+|~250
+
+|Total Tokens
+|~1,250
+
+|Estimated Cost (Claude Sonnet)
+|~$0.005
+|===
+
+=== Optimization Strategy
+
+. **Run DDL migrations first** - Tables, indexes, sequences typically need no AI
+. **Test procedures individually** - Use Workspace to convert complex PL/SQL
+. **Batch similar objects** - Group procedures that use similar patterns
+. **Review Ora2Pg output** - Sometimes only minor manual fixes are needed
+
+=== Validation Note
+
+IMPORTANT: The application uses `SET check_function_bodies = false` during DDL creation to allow dependent objects to be created in any order. This means procedures are accepted syntactically but may fail at runtime if they contain unconverted Oracle syntax. Always test procedures by executing them after migration.
+
 == Configuration
 
 === Ora2Pg Options (Dynamic Configuration)

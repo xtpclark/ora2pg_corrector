@@ -1,0 +1,228 @@
+= PM (Product Media) Sample Schema
+:toc:
+
+A standalone Oracle sample schema for testing LOB (Large Object) migrations to PostgreSQL.
+
+== Overview
+
+The PM schema is derived from Oracle's Product Media sample schema but modified to be standalone (no external dependencies). It provides comprehensive coverage of Oracle LOB types for migration testing.
+
+== LOB Types Covered
+
+[cols="1,1,2", options="header"]
+|===
+|Oracle Type |PostgreSQL Type |Tables
+
+|BLOB
+|bytea
+|print_media (ad_composite, ad_photo), media_files (file_content)
+
+|CLOB
+|text
+|print_media (ad_sourcetext, ad_finaltext), media_files (file_description)
+
+|NCLOB
+|text
+|print_media (ad_fltextn), media_files (file_notes_ntl)
+
+|BFILE
+|bytea
+|print_media (ad_graphic), media_files (external_file)
+
+|XMLTYPE
+|xml
+|product_catalog (catalog_xml)
+|===
+
+== Object Types & Nested Tables
+
+The schema includes Oracle object types and nested tables for advanced migration testing:
+
+[source,sql]
+----
+-- Object type with BLOB
+CREATE TYPE adheader_typ AS OBJECT (
+    header_name    VARCHAR2(256),
+    creation_date  DATE,
+    header_text    VARCHAR2(1024),
+    logo           BLOB           -- BLOB inside object type
+);
+
+-- Object type for nested table elements
+CREATE TYPE textdoc_typ AS OBJECT (
+    document_typ   VARCHAR2(32),
+    formatted_doc  BLOB           -- BLOB inside nested table element
+);
+
+-- Nested table type
+CREATE TYPE textdoc_tab AS TABLE OF textdoc_typ;
+
+-- Table using nested table and object type
+CREATE TABLE print_media (
+    ...
+    ad_textdocs_ntab  textdoc_tab,    -- Nested table column
+    ad_header         adheader_typ,   -- Object type column
+    ...
+) NESTED TABLE ad_textdocs_ntab STORE AS textdocs_nestedtab;
+----
+
+PostgreSQL equivalents:
+
+* `adheader_typ` → Composite type with `bytea` for logo
+* `textdoc_typ` → Composite type with `bytea` for formatted_doc
+* `textdoc_tab` → Domain over `textdoc_typ[]` (array type)
+* Nested table storage → Standard table or array column
+
+== Tables
+
+[cols="1,3", options="header"]
+|===
+|Table |Description
+
+|`product_information`
+|Base product table (standalone replacement for OE dependency)
+
+|`print_media`
+|Main table with all LOB types, nested table, and object type columns
+
+|`media_files`
+|Simple table with standalone LOB columns for basic testing
+
+|`product_catalog`
+|XMLTYPE testing table
+
+|`textdocs_nestedtab`
+|Storage table for nested table (auto-created by Oracle)
+|===
+
+== Installation
+
+=== Prerequisites
+
+* Oracle 19c or later (also works with Oracle Free 23ai)
+* User with CREATE TABLE, CREATE TYPE privileges
+
+=== Create User and Schema
+
+[source,sql]
+----
+-- As SYS or SYSTEM
+CREATE USER pm IDENTIFIED BY pm123;
+GRANT CONNECT, RESOURCE, UNLIMITED TABLESPACE TO pm;
+GRANT CREATE ANY DIRECTORY TO pm;  -- Optional, for BFILE testing
+----
+
+=== Install Schema
+
+[source,bash]
+----
+# Connect as PM user
+sqlplus pm/pm123@//localhost:1521/FREEPDB1
+
+# Run creation script
+@pm_create.sql
+
+# Load sample data
+@pm_data.sql
+----
+
+=== Verify Installation
+
+[source,sql]
+----
+SELECT object_name, object_type, status
+FROM user_objects
+WHERE object_type IN ('TABLE', 'TYPE')
+ORDER BY object_type, object_name;
+----
+
+Expected output:
+----
+OBJECT_NAME           OBJECT_TYPE     STATUS
+--------------------- --------------- -------
+MEDIA_FILES           TABLE           VALID
+PRINT_MEDIA           TABLE           VALID
+PRODUCT_CATALOG       TABLE           VALID
+PRODUCT_INFORMATION   TABLE           VALID
+TEXTDOCS_NESTEDTAB    TABLE           VALID
+ADHEADER_TYP          TYPE            VALID
+TEXTDOC_TAB           TYPE            VALID
+TEXTDOC_TYP           TYPE            VALID
+----
+
+== Cleanup
+
+[source,bash]
+----
+sqlplus pm/pm123@//localhost:1521/FREEPDB1 @pm_drop.sql
+----
+
+Or drop the entire user:
+
+[source,sql]
+----
+DROP USER pm CASCADE;
+----
+
+== Migration Testing
+
+=== Using Ora2Pg AI Corrector
+
+. Create a client in the web UI
+. Configure Oracle connection:
+   * DSN: `dbi:Oracle:host=oracle-host;service_name=FREEPDB1;port=1521`
+   * User: `pm`
+   * Password: `pm123`
+   * Schema: `PM`
+
+. Configure validation PostgreSQL DSN
+. Run migration for object types: TABLE, TYPE
+
+=== Expected Results
+
+[cols="1,1,1", options="header"]
+|===
+|Object Type |Count |AI Required
+
+|TABLE
+|5
+|No (Ora2Pg handles LOB type conversion)
+
+|TYPE
+|3
+|No (Ora2Pg converts to composite types)
+
+|INDEX
+|~7
+|No (auto-created with tables)
+
+|LOB Segments
+|~12
+|N/A (internal Oracle objects)
+|===
+
+== Files
+
+[cols="1,3", options="header"]
+|===
+|File |Description
+
+|`pm_create.sql`
+|Creates types and tables
+
+|`pm_data.sql`
+|Inserts sample data including LOB content
+
+|`pm_drop.sql`
+|Drops all schema objects
+
+|`README.adoc`
+|This documentation
+|===
+
+== Notes
+
+* This schema is standalone - it does not require the OE (Order Entry) schema
+* BFILE columns will contain NULL unless you create Oracle directories and load external files
+* The nested table storage table (`textdocs_nestedtab`) is auto-created by Oracle
+* Sample LOB data uses minimal PNG header bytes for testing; replace with actual files for realistic testing
