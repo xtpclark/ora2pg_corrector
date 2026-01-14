@@ -28,21 +28,37 @@
                 </button>
             </div>
             
-            <div class="flex items-center space-x-3">
+            <div class="flex items-center space-x-4">
                 <span id="workspace-file-status" class="text-xs text-gray-500 dark:text-gray-400 italic"></span>
+
                 <button id="correct-ai-btn" class="bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">
                     <i class="fas fa-magic mr-1.5"></i> Convert
+                </button>
+
+                <div class="border-l border-gray-300 dark:border-gray-600 h-6"></div>
+
+                <label class="flex items-center cursor-pointer text-sm">
+                    <input id="auto-create-ddl-checkbox" type="checkbox" class="h-3.5 w-3.5 text-green-600 rounded mr-1.5" checked>
+                    <span class="text-gray-600 dark:text-gray-400">Auto-create</span>
+                </label>
+                <label class="flex items-center cursor-pointer text-sm">
+                    <input id="clean-slate-checkbox" type="checkbox" class="h-3.5 w-3.5 text-green-600 rounded mr-1.5">
+                    <span class="text-gray-600 dark:text-gray-400">Clean slate</span>
+                </label>
+
+                <button id="validate-btn" class="bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">
+                    <i class="fas fa-check-circle mr-1.5"></i> Validate
                 </button>
             </div>
         </div>
 
         <!-- Editors - Fixed height with proper spacing -->
-        <div class="grid grid-cols-2 gap-4 mb-4" style="height: calc(100vh - 340px); max-height: 600px; min-height: 400px;">
+        <div class="grid grid-cols-2 gap-4" style="height: calc(100vh - 280px); max-height: 700px; min-height: 400px;">
             <div class="flex flex-col">
                 <div class="flex items-center justify-between mb-2">
                     <span class="text-sm font-medium text-gray-700 dark:text-gray-300">Source</span>
                 </div>
-                <div id="original-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden"></div>
+                <div id="original-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden" style="min-height: 0;"></div>
             </div>
 
             <div class="flex flex-col">
@@ -52,28 +68,10 @@
                         <i class="fas fa-clipboard"></i>
                     </button>
                 </div>
-                <div id="corrected-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden"></div>
+                <div id="corrected-editor" class="flex-1 rounded border border-gray-300 dark:border-gray-700 overflow-hidden" style="min-height: 0;"></div>
             </div>
         </div>
 
-        <!-- Validation Bar - Now always visible -->
-        <div class="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-800 rounded">
-            <div class="flex items-center space-x-3 text-sm">
-                <label class="flex items-center cursor-pointer">
-                    <input id="auto-create-ddl-checkbox" type="checkbox" class="h-3.5 w-3.5 text-purple-600 rounded mr-1.5" checked>
-                    <span class="text-gray-700 dark:text-gray-300">Auto-create</span>
-                </label>
-                <label class="flex items-center cursor-pointer">
-                    <input id="clean-slate-checkbox" type="checkbox" class="h-3.5 w-3.5 text-purple-600 rounded mr-1.5">
-                    <span class="text-gray-700 dark:text-gray-300">Clean slate</span>
-                </label>
-            </div>
-            
-            <button id="validate-btn" class="bg-green-600 hover:bg-green-700 dark:bg-green-500 dark:hover:bg-green-600 text-white px-4 py-1.5 rounded text-sm font-medium transition-colors">
-                <i class="fas fa-check-circle mr-1.5"></i> Validate
-            </button>
-        </div>
-        
         <!-- Validation Result -->
         <div id="validation-result" class="mt-2 p-2 rounded text-sm hidden">
             <div class="font-semibold mb-1" id="validation-result-title"></div>

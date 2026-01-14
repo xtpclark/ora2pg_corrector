@@ -51,6 +51,13 @@
         
         .cm-scroller {
             scrollbar-width: thin;
+            overflow: auto !important;
+        }
+
+        /* Ensure editor containers constrain the CodeMirror height */
+        #original-editor, #corrected-editor {
+            overflow: hidden;
+            position: relative;
         }
         
         :root:not(.dark) .cm-scroller {
