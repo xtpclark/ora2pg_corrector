@@ -28,7 +28,8 @@ def correct_sql_with_ai():
         return validation_error_response('SQL content and client ID are required')
 
     try:
-        config = get_client_config(client_id)
+        conn = get_db()
+        config = get_client_config(client_id, conn, decrypt_keys=['ai_api_key'])
 
         corrector = Ora2PgAICorrector(
             output_dir=OUTPUT_DIR,
@@ -59,7 +60,8 @@ def validate_sql():
         return validation_error_response('SQL and client ID are required')
 
     try:
-        config = get_client_config(client_id)
+        conn = get_db()
+        config = get_client_config(client_id, conn, decrypt_keys=['ai_api_key'])
 
         validation_dsn = config.get('validation_pg_dsn')
         if not validation_dsn:
