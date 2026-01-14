@@ -435,7 +435,17 @@ export function renderSettingsForms(config) {
 
     ora2pgGrid.innerHTML = gridItemsHtml.join('');
     ora2pgContainer.appendChild(ora2pgGrid);
-    
+
+    // Add Test Oracle Connection button
+    const testOraConnDiv = document.createElement('div');
+    testOraConnDiv.className = 'pt-4';
+    testOraConnDiv.innerHTML = `
+        <button type="button" id="test-ora-conn-btn" class="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+            <i class="fas fa-plug mr-2"></i>Test Oracle Connection
+        </button>
+    `;
+    ora2pgContainer.appendChild(testOraConnDiv);
+
     document.getElementById('validation_pg_dsn').value = config.validation_pg_dsn || state.appSettings.validation_pg_dsn || '';
 }
 
