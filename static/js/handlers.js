@@ -1566,10 +1566,12 @@ async function handleLoadDataTables() {
     button.disabled = true;
 
     try {
-        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        const response = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        // Handle both wrapped {data: [...]} and plain array responses
+        const objectList = Array.isArray(response) ? response : (response.data || []);
 
         // Filter to only TABLE type objects
-        const tables = objectList.filter(obj => obj.object_type === 'TABLE');
+        const tables = objectList.filter(obj => obj.type === 'TABLE');
 
         if (tables.length === 0) {
             listDiv.innerHTML = '<span class="text-gray-400">No tables found in schema</span>';
@@ -1581,9 +1583,9 @@ async function handleLoadDataTables() {
         for (const table of tables) {
             html += `
                 <label class="flex items-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1">
-                    <input type="checkbox" value="${table.object_name}"
+                    <input type="checkbox" value="${table.name}"
                            class="data-table-checkbox h-3 w-3 rounded text-green-600 mr-2" checked>
-                    <span class="truncate">${table.object_name}</span>
+                    <span class="truncate">${table.name}</span>
                 </label>`;
         }
         html += '</div>';
