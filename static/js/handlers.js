@@ -1546,6 +1546,98 @@ function resetMigrationUI() {
  * Starts a data export (COPY or INSERT) for the current client.
  * @async
  */
+/**
+ * Loads the list of tables from Oracle for the data export table selector.
+ * @async
+ */
+async function handleLoadDataTables() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('load-data-tables-btn');
+    const listDiv = document.getElementById('data-tables-list');
+    const selectAllBtn = document.getElementById('select-all-data-tables');
+    const selectNoneBtn = document.getElementById('select-none-data-tables');
+
+    const originalHtml = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Loading...';
+    button.disabled = true;
+
+    try {
+        const objectList = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+
+        // Filter to only TABLE type objects
+        const tables = objectList.filter(obj => obj.object_type === 'TABLE');
+
+        if (tables.length === 0) {
+            listDiv.innerHTML = '<span class="text-gray-400">No tables found in schema</span>';
+            return;
+        }
+
+        // Build checkbox list
+        let html = '<div class="grid grid-cols-2 gap-1">';
+        for (const table of tables) {
+            html += `
+                <label class="flex items-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1">
+                    <input type="checkbox" value="${table.object_name}"
+                           class="data-table-checkbox h-3 w-3 rounded text-green-600 mr-2" checked>
+                    <span class="truncate">${table.object_name}</span>
+                </label>`;
+        }
+        html += '</div>';
+
+        listDiv.innerHTML = html;
+
+        // Show select all/none buttons
+        selectAllBtn?.classList.remove('hidden');
+        selectNoneBtn?.classList.remove('hidden');
+
+    } catch (error) {
+        listDiv.innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
+    } finally {
+        button.innerHTML = originalHtml;
+        button.disabled = false;
+    }
+}
+
+/**
+ * Selects or deselects all data table checkboxes.
+ * @param {boolean} select - True to select all, false to deselect all
+ */
+function handleSelectAllDataTables(select) {
+    const checkboxes = document.querySelectorAll('.data-table-checkbox');
+    checkboxes.forEach(cb => cb.checked = select);
+}
+
+/**
+ * Gets the list of selected tables from the checkbox selector.
+ * @returns {string[]|null} Array of selected table names, or null if none selected (meaning all)
+ */
+function getSelectedDataTables() {
+    const checkboxes = document.querySelectorAll('.data-table-checkbox');
+    if (checkboxes.length === 0) {
+        // No checkboxes loaded - return null for "all tables"
+        return null;
+    }
+
+    const selected = Array.from(checkboxes)
+        .filter(cb => cb.checked)
+        .map(cb => cb.value);
+
+    // If all are selected, return null for "all tables"
+    if (selected.length === checkboxes.length) {
+        return null;
+    }
+
+    return selected.length > 0 ? selected : null;
+}
+
+/**
+ * Starts a data export (COPY or INSERT) for the current client.
+ * @async
+ */
 async function handleStartDataExport() {
     if (!state.currentClientId) {
         showToast('Please select a client first.', true);
@@ -1554,7 +1646,6 @@ async function handleStartDataExport() {
 
     const button = document.getElementById('start-data-export-btn');
     const formatSelect = document.getElementById('data-export-format');
-    const tablesInput = document.getElementById('data-export-tables');
     const whereInput = document.getElementById('data-export-where');
     const autoLoadCheckbox = document.getElementById('data-auto-load');
     const exactCountsCheckbox = document.getElementById('data-exact-counts');
@@ -1562,13 +1653,12 @@ async function handleStartDataExport() {
 
     // Get values from the form
     const exportType = formatSelect?.value || 'COPY';
-    const tablesStr = tablesInput?.value?.trim() || '';
     const whereClause = whereInput?.value?.trim() || '';
     const autoLoad = autoLoadCheckbox?.checked ?? true;
     const useExactCounts = exactCountsCheckbox?.checked ?? false;
 
-    // Parse tables into array (comma-separated)
-    const tables = tablesStr ? tablesStr.split(',').map(t => t.trim().toUpperCase()).filter(t => t) : null;
+    // Get selected tables from checkboxes (null means all tables)
+    const tables = getSelectedDataTables();
 
     // Update button to show loading state
     const originalHtml = button.innerHTML;
@@ -1730,17 +1820,26 @@ async function handleStartDataExport() {
         // Refresh sessions to show the new export
         refreshSessions();
 
-        // Clear the inputs after successful export
-        if (tablesInput) tablesInput.value = '';
+        // Clear the WHERE input after successful export
         if (whereInput) whereInput.value = '';
 
     } catch (error) {
-        showToast(error.message || 'Data export failed', true);
+        const errorMsg = error.message || 'Data export failed';
+        const errorDetails = error.details || '';
+        showToast(errorMsg, true);
         if (resultsDiv) {
-            resultsDiv.innerHTML = `
+            let errorHtml = `
                 <div class="text-xs text-red-500">
-                    <i class="fas fa-times-circle mr-1"></i>Export failed: ${error.message}
+                    <i class="fas fa-times-circle mr-1"></i>${errorMsg}
                 </div>`;
+            if (errorDetails) {
+                // Show Oracle/detailed error in a code block
+                errorHtml += `
+                    <div class="mt-2 p-2 bg-red-50 dark:bg-red-900/20 rounded text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                        ${errorDetails.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+                    </div>`;
+            }
+            resultsDiv.innerHTML = errorHtml;
             resultsDiv.classList.remove('hidden');
         }
     } finally {
@@ -2471,7 +2570,10 @@ export function initEventListeners() {
             case 'toggle-advanced-tools': handleToggleAdvancedTools(); break;
             case 'open-workspace-btn': switchTab('workspace'); break;
             case 'close-assessment-btn': document.getElementById('report-container')?.classList.add('hidden'); break;
-            // Data Migration handler
+            // Data Migration handlers
+            case 'load-data-tables-btn': handleLoadDataTables(); break;
+            case 'select-all-data-tables': handleSelectAllDataTables(true); break;
+            case 'select-none-data-tables': handleSelectAllDataTables(false); break;
             case 'start-data-export-btn': handleStartDataExport(); break;
         }
     });
