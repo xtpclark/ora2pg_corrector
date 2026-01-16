@@ -684,10 +684,21 @@ def load_session_data(session_id):
 
     Executes the SQL files from the session against the validation database.
 
+    Request body (optional):
+    {
+        "constraint_mode": "normal|replica|skip"
+    }
+
+    Constraint modes:
+    - "normal": Default - fails on FK violations
+    - "replica": Uses session_replication_role=replica to bypass all triggers/FK checks
+    - "skip": Assumes FKs are NOT VALID, just loads data (no special handling)
+
     Returns:
     {
         "loaded_files": 3,
         "total_rows": 1500,
+        "constraint_mode": "replica",
         "tables": {
             "employees": {"rows": 100, "status": "success"},
             "departments": {"rows": 50, "status": "success"}
@@ -700,6 +711,14 @@ def load_session_data(session_id):
 
     try:
         conn = get_db()
+
+        # Get constraint mode from request
+        data = request.get_json() or {}
+        constraint_mode = data.get('constraint_mode', 'normal')
+        if constraint_mode not in ['normal', 'replica', 'skip']:
+            return validation_error_response(
+                f'Invalid constraint_mode: {constraint_mode}. Must be one of: normal, replica, skip'
+            )
 
         # Get session info
         cursor = execute_query(conn, '''
@@ -738,12 +757,17 @@ def load_session_data(session_id):
         results = {
             'loaded_files': 0,
             'total_rows': 0,
+            'constraint_mode': constraint_mode,
             'tables': {},
             'errors': []
         }
 
         with psycopg2.connect(pg_dsn) as pg_conn:
             with pg_conn.cursor() as pg_cursor:
+                # Apply constraint mode
+                if constraint_mode == 'replica':
+                    pg_cursor.execute("SET session_replication_role = replica")
+                    results['constraint_handling'] = 'All triggers and FK checks bypassed via replica mode'
                 for filename in sql_files:
                     # Skip aggregate files that use \i commands
                     if filename.startswith('output_'):
@@ -828,16 +852,273 @@ def load_session_data(session_id):
                         # Continue with other files
                         pg_conn.rollback()
 
+                # Restore session_replication_role if we changed it
+                if constraint_mode == 'replica':
+                    pg_cursor.execute("SET session_replication_role = DEFAULT")
+
                 pg_conn.commit()
 
         log_audit(client_id, 'load_data',
-                 f'Session {session_id}: Loaded {results["loaded_files"]} files, {results["total_rows"]} rows')
+                 f'Session {session_id}: Loaded {results["loaded_files"]} files, '
+                 f'{results["total_rows"]} rows (constraint_mode={constraint_mode})')
 
         return success_response(results)
 
     except Exception as e:
         logger.error(f"Failed to load data for session {session_id}: {e}", exc_info=True)
         return server_error_response('Failed to load data', str(e))
+
+
+@migration_bp.route('/client/<int:client_id>/validate_constraints', methods=['POST'])
+def validate_constraints(client_id):
+    """
+    Validate NOT VALID foreign key constraints in PostgreSQL.
+
+    This endpoint finds all FK constraints marked as NOT VALID and validates them.
+    Use this after loading data to ensure referential integrity.
+
+    Request body (optional):
+    {
+        "tables": ["table1", "table2"],  // Specific tables to validate (default: all)
+        "stop_on_error": false           // Stop on first error (default: false)
+    }
+
+    Returns:
+    {
+        "validated": 5,
+        "failed": 1,
+        "constraints": {
+            "fk_employee_dept": {"table": "employees", "status": "valid"},
+            "fk_order_customer": {"table": "orders", "status": "failed", "error": "..."}
+        }
+    }
+    """
+    import psycopg2
+
+    try:
+        conn = get_db()
+        config = get_client_config(client_id, conn)
+        pg_dsn = config.get('validation_pg_dsn')
+
+        if not pg_dsn:
+            return validation_error_response('PostgreSQL validation DSN not configured')
+
+        data = request.get_json() or {}
+        tables = data.get('tables')  # None means all tables
+        stop_on_error = data.get('stop_on_error', False)
+
+        results = {
+            'validated': 0,
+            'failed': 0,
+            'skipped': 0,
+            'constraints': {},
+            'errors': []
+        }
+
+        with psycopg2.connect(pg_dsn) as pg_conn:
+            with pg_conn.cursor() as pg_cursor:
+                # Find all NOT VALID foreign key constraints
+                query = """
+                    SELECT
+                        c.conname AS constraint_name,
+                        t.relname AS table_name,
+                        c.convalidated AS is_valid
+                    FROM pg_constraint c
+                    JOIN pg_class t ON c.conrelid = t.oid
+                    JOIN pg_namespace n ON t.relnamespace = n.oid
+                    WHERE c.contype = 'f'  -- Foreign key
+                    AND n.nspname = 'public'
+                    AND NOT c.convalidated  -- NOT VALID only
+                """
+
+                if tables:
+                    placeholders = ','.join(['%s'] * len(tables))
+                    query += f" AND LOWER(t.relname) IN ({placeholders})"
+                    pg_cursor.execute(query, [t.lower() for t in tables])
+                else:
+                    pg_cursor.execute(query)
+
+                constraints = pg_cursor.fetchall()
+
+                if not constraints:
+                    results['message'] = 'No NOT VALID constraints found'
+                    return success_response(results)
+
+                results['total_constraints'] = len(constraints)
+
+                for constraint_name, table_name, _ in constraints:
+                    try:
+                        # Validate the constraint
+                        validate_sql = f'ALTER TABLE "{table_name}" VALIDATE CONSTRAINT "{constraint_name}"'
+                        pg_cursor.execute(validate_sql)
+                        pg_conn.commit()
+
+                        results['constraints'][constraint_name] = {
+                            'table': table_name,
+                            'status': 'valid'
+                        }
+                        results['validated'] += 1
+
+                    except psycopg2.Error as e:
+                        pg_conn.rollback()
+                        error_msg = str(e).split('\n')[0]
+                        results['constraints'][constraint_name] = {
+                            'table': table_name,
+                            'status': 'failed',
+                            'error': error_msg
+                        }
+                        results['failed'] += 1
+                        results['errors'].append(f'{constraint_name} ({table_name}): {error_msg}')
+
+                        if stop_on_error:
+                            break
+
+        log_audit(client_id, 'validate_constraints',
+                 f'Validated {results["validated"]}, Failed {results["failed"]}')
+
+        return success_response(results)
+
+    except Exception as e:
+        logger.error(f"Failed to validate constraints for client {client_id}: {e}", exc_info=True)
+        return server_error_response('Failed to validate constraints', str(e))
+
+
+@migration_bp.route('/session/<int:session_id>/add_not_valid_to_fks', methods=['POST'])
+def add_not_valid_to_fks(session_id):
+    """
+    Post-process DDL files to add NOT VALID to foreign key constraints.
+
+    This modifies the exported DDL files so that FKs are created as NOT VALID,
+    allowing data to be loaded without FK checks. Run validate_constraints after
+    data loading to validate the FKs.
+
+    Request body (optional):
+    {
+        "backup": true  // Create .bak files before modifying (default: true)
+    }
+
+    Returns:
+    {
+        "files_modified": 5,
+        "fks_modified": 23,
+        "details": {
+            "EMPLOYEES.sql": {"fks_modified": 2, "fk_names": ["fk_emp_dept", "fk_emp_mgr"]},
+            ...
+        }
+    }
+    """
+    import os
+    import re
+
+    try:
+        conn = get_db()
+
+        # Get session info
+        cursor = execute_query(conn, '''
+            SELECT client_id, export_directory
+            FROM migration_sessions
+            WHERE session_id = ?
+        ''', (session_id,))
+        row = cursor.fetchone()
+
+        if not row:
+            return error_response(f'Session {session_id} not found', status_code=404)
+
+        client_id = row['client_id']
+        export_dir = row['export_directory']
+
+        if not export_dir or not os.path.exists(export_dir):
+            return error_response(f'Export directory not found: {export_dir}', status_code=404)
+
+        data = request.get_json() or {}
+        create_backup = data.get('backup', True)
+
+        results = {
+            'files_modified': 0,
+            'fks_modified': 0,
+            'details': {},
+            'errors': []
+        }
+
+        # Pattern to match FK constraints
+        # Matches: ADD CONSTRAINT ... FOREIGN KEY ... REFERENCES ... up to semicolon
+        # Group 0: Full match including semicolon
+        # Group 1: Constraint text (without semicolon)
+        # Group 2: Constraint name
+        fk_pattern = re.compile(
+            r'(ADD\s+CONSTRAINT\s+"?(\w+)"?\s+FOREIGN\s+KEY\s*\([^)]+\)\s+'
+            r'REFERENCES\s+"?\w+"?\s*\([^)]+\)'
+            r'[^;]*)\s*;',
+            re.IGNORECASE | re.MULTILINE
+        )
+
+        # Get DDL SQL files (not data files)
+        sql_files = [f for f in os.listdir(export_dir)
+                     if f.endswith('.sql') and 'output_' not in f]
+
+        for filename in sql_files:
+            file_path = os.path.join(export_dir, filename)
+            try:
+                with open(file_path, 'r') as f:
+                    content = f.read()
+
+                # Find all FK constraints
+                matches = list(fk_pattern.finditer(content))
+
+                if not matches:
+                    continue
+
+                # Create backup if requested
+                if create_backup:
+                    backup_path = file_path + '.bak'
+                    with open(backup_path, 'w') as f:
+                        f.write(content)
+
+                # Replace each FK constraint with NOT VALID version
+                fk_names = []
+                modified_content = content
+
+                for match in reversed(matches):  # Reverse to preserve positions
+                    fk_constraint = match.group(1)
+                    fk_name = match.group(2)
+
+                    # Skip if NOT VALID is already present
+                    if 'NOT VALID' in fk_constraint.upper():
+                        continue
+
+                    fk_names.append(fk_name)
+
+                    # Add NOT VALID before the semicolon
+                    # match.group(0) includes the semicolon, group(1) does not
+                    new_constraint = fk_constraint + ' NOT VALID;'
+                    modified_content = (
+                        modified_content[:match.start(0)] +
+                        new_constraint +
+                        modified_content[match.end(0):]
+                    )
+
+                # Write modified content
+                with open(file_path, 'w') as f:
+                    f.write(modified_content)
+
+                results['details'][filename] = {
+                    'fks_modified': len(fk_names),
+                    'fk_names': fk_names
+                }
+                results['files_modified'] += 1
+                results['fks_modified'] += len(fk_names)
+
+            except Exception as e:
+                results['errors'].append(f'{filename}: {str(e)}')
+
+        log_audit(client_id, 'add_not_valid_to_fks',
+                 f'Session {session_id}: Modified {results["fks_modified"]} FKs in {results["files_modified"]} files')
+
+        return success_response(results)
+
+    except Exception as e:
+        logger.error(f"Failed to add NOT VALID to FKs for session {session_id}: {e}", exc_info=True)
+        return server_error_response('Failed to modify FK constraints', str(e))
 
 
 # =============================================================================
