@@ -1637,6 +1637,141 @@ function getSelectedDataTables() {
 }
 
 /**
+ * Adds NOT VALID to FK constraints in DDL files for a session.
+ * This allows data to be loaded without FK validation.
+ * @async
+ */
+async function handleAddNotValidToFks() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    // Need a session ID - try to get from recent migration history
+    const sessionId = state.currentSessionId || await getLatestDdlSessionId();
+    if (!sessionId) {
+        showToast('No DDL session found. Run a schema migration first.', true);
+        return;
+    }
+
+    const button = document.getElementById('add-not-valid-btn');
+    const resultsDiv = document.getElementById('fk-tools-results');
+
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Processing...';
+
+    try {
+        const result = await apiFetch(`/api/session/${sessionId}/add_not_valid_to_fks`, {
+            method: 'POST',
+            body: JSON.stringify({ backup: true })
+        });
+
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `
+                <div class="text-green-600 dark:text-green-400">
+                    <i class="fas fa-check-circle mr-1"></i>
+                    Modified ${result.fks_modified} FK constraints in ${result.files_modified} files
+                </div>
+                ${result.errors?.length > 0 ? `<div class="text-red-500 mt-1">${result.errors.join(', ')}</div>` : ''}
+            `;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        showToast(`Added NOT VALID to ${result.fks_modified} FK constraints`);
+
+    } catch (error) {
+        showToast(error.message || 'Failed to add NOT VALID to FKs', true);
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="text-red-500"><i class="fas fa-times-circle mr-1"></i>${error.message}</div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
+ * Validates NOT VALID FK constraints in PostgreSQL.
+ * Run this after data loading to ensure referential integrity.
+ * @async
+ */
+async function handleValidateConstraints() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('validate-constraints-btn');
+    const resultsDiv = document.getElementById('fk-tools-results');
+
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Validating...';
+
+    try {
+        const result = await apiFetch(`/api/client/${state.currentClientId}/validate_constraints`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+
+        const total = result.total_constraints || 0;
+        const validated = result.validated || 0;
+        const failed = result.failed || 0;
+
+        if (resultsDiv) {
+            let statusClass = failed > 0 ? 'text-yellow-500' : 'text-green-600 dark:text-green-400';
+            let statusIcon = failed > 0 ? 'fa-exclamation-triangle' : 'fa-check-circle';
+
+            resultsDiv.innerHTML = `
+                <div class="${statusClass}">
+                    <i class="fas ${statusIcon} mr-1"></i>
+                    Validated ${validated}/${total} constraints${failed > 0 ? `, ${failed} failed` : ''}
+                </div>
+                ${result.message ? `<div class="text-gray-500 mt-1">${result.message}</div>` : ''}
+                ${result.errors?.length > 0 ? `<div class="text-red-500 mt-1 text-xs">${result.errors.slice(0, 3).join('<br>')}</div>` : ''}
+            `;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        if (failed > 0) {
+            showToast(`Validated ${validated} constraints, ${failed} failed`, true);
+        } else if (total === 0) {
+            showToast('No NOT VALID constraints found');
+        } else {
+            showToast(`Successfully validated ${validated} constraints`);
+        }
+
+    } catch (error) {
+        showToast(error.message || 'Failed to validate constraints', true);
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="text-red-500"><i class="fas fa-times-circle mr-1"></i>${error.message}</div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
+ * Gets the latest DDL session ID for the current client.
+ * @async
+ * @returns {number|null} Session ID or null if none found
+ */
+async function getLatestDdlSessionId() {
+    try {
+        const history = await apiFetch(`/api/client/${state.currentClientId}/migration_history?limit=10`);
+        // Find the most recent DDL session (TABLE type)
+        const ddlSession = history.sessions?.find(s => s.export_type === 'TABLE' || !s.export_type);
+        return ddlSession?.session_id || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Starts a data export (COPY or INSERT) for the current client.
  * @async
  */
@@ -1648,6 +1783,7 @@ async function handleStartDataExport() {
 
     const button = document.getElementById('start-data-export-btn');
     const formatSelect = document.getElementById('data-export-format');
+    const constraintModeSelect = document.getElementById('data-constraint-mode');
     const whereInput = document.getElementById('data-export-where');
     const autoLoadCheckbox = document.getElementById('data-auto-load');
     const exactCountsCheckbox = document.getElementById('data-exact-counts');
@@ -1655,6 +1791,7 @@ async function handleStartDataExport() {
 
     // Get values from the form
     const exportType = formatSelect?.value || 'COPY';
+    const constraintMode = constraintModeSelect?.value || 'replica';
     const whereClause = whereInput?.value?.trim() || '';
     const autoLoad = autoLoadCheckbox?.checked ?? true;
     const useExactCounts = exactCountsCheckbox?.checked ?? false;
@@ -1724,7 +1861,8 @@ async function handleStartDataExport() {
 
             try {
                 loadResult = await apiFetch(`/api/session/${sessionId}/load_data`, {
-                    method: 'POST'
+                    method: 'POST',
+                    body: JSON.stringify({ constraint_mode: constraintMode })
                 });
             } catch (loadError) {
                 // Load failed - show warning but continue
@@ -2577,6 +2715,9 @@ export function initEventListeners() {
             case 'select-all-data-tables': handleSelectAllDataTables(true); break;
             case 'select-none-data-tables': handleSelectAllDataTables(false); break;
             case 'start-data-export-btn': handleStartDataExport(); break;
+            // FK Constraint Tools
+            case 'add-not-valid-btn': handleAddNotValidToFks(); break;
+            case 'validate-constraints-btn': handleValidateConstraints(); break;
         }
     });
     
