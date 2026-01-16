@@ -1,0 +1,468 @@
+= Ora2Pg Corrector - Architecture Documentation
+:toc: left
+:toclevels: 3
+:icons: font
+:source-highlighter: highlight.js
+
+== Overview
+
+Ora2Pg Corrector is a Flask-based web application for automated Oracle-to-PostgreSQL DDL migration with AI-powered SQL correction. It wraps the Ora2Pg tool and enhances it with intelligent error correction, validation, and workflow orchestration.
+
+=== Technology Stack
+
+[cols="1,2"]
+|===
+|Component |Technology
+
+|Backend
+|Flask 2.3.3, Gunicorn (4 workers), Python 3.9
+
+|Frontend
+|HTML5/CSS3 with Tailwind CSS, JavaScript ES6 modules
+
+|Application Database
+|SQLite (default) or PostgreSQL (optional)
+
+|External Tools
+|Ora2Pg 24.3, PostgreSQL client (validation)
+
+|AI Integration
+|Anthropic Claude, OpenAI GPT, Google Gemini, xAI Grok
+
+|Container
+|Docker (Python 3.9-slim-bullseye) with Oracle Instant Client 21.19
+|===
+
+== Directory Structure
+
+[source]
+----
+ora2pg_corrector/
+├── app.py                          # Flask app factory
+├── modules/                        # Business logic layer
+│   ├── db.py                      # Database abstraction (SQLite/PostgreSQL)
+│   ├── config.py                  # Config file loading
+│   ├── auth.py                    # Token-based authentication
+│   ├── constants.py               # Global constants & paths
+│   ├── sql_processing.py          # SQL correction & validation
+│   ├── ddl_parser.py              # DDL statement parsing
+│   ├── orchestrator.py            # Migration workflow coordination
+│   ├── reports.py                 # Report generation
+│   ├── audit.py                   # Audit logging
+│   ├── responses.py               # Standardized response helpers
+│   └── oracle_preprocessing.py    # Oracle SQL preprocessing
+├── routes/                        # API routes layer
+│   ├── main_routes.py             # Homepage rendering
+│   └── api/                       # RESTful API endpoints
+│       ├── clients.py             # Client CRUD operations
+│       ├── config.py              # Configuration management
+│       ├── sessions.py            # Session & file management
+│       ├── migration.py           # Migration orchestration
+│       ├── objects.py             # Per-object tracking
+│       ├── ddl_cache.py           # DDL caching endpoints
+│       ├── reports.py             # Report & rollback generation
+│       └── sql_ops.py             # SQL operations (correct, validate)
+├── templates/                     # Jinja2 templates
+│   ├── base.html                  # Layout base
+│   ├── index.html                 # Main SPA entry point
+│   └── partials/                  # Template fragments
+├── static/                        # Frontend assets
+│   ├── js/                        # JavaScript modules
+│   │   ├── app.js                # App initialization
+│   │   ├── api.js                # API client wrapper
+│   │   ├── handlers.js           # Event handlers
+│   │   ├── ui.js                 # UI utilities
+│   │   └── state.js              # Client-side state
+│   └── css/                       # Stylesheets
+├── data/                          # Persistent application data
+│   ├── settings.db                # SQLite database
+│   ├── .encryption_key            # Data encryption key
+│   └── .auth_token                # Authentication token
+├── ora2pg_config/                 # Ora2Pg configuration
+│   └── default.cfg                # Export options definition
+├── ai_config/                     # AI provider configurations
+│   └── ai_providers.json          # Available AI providers
+├── tests/                         # Test suite (pytest)
+├── docker-compose.yml             # Multi-container setup
+├── Dockerfile                     # Application container
+└── requirements.txt               # Python dependencies
+----
+
+== Core Components
+
+=== Database Layer (modules/db.py)
+
+The database layer provides abstraction over SQLite and PostgreSQL backends with:
+
+* **Connection Management:** Flask `g` context for request-scoped DB connections
+* **Encryption:** Fernet encryption for sensitive config values (oracle_pwd, ai_api_key)
+* **Parameter Translation:** Automatic `?` to `%s` conversion for PostgreSQL
+
+==== Database Schema
+
+[cols="1,2,2"]
+|===
+|Table |Purpose |Key Columns
+
+|`clients`
+|Multi-tenant support
+|client_id (PK), client_name (UNIQUE)
+
+|`configs`
+|Client settings
+|client_id (FK), config_key, config_value (encrypted)
+
+|`migration_sessions`
+|Migration job tracking
+|session_id (PK), client_id (FK), workflow_status, rollback_script
+
+|`migration_files`
+|Exported DDL files
+|file_id (PK), session_id (FK), filename, status, corrected_content
+
+|`migration_objects`
+|Per-object tracking
+|object_id (PK), session_id (FK), object_name, object_type, status, original_ddl, corrected_ddl
+
+|`ddl_cache`
+|AI-generated DDL cache
+|cache_id (PK), client_id (FK), object_name, generated_ddl, hit_count
+
+|`audit_logs`
+|User action tracking
+|log_id (PK), client_id (FK), action, details, timestamp
+|===
+
+==== Status Values
+
+* **File Status:** `generated`, `corrected`, `validated`, `failed`
+* **Workflow Status:** `pending`, `running`, `completed`, `partial`, `failed`
+* **Object Status:** `pending`, `corrected`, `validated`, `failed`
+
+=== Authentication Layer (modules/auth.py)
+
+Token-based authentication supporting multiple request methods:
+
+* Header: `X-Auth-Token`
+* Query parameter: `?token=`
+* Bearer token
+* Form data or JSON body
+
+**Public Endpoints:** `/health`, `/api/auth/info`, root `/`, static files
+
+**Environment Modes:**
+
+* `AUTH_MODE=token` (default): Requires valid token
+* `AUTH_MODE=none`: Disables authentication
+
+=== SQL Processing (modules/sql_processing.py)
+
+The `Ora2PgAICorrector` class is the core correction engine:
+
+[source,python]
+----
+class Ora2PgAICorrector:
+    def run_ora2pg_export(...)     # Execute Ora2Pg subprocess
+    def ai_correct_sql(...)        # Call AI API for conversion
+    def validate_sql(...)          # Test against PostgreSQL
+    def correct_and_validate(...)  # Self-healing workflow
+----
+
+**Key Features:**
+
+* PostgreSQL reserved word quoting (30+ keywords)
+* Token counting for cost estimation
+* Error recovery with AI refinement (self-healing)
+* Temporary database creation for validation
+
+=== Migration Orchestrator (modules/orchestrator.py)
+
+Coordinates the one-click migration workflow:
+
+[source]
+----
+MigrationOrchestrator.run_full_migration():
+  1. Discover objects from Oracle schema
+  2. Export DDL via Ora2Pg
+  3. Parse DDL into individual objects
+  4. Run AI correction on each object
+  5. Validate converted DDL
+  6. Track objects in database
+  7. Generate rollback script
+  8. Create migration report
+----
+
+**Additional Features:**
+
+* Topological sorting for FK dependencies
+* Persistent state tracking
+* Token/cost tracking per session
+
+=== Reports Module (modules/reports.py)
+
+* **HTML Report Parsing:** Extracts Oracle object counts from Ora2Pg output
+* **Feature Detection:** 30+ Oracle features with PostgreSQL recommendations
+* **AsciiDoc Report Generation:** Detailed migration documentation
+* **Rollback Script:** DROP statements in correct dependency order
+
+== Data Flow
+
+=== Migration Workflow
+
+[source]
+----
+User (Frontend)
+    │
+    ▼
+[1] POST /api/client/<id>/start_migration
+    │
+    └─→ MigrationOrchestrator.run_full_migration()
+        │
+        ├─→ [Discovery Phase]
+        │   └─→ Ora2Pg discovers objects from Oracle DSN
+        │
+        ├─→ [Export Phase]
+        │   ├─→ Runs: ora2pg -c config.cfg -t TABLE -t VIEW ...
+        │   └─→ Generates SQL files in export_directory
+        │
+        ├─→ [AI Correction Phase]
+        │   ├─→ For each object:
+        │   │   ├─→ POST to AI API (Claude/GPT/Gemini)
+        │   │   └─→ Update migration_objects.corrected_ddl
+        │   └─→ Status: migration_objects.status = 'corrected'
+        │
+        ├─→ [Validation Phase]
+        │   ├─→ Execute CREATE statements on PostgreSQL
+        │   ├─→ On failure: AI retry with error feedback
+        │   └─→ Status: migration_objects.status = 'validated'
+        │
+        └─→ [Finalization]
+            ├─→ Generate rollback script
+            └─→ Create migration report
+----
+
+=== Data Migration Workflow
+
+[source]
+----
+[1] POST /api/client/<id>/run_ora2pg
+    │   body: {type: "COPY", tables: ["EMP", "DEPT"]}
+    │
+    └─→ Ora2Pg exports data in COPY format
+        │
+        ▼
+[2] POST /api/session/<id>/load_data
+    │   body: {constraint_mode: "replica"}
+    │
+    └─→ Load COPY files into PostgreSQL
+        │   (FK checks bypassed via session_replication_role)
+        │
+        ▼
+[3] POST /api/client/<id>/validate_constraints
+    │
+    └─→ Validate NOT VALID FK constraints
+----
+
+== External Integrations
+
+=== Ora2Pg
+
+* **Version:** 24.3
+* **Command:** `ora2pg -c <config> -t TYPE -o <output_dir>`
+* **Supported Types:** TABLE, VIEW, FUNCTION, PROCEDURE, PACKAGE, GRANT, SEQUENCE, TRIGGER, TYPE, COPY, INSERT
+
+=== AI Providers
+
+[cols="1,2,2"]
+|===
+|Provider |Endpoint |Models
+
+|Anthropic Claude
+|`https://api.anthropic.com/v1/messages`
+|claude-3-5-sonnet, claude-3-5-haiku, claude-opus-4-5
+
+|OpenAI GPT
+|`https://api.openai.com/v1/chat/completions`
+|gpt-4o, gpt-4-turbo, gpt-3.5-turbo
+
+|Google Gemini
+|`https://generativelanguage.googleapis.com/v1beta/...`
+|gemini-1.5-pro, gemini-1.5-flash
+
+|xAI Grok
+|`https://api.x.ai/v1/chat/completions`
+|grok-beta
+|===
+
+=== PostgreSQL (Validation)
+
+* **Purpose:** Validates generated DDL before finalizing
+* **Connection:** Via `VALIDATION_PG_DSN` environment variable
+* **Operations:** CREATE/DROP statements, error parsing for AI feedback
+
+=== Oracle Database
+
+* **Purpose:** Source database for schema discovery and export
+* **Connection:** Via `ORACLE_DSN` in client configuration
+* **Tool:** Ora2Pg connects to extract schema metadata
+
+== Frontend Architecture
+
+=== Single-Page Application
+
+The frontend is a vanilla JavaScript SPA with modular components:
+
+[cols="1,2"]
+|===
+|Module |Responsibility
+
+|`api.js`
+|API client wrapper with token management
+
+|`state.js`
+|Client-side state management
+
+|`app.js`
+|Application initialization and bootstrap
+
+|`handlers.js`
+|Event handlers for all user interactions
+
+|`ui.js`
+|UI utility functions (tabs, modals, notifications)
+|===
+
+=== Templates
+
+* **base.html:** Master layout with Tailwind CSS, dark mode support
+* **index.html:** Main SPA with tab navigation
+* **partials/:** Migration, Workspace, Settings, Audit panes
+
+=== Editor
+
+* **CodeMirror 6** for SQL syntax highlighting
+* Dual-pane view: Original (left) vs. Corrected (right)
+* Dark mode support
+
+== Docker Deployment
+
+=== Services
+
+[source,yaml]
+----
+services:
+  app:                        # Flask application
+    build: Dockerfile
+    ports: ["8000:8000"]
+    depends_on: [postgres]
+
+  postgres:                   # Target validation database
+    image: postgres:16
+
+  oracle-free:               # Source database (testing)
+    image: gvenzl/oracle-free:latest
+    ports: ["1521:1521"]
+----
+
+=== Dockerfile Highlights
+
+* Base: `python:3.9-slim-bullseye`
+* Oracle Instant Client 21.19.0.0.0
+* Ora2Pg v24.3 (compiled from source)
+* Perl modules: DBD::Pg, DBD::Oracle
+* Non-root user: `appuser`
+* Gunicorn: 4 workers, 3000s timeout
+
+=== Environment Variables
+
+[cols="1,2"]
+|===
+|Variable |Purpose
+
+|`APP_SECRET_KEY`
+|Flask session encryption
+
+|`AUTH_MODE`
+|`token` (default) or `none`
+
+|`DB_BACKEND`
+|`sqlite` (default) or `postgresql`
+
+|`VALIDATION_PG_DSN`
+|PostgreSQL connection for validation
+
+|`APP_ENCRYPTION_KEY`
+|Optional Fernet key override
+|===
+
+== API Endpoints Summary
+
+=== Client Management
+* `GET/POST /api/clients` - List/create clients
+* `PUT/DELETE /api/client/<id>` - Update/delete client
+
+=== Configuration
+* `GET/POST /api/client/<id>/config` - Get/save settings
+* `GET /api/ai_providers` - Available AI providers
+
+=== Migration Workflow
+* `POST /api/client/<id>/start_migration` - Begin migration
+* `GET /api/client/<id>/migration_status` - Get progress
+* `POST /api/client/<id>/stop_migration` - Cancel migration
+
+=== Data Migration
+* `POST /api/client/<id>/run_ora2pg` - Export data (COPY/INSERT)
+* `POST /api/session/<id>/load_data` - Load into PostgreSQL
+* `POST /api/session/<id>/add_not_valid_to_fks` - Post-process FKs
+* `POST /api/client/<id>/validate_constraints` - Validate FKs
+
+=== Sessions & Files
+* `GET /api/client/<id>/sessions` - List sessions
+* `GET /api/session/<id>/files` - Files in session
+* `POST /api/get_exported_file` - Download file
+
+=== Reports
+* `GET /api/session/<id>/report` - Migration report
+* `GET /api/session/<id>/rollback` - Rollback script
+
+== Design Patterns
+
+=== Multi-Tenancy
+All operations scoped to `client_id` with isolated configuration and project directories: `/app/project_data/{client_id}/{session_id}`
+
+=== Encryption
+Fernet (symmetric) encryption for passwords and API keys, with key persisted in data volume or from environment.
+
+=== Background Processing
+Long-running migrations execute in background threads with status polling via `/migration_status` endpoint.
+
+=== Error Recovery (Self-Healing)
+SQL validation failures trigger AI refinement:
+
+1. Execute DDL on PostgreSQL
+2. On error, extract error message
+3. Send error back to AI with original DDL
+4. AI generates corrected version
+5. Retry validation
+
+=== Cost Tracking
+Token counts from AI API responses are tracked per-file and per-session with cost calculation per model.
+
+=== Caching
+DDL cache prevents re-generating the same object, with hit count tracking for cache effectiveness.
+
+== Security Considerations
+
+* **Token Authentication:** Random 32-character URL-safe tokens
+* **Encrypted Secrets:** Passwords and API keys encrypted at rest
+* **No Hard-coded Secrets:** All sensitive values from environment or encrypted storage
+* **Input Validation:** SQL validated before execution
+* **Audit Logging:** All user actions recorded
+
+== Performance Considerations
+
+* **Multi-worker Gunicorn:** 4 workers handle concurrent requests
+* **Background Processing:** Long operations don't block requests
+* **DDL Caching:** Reduces redundant AI API calls
+* **Approximate Counts:** Uses pg_class.reltuples for fast row estimates
+* **Bulk Loading:** COPY format with FK bypass for fast data migration
