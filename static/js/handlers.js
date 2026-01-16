@@ -1543,6 +1543,453 @@ function resetMigrationUI() {
 }
 
 /**
+ * Starts a data export (COPY or INSERT) for the current client.
+ * @async
+ */
+/**
+ * Loads the list of tables from Oracle for the data export table selector.
+ * @async
+ */
+async function handleLoadDataTables() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('load-data-tables-btn');
+    const listDiv = document.getElementById('data-tables-list');
+    const selectAllBtn = document.getElementById('select-all-data-tables');
+    const selectNoneBtn = document.getElementById('select-none-data-tables');
+
+    const originalHtml = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Loading...';
+    button.disabled = true;
+
+    try {
+        const response = await apiFetch(`/api/client/${state.currentClientId}/get_object_list`);
+        // Handle both wrapped {data: [...]} and plain array responses
+        const objectList = Array.isArray(response) ? response : (response.data || []);
+
+        // Filter to only TABLE type objects
+        const tables = objectList.filter(obj => obj.type === 'TABLE');
+
+        if (tables.length === 0) {
+            listDiv.innerHTML = '<span class="text-gray-400">No tables found in schema</span>';
+            return;
+        }
+
+        // Build checkbox list
+        let html = '<div class="grid grid-cols-2 gap-1">';
+        for (const table of tables) {
+            html += `
+                <label class="flex items-center cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 rounded px-1">
+                    <input type="checkbox" value="${table.name}"
+                           class="data-table-checkbox h-3 w-3 rounded text-green-600 mr-2" checked>
+                    <span class="truncate">${table.name}</span>
+                </label>`;
+        }
+        html += '</div>';
+
+        listDiv.innerHTML = html;
+
+        // Show select all/none buttons
+        selectAllBtn?.classList.remove('hidden');
+        selectNoneBtn?.classList.remove('hidden');
+
+    } catch (error) {
+        listDiv.innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
+    } finally {
+        button.innerHTML = originalHtml;
+        button.disabled = false;
+    }
+}
+
+/**
+ * Selects or deselects all data table checkboxes.
+ * @param {boolean} select - True to select all, false to deselect all
+ */
+function handleSelectAllDataTables(select) {
+    const checkboxes = document.querySelectorAll('.data-table-checkbox');
+    checkboxes.forEach(cb => cb.checked = select);
+}
+
+/**
+ * Gets the list of selected tables from the checkbox selector.
+ * @returns {string[]|null} Array of selected table names, or null if none selected (meaning all)
+ */
+function getSelectedDataTables() {
+    const checkboxes = document.querySelectorAll('.data-table-checkbox');
+    if (checkboxes.length === 0) {
+        // No checkboxes loaded - return null for "all tables"
+        return null;
+    }
+
+    const selected = Array.from(checkboxes)
+        .filter(cb => cb.checked)
+        .map(cb => cb.value);
+
+    // If all are selected, return null for "all tables"
+    if (selected.length === checkboxes.length) {
+        return null;
+    }
+
+    return selected.length > 0 ? selected : null;
+}
+
+/**
+ * Adds NOT VALID to FK constraints in DDL files for a session.
+ * This allows data to be loaded without FK validation.
+ * @async
+ */
+async function handleAddNotValidToFks() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    // Need a session ID - try to get from recent migration history
+    const sessionId = state.currentSessionId || await getLatestDdlSessionId();
+    if (!sessionId) {
+        showToast('No DDL session found. Run a schema migration first.', true);
+        return;
+    }
+
+    const button = document.getElementById('add-not-valid-btn');
+    const resultsDiv = document.getElementById('fk-tools-results');
+
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Processing...';
+
+    try {
+        const result = await apiFetch(`/api/session/${sessionId}/add_not_valid_to_fks`, {
+            method: 'POST',
+            body: JSON.stringify({ backup: true })
+        });
+
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `
+                <div class="text-green-600 dark:text-green-400">
+                    <i class="fas fa-check-circle mr-1"></i>
+                    Modified ${result.fks_modified} FK constraints in ${result.files_modified} files
+                </div>
+                ${result.errors?.length > 0 ? `<div class="text-red-500 mt-1">${result.errors.join(', ')}</div>` : ''}
+            `;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        showToast(`Added NOT VALID to ${result.fks_modified} FK constraints`);
+
+    } catch (error) {
+        showToast(error.message || 'Failed to add NOT VALID to FKs', true);
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="text-red-500"><i class="fas fa-times-circle mr-1"></i>${error.message}</div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
+ * Validates NOT VALID FK constraints in PostgreSQL.
+ * Run this after data loading to ensure referential integrity.
+ * @async
+ */
+async function handleValidateConstraints() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('validate-constraints-btn');
+    const resultsDiv = document.getElementById('fk-tools-results');
+
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i>Validating...';
+
+    try {
+        const result = await apiFetch(`/api/client/${state.currentClientId}/validate_constraints`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+
+        const total = result.total_constraints || 0;
+        const validated = result.validated || 0;
+        const failed = result.failed || 0;
+
+        if (resultsDiv) {
+            let statusClass = failed > 0 ? 'text-yellow-500' : 'text-green-600 dark:text-green-400';
+            let statusIcon = failed > 0 ? 'fa-exclamation-triangle' : 'fa-check-circle';
+
+            resultsDiv.innerHTML = `
+                <div class="${statusClass}">
+                    <i class="fas ${statusIcon} mr-1"></i>
+                    Validated ${validated}/${total} constraints${failed > 0 ? `, ${failed} failed` : ''}
+                </div>
+                ${result.message ? `<div class="text-gray-500 mt-1">${result.message}</div>` : ''}
+                ${result.errors?.length > 0 ? `<div class="text-red-500 mt-1 text-xs">${result.errors.slice(0, 3).join('<br>')}</div>` : ''}
+            `;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        if (failed > 0) {
+            showToast(`Validated ${validated} constraints, ${failed} failed`, true);
+        } else if (total === 0) {
+            showToast('No NOT VALID constraints found');
+        } else {
+            showToast(`Successfully validated ${validated} constraints`);
+        }
+
+    } catch (error) {
+        showToast(error.message || 'Failed to validate constraints', true);
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `<div class="text-red-500"><i class="fas fa-times-circle mr-1"></i>${error.message}</div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
+ * Gets the latest DDL session ID for the current client.
+ * @async
+ * @returns {number|null} Session ID or null if none found
+ */
+async function getLatestDdlSessionId() {
+    try {
+        const history = await apiFetch(`/api/client/${state.currentClientId}/migration_history?limit=10`);
+        // Find the most recent DDL session (TABLE type)
+        const ddlSession = history.sessions?.find(s => s.export_type === 'TABLE' || !s.export_type);
+        return ddlSession?.session_id || null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Starts a data export (COPY or INSERT) for the current client.
+ * @async
+ */
+async function handleStartDataExport() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('start-data-export-btn');
+    const formatSelect = document.getElementById('data-export-format');
+    const constraintModeSelect = document.getElementById('data-constraint-mode');
+    const whereInput = document.getElementById('data-export-where');
+    const autoLoadCheckbox = document.getElementById('data-auto-load');
+    const exactCountsCheckbox = document.getElementById('data-exact-counts');
+    const resultsDiv = document.getElementById('data-export-results');
+
+    // Get values from the form
+    const exportType = formatSelect?.value || 'COPY';
+    const constraintMode = constraintModeSelect?.value || 'replica';
+    const whereClause = whereInput?.value?.trim() || '';
+    const autoLoad = autoLoadCheckbox?.checked ?? true;
+    const useExactCounts = exactCountsCheckbox?.checked ?? false;
+
+    // Get selected tables from checkboxes (null means all tables)
+    const tables = getSelectedDataTables();
+
+    // Update button to show loading state
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Exporting...';
+
+    // Hide previous results
+    if (resultsDiv) resultsDiv.classList.add('hidden');
+
+    try {
+        // Build request body
+        const requestBody = {
+            type: exportType,
+            session_name: `Data Export (${exportType}) - ${new Date().toLocaleString()}`
+        };
+        if (tables && tables.length > 0) {
+            requestBody.tables = tables;
+        }
+        if (whereClause) {
+            requestBody.where_clause = whereClause;
+        }
+
+        // Call the run_ora2pg endpoint
+        const result = await apiFetch(`/api/client/${state.currentClientId}/run_ora2pg`, {
+            method: 'POST',
+            body: JSON.stringify(requestBody)
+        });
+
+        const fileCount = result.files?.length || 0;
+        const sessionId = result.session_id;
+
+        // Extract table names from exported files for counting
+        // File names are like "TABLE_NAME_output_copy.sql" or "output_copy.sql"
+        const exportedTables = result.files
+            ?.map(f => f.replace(/_output_(copy|insert)\.sql$/i, ''))
+            .filter(t => t && !t.startsWith('output_'))
+            .map(t => t.toUpperCase()) || [];
+
+        const tablesToCount = tables || exportedTables;
+
+        // Initialize results display
+        if (resultsDiv) {
+            resultsDiv.innerHTML = `
+                <div class="text-xs font-medium text-green-600 dark:text-green-400 mb-2">
+                    <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                </div>`;
+            resultsDiv.classList.remove('hidden');
+        }
+
+        // Auto-load into PostgreSQL if enabled
+        let loadResult = null;
+        if (autoLoad && sessionId) {
+            button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Loading into PG...';
+
+            if (resultsDiv) {
+                resultsDiv.innerHTML += `
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                        <i class="fas fa-spinner fa-spin mr-1"></i>Loading data into PostgreSQL...
+                    </div>`;
+            }
+
+            try {
+                loadResult = await apiFetch(`/api/session/${sessionId}/load_data`, {
+                    method: 'POST',
+                    body: JSON.stringify({ constraint_mode: constraintMode })
+                });
+            } catch (loadError) {
+                // Load failed - show warning but continue
+                if (resultsDiv) {
+                    resultsDiv.innerHTML += `
+                        <div class="text-xs text-yellow-500 mt-2">
+                            <i class="fas fa-exclamation-triangle mr-1"></i>Load failed: ${loadError.message}
+                        </div>`;
+                }
+            }
+        }
+
+        // Get counts and display final results
+        if (tablesToCount.length > 0 && resultsDiv) {
+            try {
+                const countResult = await apiFetch(`/api/client/${state.currentClientId}/table_counts`, {
+                    method: 'POST',
+                    body: JSON.stringify({ tables: tablesToCount, exact: useExactCounts })
+                });
+
+                // Build results table
+                let resultsHtml = `
+                    <div class="text-xs font-medium text-green-600 dark:text-green-400 mb-2">
+                        <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                    </div>`;
+
+                if (loadResult) {
+                    resultsHtml += `
+                        <div class="text-xs font-medium text-blue-600 dark:text-blue-400 mb-2">
+                            <i class="fas fa-database mr-1"></i>Loaded ${loadResult.loaded_files} file(s) into PostgreSQL
+                        </div>`;
+                }
+
+                resultsHtml += `
+                    <div class="text-xs text-gray-700 dark:text-gray-300">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="border-b border-gray-200 dark:border-gray-700">
+                                    <th class="text-left py-1">Table</th>
+                                    <th class="text-right py-1">Rows in PG</th>
+                                </tr>
+                            </thead>
+                            <tbody>`;
+
+                for (const [table, data] of Object.entries(countResult.counts)) {
+                    const countStr = data.count.toLocaleString();
+                    const exactBadge = data.exact ? '' : '<span class="text-gray-400 ml-1">~</span>';
+                    const errorClass = data.error ? 'text-red-500' : '';
+                    resultsHtml += `
+                        <tr class="border-b border-gray-100 dark:border-gray-800">
+                            <td class="py-1 ${errorClass}">${table}</td>
+                            <td class="text-right py-1 ${errorClass}">${countStr}${exactBadge}</td>
+                        </tr>`;
+                }
+
+                resultsHtml += `
+                            </tbody>
+                            <tfoot>
+                                <tr class="font-medium">
+                                    <td class="py-1">Total</td>
+                                    <td class="text-right py-1">${countResult.total.toLocaleString()}</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        <p class="text-gray-400 mt-1 text-xs">~ = approximate count (use ANALYZE for exact)</p>
+                    </div>`;
+
+                resultsDiv.innerHTML = resultsHtml;
+
+            } catch (countError) {
+                // Count failed but export succeeded
+                let statusHtml = `
+                    <div class="text-xs font-medium text-green-600 dark:text-green-400">
+                        <i class="fas fa-check-circle mr-1"></i>Export complete - ${fileCount} file(s)
+                    </div>`;
+                if (loadResult) {
+                    statusHtml += `
+                        <div class="text-xs font-medium text-blue-600 dark:text-blue-400 mt-1">
+                            <i class="fas fa-database mr-1"></i>Loaded ${loadResult.total_rows.toLocaleString()} rows
+                        </div>`;
+                }
+                statusHtml += `
+                    <div class="text-xs text-yellow-500 mt-1">
+                        <i class="fas fa-exclamation-triangle mr-1"></i>Could not get row counts: ${countError.message}
+                    </div>`;
+                resultsDiv.innerHTML = statusHtml;
+            }
+        } else {
+            const msg = loadResult
+                ? `Data export and load completed! ${loadResult.total_rows.toLocaleString()} rows loaded.`
+                : `Data export completed! ${fileCount} file(s) generated.`;
+            showToast(msg);
+        }
+
+        // Refresh sessions to show the new export
+        refreshSessions();
+
+        // Clear the WHERE input after successful export
+        if (whereInput) whereInput.value = '';
+
+    } catch (error) {
+        const errorMsg = error.message || 'Data export failed';
+        const errorDetails = error.details || '';
+        showToast(errorMsg, true);
+        if (resultsDiv) {
+            let errorHtml = `
+                <div class="text-xs text-red-500">
+                    <i class="fas fa-times-circle mr-1"></i>${errorMsg}
+                </div>`;
+            if (errorDetails) {
+                // Show Oracle/detailed error in a code block
+                errorHtml += `
+                    <div class="mt-2 p-2 bg-red-50 dark:bg-red-900/20 rounded text-xs font-mono text-red-700 dark:text-red-300 overflow-x-auto whitespace-pre-wrap">
+                        ${errorDetails.replace(/</g, '&lt;').replace(/>/g, '&gt;')}
+                    </div>`;
+            }
+            resultsDiv.innerHTML = errorHtml;
+            resultsDiv.classList.remove('hidden');
+        }
+    } finally {
+        // Reset button state
+        button.disabled = false;
+        button.innerHTML = originalHtml;
+    }
+}
+
+/**
  * Refreshes the sessions list after migration.
  * @async
  */
@@ -2263,6 +2710,14 @@ export function initEventListeners() {
             case 'toggle-advanced-tools': handleToggleAdvancedTools(); break;
             case 'open-workspace-btn': switchTab('workspace'); break;
             case 'close-assessment-btn': document.getElementById('report-container')?.classList.add('hidden'); break;
+            // Data Migration handlers
+            case 'load-data-tables-btn': handleLoadDataTables(); break;
+            case 'select-all-data-tables': handleSelectAllDataTables(true); break;
+            case 'select-none-data-tables': handleSelectAllDataTables(false); break;
+            case 'start-data-export-btn': handleStartDataExport(); break;
+            // FK Constraint Tools
+            case 'add-not-valid-btn': handleAddNotValidToFks(); break;
+            case 'validate-constraints-btn': handleValidateConstraints(); break;
         }
     });
     

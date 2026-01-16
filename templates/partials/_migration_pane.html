@@ -85,7 +85,110 @@
                 </div>
             </div>
 
-            <!-- TASK 2: Convert Specific SQL -->
+            <!-- TASK 2: Migrate Data -->
+            <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-green-400 dark:hover:border-green-500 transition-colors">
+                <div class="flex items-start">
+                    <div class="flex-shrink-0 w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-lg flex items-center justify-center mr-4">
+                        <i class="fas fa-database text-green-600 dark:text-green-400 text-xl"></i>
+                    </div>
+                    <div class="flex-1">
+                        <h3 class="text-lg font-semibold text-gray-900 dark:text-white mb-1">Migrate Data</h3>
+                        <p class="text-sm text-gray-600 dark:text-gray-400 mb-3">Export data from Oracle using COPY format for fast PostgreSQL loading</p>
+
+                        <!-- Data Migration Options -->
+                        <div class="space-y-2 mb-3">
+                            <div class="flex items-center gap-4">
+                                <div class="flex items-center gap-2">
+                                    <label class="text-xs text-gray-600 dark:text-gray-400">Format:</label>
+                                    <select id="data-export-format" class="text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2">
+                                        <option value="COPY">COPY (Recommended)</option>
+                                        <option value="INSERT">INSERT</option>
+                                    </select>
+                                </div>
+                                <div class="flex items-center gap-2">
+                                    <label class="text-xs text-gray-600 dark:text-gray-400">FK Mode:</label>
+                                    <select id="data-constraint-mode" class="text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2"
+                                            title="How to handle foreign key constraints during data load">
+                                        <option value="replica" title="Bypass all FK checks using session_replication_role">Bypass (Recommended)</option>
+                                        <option value="skip" title="Assume FKs are NOT VALID, no special handling">Skip</option>
+                                        <option value="normal" title="Normal mode - will fail on FK violations">Normal</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Table Selection -->
+                            <div class="border border-gray-200 dark:border-gray-700 rounded p-2">
+                                <div class="flex items-center justify-between mb-2">
+                                    <label class="text-xs font-medium text-gray-600 dark:text-gray-400">Tables:</label>
+                                    <div class="flex gap-2">
+                                        <button id="load-data-tables-btn" class="text-xs text-green-600 hover:text-green-700 dark:text-green-400">
+                                            <i class="fas fa-sync-alt mr-1"></i>Load Tables
+                                        </button>
+                                        <button id="select-all-data-tables" class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 hidden">
+                                            Select All
+                                        </button>
+                                        <button id="select-none-data-tables" class="text-xs text-gray-500 hover:text-gray-700 dark:text-gray-400 hidden">
+                                            Select None
+                                        </button>
+                                    </div>
+                                </div>
+                                <div id="data-tables-list" class="max-h-32 overflow-y-auto text-xs text-gray-500 dark:text-gray-400">
+                                    Click "Load Tables" to fetch available tables from Oracle
+                                </div>
+                            </div>
+
+                            <div class="flex items-center gap-2">
+                                <label class="text-xs text-gray-600 dark:text-gray-400">Filter:</label>
+                                <input id="data-export-where" type="text" placeholder="WHERE clause (optional)"
+                                    class="flex-1 text-xs rounded border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 py-1 px-2">
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="flex items-center cursor-pointer text-xs text-gray-600 dark:text-gray-400">
+                                    <input id="data-auto-load" type="checkbox" checked class="h-3 w-3 rounded text-green-600 mr-2">
+                                    Auto-load into PostgreSQL after export
+                                </label>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <label class="flex items-center cursor-pointer text-xs text-gray-600 dark:text-gray-400">
+                                    <input id="data-exact-counts" type="checkbox" class="h-3 w-3 rounded text-green-600 mr-2">
+                                    Use exact COUNT(*) instead of estimates
+                                </label>
+                            </div>
+                        </div>
+
+                        <button id="start-data-export-btn" class="text-sm bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded transition-colors">
+                            <i class="fas fa-download mr-2"></i>Export Data
+                        </button>
+
+                        <!-- Data Export Results -->
+                        <div id="data-export-results" class="hidden mt-3 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
+                            <!-- Results will be rendered here by JS -->
+                        </div>
+
+                        <!-- FK Post-Processing Section -->
+                        <div class="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                            <div class="flex items-center justify-between mb-2">
+                                <span class="text-xs font-medium text-gray-600 dark:text-gray-400">FK Constraint Tools:</span>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button id="add-not-valid-btn" class="text-xs bg-orange-500 hover:bg-orange-600 text-white py-1.5 px-3 rounded transition-colors"
+                                        title="Add NOT VALID to FK constraints in DDL files (enables data load without FK checks)">
+                                    <i class="fas fa-edit mr-1"></i>Add NOT VALID to FKs
+                                </button>
+                                <button id="validate-constraints-btn" class="text-xs bg-blue-500 hover:bg-blue-600 text-white py-1.5 px-3 rounded transition-colors"
+                                        title="Validate NOT VALID FK constraints after data load">
+                                    <i class="fas fa-check-double mr-1"></i>Validate Constraints
+                                </button>
+                            </div>
+                            <div id="fk-tools-results" class="hidden mt-2 p-2 bg-gray-100 dark:bg-gray-700 rounded text-xs">
+                                <!-- FK tools results will be rendered here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TASK 3: Convert Specific SQL -->
             <div class="bg-white dark:bg-gray-900 p-6 rounded-lg border-2 border-gray-200 dark:border-gray-700 hover:border-purple-400 dark:hover:border-purple-500 transition-colors">
                 <div class="flex items-start">
                     <div class="flex-shrink-0 w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-lg flex items-center justify-center mr-4">
