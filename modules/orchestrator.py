@@ -1069,3 +1069,456 @@ def run_migration(client_id, options=None):
     """
     orchestrator = MigrationOrchestrator(client_id)
     return orchestrator.run_full_migration(options)
+
+
+class CompleteMigrationOrchestrator:
+    """
+    Orchestrates a complete end-to-end migration: DDL + Data + FK validation.
+
+    This combines the DDL migration workflow with data export/load into a single
+    unified operation. The workflow is:
+
+    1. DDL Phase: Export, AI-correct, and validate schema objects
+    2. FK Prep: Add NOT VALID to FK constraints (enables data load without FK checks)
+    3. Apply DDL: Execute DDL on target PostgreSQL
+    4. Data Phase: Export data via COPY and load into PostgreSQL
+    5. FK Validation: Validate all NOT VALID FK constraints
+    6. Report: Generate combined migration report
+    """
+
+    def __init__(self, client_id):
+        """
+        Initialize the complete migration orchestrator.
+
+        :param int client_id: The client ID to run migration for
+        """
+        self.client_id = client_id
+        self.conn = None
+        self.config = None
+        self.ddl_session_id = None
+        self.data_session_id = None
+        self.results = {
+            'status': 'pending',
+            'phase': None,
+            'ddl_results': None,
+            'data_results': None,
+            'fk_validation_results': None,
+            'errors': [],
+            'started_at': None,
+            'completed_at': None
+        }
+
+    def _initialize(self):
+        """Load config and initialize database connection."""
+        self.conn = get_db()
+        self.config = get_client_config(self.client_id, self.conn)
+
+    def _update_session_progress(self, session_id, phase=None, current_file=None):
+        """Update progress in the database for the given session."""
+        if not session_id:
+            return
+
+        updates = []
+        params = []
+
+        if phase is not None:
+            updates.append('current_phase = ?')
+            params.append(phase)
+        if current_file is not None:
+            updates.append('current_file = ?')
+            params.append(current_file)
+
+        if not updates:
+            return
+
+        params.append(session_id)
+        query = f"UPDATE migration_sessions SET {', '.join(updates)} WHERE session_id = ?"
+        execute_query(self.conn, query, tuple(params))
+        self.conn.commit()
+
+    def run_complete_migration(self, options=None):
+        """
+        Execute the complete end-to-end migration workflow.
+
+        :param dict options: Migration options
+            - clean_slate: Drop existing tables before validation (default: False)
+            - auto_create_ddl: Auto-create missing tables during validation (default: True)
+            - session_name: Friendly name for the migration session
+            - tables: List of tables to migrate data for (default: all)
+            - on_error: 'stop' or 'continue' (default: 'continue')
+            - constraint_mode: 'replica', 'skip', or 'normal' (default: 'replica')
+        :return: Migration results
+        :rtype: dict
+        """
+        import psycopg2
+        import os
+        import re
+        from io import StringIO
+
+        if options is None:
+            options = {}
+
+        try:
+            self._initialize()
+            self.results['status'] = 'running'
+            self.results['started_at'] = datetime.now().isoformat()
+
+            logger.info(f"[Client {self.client_id}] Starting complete migration (DDL + Data)")
+
+            # =================================================================
+            # PHASE 1: DDL Migration
+            # =================================================================
+            self.results['phase'] = 'ddl_migration'
+            logger.info(f"[Client {self.client_id}] Phase 1: DDL Migration")
+
+            ddl_orchestrator = MigrationOrchestrator(self.client_id)
+            ddl_options = {
+                'clean_slate': options.get('clean_slate', False),
+                'auto_create_ddl': options.get('auto_create_ddl', True),
+                'session_name': options.get('session_name', 'Complete Migration')
+            }
+            ddl_results = ddl_orchestrator.run_full_migration(ddl_options)
+            self.ddl_session_id = ddl_orchestrator.session_id
+            self.results['ddl_results'] = ddl_results
+
+            if ddl_results['status'] == 'failed' and ddl_results['successful'] == 0:
+                self.results['status'] = 'failed'
+                self.results['errors'].append('DDL migration failed completely')
+                return self.results
+
+            logger.info(f"[Client {self.client_id}] DDL phase complete: "
+                       f"{ddl_results['successful']} successful, {ddl_results['failed']} failed")
+
+            # =================================================================
+            # PHASE 2: Data Export
+            # =================================================================
+            self.results['phase'] = 'data_export'
+            self._update_session_progress(self.ddl_session_id, phase='data_export',
+                                         current_file='Exporting data...')
+            logger.info(f"[Client {self.client_id}] Phase 2: Data Export")
+
+            # Get list of tables to export
+            tables = options.get('tables')
+            if not tables:
+                # Get all tables from the DDL migration
+                cursor = execute_query(self.conn, '''
+                    SELECT DISTINCT object_name FROM migration_objects
+                    WHERE session_id = ? AND object_type = 'TABLE' AND status = 'validated'
+                ''', (self.ddl_session_id,))
+                tables = [row['object_name'] for row in cursor.fetchall()]
+
+            if not tables:
+                logger.warning(f"[Client {self.client_id}] No tables to export data for")
+                self.results['data_results'] = {'message': 'No tables to export'}
+            else:
+                # Run Ora2Pg COPY export
+                corrector = Ora2PgAICorrector(
+                    output_dir=OUTPUT_DIR,
+                    ai_settings=extract_ai_settings(self.config),
+                    encryption_key=ENCRYPTION_KEY
+                )
+
+                export_config = self.config.copy()
+                export_config['type'] = 'COPY'
+                export_config['ALLOW'] = ','.join(tables)
+
+                data_result, data_error = corrector.run_ora2pg_export(
+                    self.client_id, self.conn, export_config,
+                    session_name=f"Data Export - {options.get('session_name', 'Complete Migration')}"
+                )
+
+                if data_error:
+                    self.results['errors'].append(f'Data export failed: {data_error}')
+                    logger.error(f"[Client {self.client_id}] Data export failed: {data_error}")
+                else:
+                    self.data_session_id = data_result.get('session_id')
+                    self.results['data_results'] = {
+                        'session_id': self.data_session_id,
+                        'files': data_result.get('files', []),
+                        'tables_exported': len(tables)
+                    }
+                    logger.info(f"[Client {self.client_id}] Data export complete: "
+                               f"{len(data_result.get('files', []))} files")
+
+            # =================================================================
+            # PHASE 3: Load Data into PostgreSQL
+            # =================================================================
+            if self.data_session_id:
+                self.results['phase'] = 'data_load'
+                self._update_session_progress(self.ddl_session_id, phase='data_load',
+                                             current_file='Loading data...')
+                logger.info(f"[Client {self.client_id}] Phase 3: Data Load")
+
+                pg_dsn = self.config.get('validation_pg_dsn')
+                if not pg_dsn:
+                    self.results['errors'].append('No PostgreSQL DSN configured for data load')
+                else:
+                    # Get export directory
+                    cursor = execute_query(self.conn, '''
+                        SELECT export_directory FROM migration_sessions WHERE session_id = ?
+                    ''', (self.data_session_id,))
+                    session_row = cursor.fetchone()
+                    export_dir = session_row['export_directory'] if session_row else None
+
+                    if export_dir and os.path.exists(export_dir):
+                        constraint_mode = options.get('constraint_mode', 'replica')
+                        load_results = self._load_data_files(
+                            pg_dsn, export_dir, constraint_mode
+                        )
+                        self.results['data_results']['load_results'] = load_results
+                        logger.info(f"[Client {self.client_id}] Data load complete: "
+                                   f"{load_results.get('total_rows', 0)} rows loaded")
+
+            # =================================================================
+            # PHASE 4: Validate FK Constraints
+            # =================================================================
+            self.results['phase'] = 'fk_validation'
+            self._update_session_progress(self.ddl_session_id, phase='fk_validation',
+                                         current_file='Validating FK constraints...')
+            logger.info(f"[Client {self.client_id}] Phase 4: FK Validation")
+
+            pg_dsn = self.config.get('validation_pg_dsn')
+            if pg_dsn:
+                fk_results = self._validate_fk_constraints(pg_dsn)
+                self.results['fk_validation_results'] = fk_results
+                logger.info(f"[Client {self.client_id}] FK validation complete: "
+                           f"{fk_results.get('validated', 0)} validated, "
+                           f"{fk_results.get('failed', 0)} failed")
+
+            # =================================================================
+            # FINALIZATION
+            # =================================================================
+            self.results['phase'] = 'completed'
+            self._update_session_progress(self.ddl_session_id, phase='completed',
+                                         current_file='Complete migration finished')
+            self.results['completed_at'] = datetime.now().isoformat()
+
+            # Determine final status
+            has_errors = len(self.results['errors']) > 0
+            ddl_failed = ddl_results.get('failed', 0) > 0
+            fk_failed = self.results.get('fk_validation_results', {}).get('failed', 0) > 0
+
+            if ddl_results['successful'] == 0:
+                self.results['status'] = 'failed'
+            elif has_errors or ddl_failed or fk_failed:
+                self.results['status'] = 'partial'
+            else:
+                self.results['status'] = 'completed'
+
+            # Update DDL session workflow_status to reflect complete migration final state
+            if self.ddl_session_id:
+                query = 'UPDATE migration_sessions SET workflow_status = ?, completed_at = CURRENT_TIMESTAMP WHERE session_id = ?'
+                execute_query(self.conn, query, (self.results['status'], self.ddl_session_id))
+                self.conn.commit()
+
+            logger.info(f"[Client {self.client_id}] Complete migration finished: {self.results['status']}")
+            return self.results
+
+        except Exception as e:
+            logger.error(f"[Client {self.client_id}] Complete migration failed: {e}", exc_info=True)
+            self.results['status'] = 'failed'
+            self.results['errors'].append(f"Unexpected error: {str(e)}")
+            return self.results
+
+    def _load_data_files(self, pg_dsn, export_dir, constraint_mode):
+        """
+        Load COPY data files into PostgreSQL.
+
+        :param str pg_dsn: PostgreSQL connection string
+        :param str export_dir: Directory containing COPY files
+        :param str constraint_mode: 'replica', 'skip', or 'normal'
+        :return: Load results
+        :rtype: dict
+        """
+        import psycopg2
+        import os
+        import re
+        from io import StringIO
+
+        results = {
+            'loaded_files': 0,
+            'total_rows': 0,
+            'constraint_mode': constraint_mode,
+            'tables': {},
+            'errors': []
+        }
+
+        # Get data files (table-specific COPY files)
+        sql_files = [f for f in os.listdir(export_dir)
+                     if f.endswith('.sql') and '_output_' in f.lower()]
+
+        if not sql_files:
+            results['message'] = 'No data files found'
+            return results
+
+        try:
+            with psycopg2.connect(pg_dsn) as pg_conn:
+                with pg_conn.cursor() as pg_cursor:
+                    # Apply constraint mode
+                    if constraint_mode == 'replica':
+                        pg_cursor.execute("SET session_replication_role = replica")
+                        results['constraint_handling'] = 'FK checks bypassed via replica mode'
+
+                    for filename in sql_files:
+                        file_path = os.path.join(export_dir, filename)
+                        try:
+                            with open(file_path, 'r') as f:
+                                sql_content = f.read()
+
+                            if not sql_content.strip():
+                                continue
+
+                            # Extract table name
+                            table_match = re.match(r'([A-Za-z_][A-Za-z0-9_]*)_output_', filename)
+                            table_name = table_match.group(1).lower() if table_match else 'unknown'
+
+                            # Handle COPY FROM STDIN format
+                            if 'COPY' in sql_content and 'FROM STDIN' in sql_content:
+                                # Execute SET commands first
+                                for line in sql_content.split('\n'):
+                                    stripped = line.strip().upper()
+                                    if stripped.startswith('SET '):
+                                        pg_cursor.execute(line)
+
+                                # Find and execute COPY command
+                                copy_match = re.search(
+                                    r'(COPY\s+\S+\s*\([^)]+\)\s*FROM\s+STDIN[^;]*;?)\s*\n(.*)',
+                                    sql_content,
+                                    re.IGNORECASE | re.DOTALL
+                                )
+
+                                if copy_match:
+                                    copy_cmd = copy_match.group(1).rstrip(';')
+                                    data_section = copy_match.group(2)
+                                    data_section = re.sub(r'\n\\.\s*$', '', data_section)
+
+                                    pg_cursor.copy_expert(
+                                        f"{copy_cmd} ",
+                                        StringIO(data_section)
+                                    )
+
+                                rows_affected = pg_cursor.rowcount if pg_cursor.rowcount > 0 else 0
+                            else:
+                                # Regular SQL (INSERT statements)
+                                pg_cursor.execute(sql_content)
+                                rows_affected = pg_cursor.rowcount if pg_cursor.rowcount > 0 else 0
+
+                            results['tables'][table_name] = {
+                                'rows': rows_affected,
+                                'status': 'success'
+                            }
+                            results['loaded_files'] += 1
+                            results['total_rows'] += rows_affected
+
+                        except psycopg2.Error as e:
+                            error_msg = str(e).split('\n')[0]
+                            results['tables'][table_name] = {
+                                'rows': 0,
+                                'status': 'failed',
+                                'error': error_msg
+                            }
+                            results['errors'].append(f'{table_name}: {error_msg}')
+                            pg_conn.rollback()
+
+                    # Restore session_replication_role
+                    if constraint_mode == 'replica':
+                        pg_cursor.execute("SET session_replication_role = DEFAULT")
+
+                    pg_conn.commit()
+
+        except psycopg2.Error as e:
+            results['errors'].append(f'Database connection error: {str(e)}')
+
+        return results
+
+    def _validate_fk_constraints(self, pg_dsn):
+        """
+        Validate all NOT VALID FK constraints.
+
+        :param str pg_dsn: PostgreSQL connection string
+        :return: Validation results
+        :rtype: dict
+        """
+        import psycopg2
+
+        results = {
+            'validated': 0,
+            'failed': 0,
+            'constraints': {},
+            'errors': []
+        }
+
+        try:
+            with psycopg2.connect(pg_dsn) as pg_conn:
+                with pg_conn.cursor() as pg_cursor:
+                    # Find all NOT VALID FK constraints
+                    pg_cursor.execute("""
+                        SELECT c.conname AS constraint_name,
+                               t.relname AS table_name
+                        FROM pg_constraint c
+                        JOIN pg_class t ON c.conrelid = t.oid
+                        JOIN pg_namespace n ON t.relnamespace = n.oid
+                        WHERE c.contype = 'f'
+                        AND n.nspname = 'public'
+                        AND NOT c.convalidated
+                    """)
+                    constraints = pg_cursor.fetchall()
+
+                    if not constraints:
+                        results['message'] = 'No NOT VALID constraints to validate'
+                        return results
+
+                    results['total_constraints'] = len(constraints)
+
+                    for constraint_name, table_name in constraints:
+                        try:
+                            validate_sql = f'ALTER TABLE "{table_name}" VALIDATE CONSTRAINT "{constraint_name}"'
+                            pg_cursor.execute(validate_sql)
+                            pg_conn.commit()
+
+                            results['constraints'][constraint_name] = {
+                                'table': table_name,
+                                'status': 'valid'
+                            }
+                            results['validated'] += 1
+
+                        except psycopg2.Error as e:
+                            pg_conn.rollback()
+                            error_msg = str(e).split('\n')[0]
+                            results['constraints'][constraint_name] = {
+                                'table': table_name,
+                                'status': 'failed',
+                                'error': error_msg
+                            }
+                            results['failed'] += 1
+                            results['errors'].append(f'{constraint_name}: {error_msg}')
+
+        except psycopg2.Error as e:
+            results['errors'].append(f'Database connection error: {str(e)}')
+
+        return results
+
+    def get_status(self):
+        """
+        Get the current migration status.
+
+        :return: Current results/status
+        :rtype: dict
+        """
+        status = self.results.copy()
+        status['ddl_session_id'] = self.ddl_session_id
+        status['data_session_id'] = self.data_session_id
+        return status
+
+
+def run_complete_migration(client_id, options=None):
+    """
+    Convenience function to run a complete end-to-end migration.
+
+    :param int client_id: The client ID
+    :param dict options: Migration options
+    :return: Migration results
+    :rtype: dict
+    """
+    orchestrator = CompleteMigrationOrchestrator(client_id)
+    return orchestrator.run_complete_migration(options)

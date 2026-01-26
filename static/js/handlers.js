@@ -1542,6 +1542,268 @@ function resetMigrationUI() {
     }
 }
 
+// Track complete migration polling
+let completeMigrationPollInterval = null;
+
+/**
+ * Starts a complete end-to-end migration (DDL + Data + FK validation).
+ * @async
+ */
+async function handleStartCompleteMigration() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('start-complete-migration-btn');
+    const progressDiv = document.getElementById('complete-migration-progress');
+    const resultsDiv = document.getElementById('complete-migration-results');
+
+    // Get options
+    const sessionName = document.getElementById('complete-migration-session-name')?.value?.trim() || '';
+    const autoCreateDdl = document.getElementById('complete-migration-auto-create-ddl')?.checked ?? true;
+    const cleanSlate = document.getElementById('complete-migration-clean-slate')?.checked ?? false;
+    const constraintMode = document.getElementById('complete-migration-constraint-mode')?.value || 'replica';
+
+    // Confirm if clean slate is enabled
+    if (cleanSlate) {
+        const confirmed = await showConfirmModal({
+            title: 'Clean Slate Mode',
+            message: 'This will DROP all existing tables in the validation database before migration.\n\nAre you sure you want to continue?',
+            confirmText: 'Continue',
+            confirmClass: 'bg-orange-600 hover:bg-orange-700'
+        });
+        if (!confirmed) return;
+    }
+
+    // Confirm complete migration
+    const confirmed = await showConfirmModal({
+        title: 'Complete Migration',
+        message: 'This will run a full end-to-end migration:\n\n1. Export and convert DDL schema\n2. Export table data\n3. Load data into PostgreSQL\n4. Validate FK constraints\n\nThis may take a while for large schemas. Continue?',
+        confirmText: 'Start Complete Migration',
+        confirmClass: 'bg-emerald-600 hover:bg-emerald-700'
+    });
+    if (!confirmed) return;
+
+    // Update UI to show progress
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Running...';
+    resultsDiv?.classList.add('hidden');
+    progressDiv?.classList.remove('hidden');
+
+    // Reset progress display
+    updateCompleteMigrationProgress({
+        phase: 'Starting',
+        status: 'running'
+    });
+
+    try {
+        // Build request body
+        const requestBody = {
+            auto_create_ddl: autoCreateDdl,
+            clean_slate: cleanSlate,
+            constraint_mode: constraintMode
+        };
+        if (sessionName) {
+            requestBody.session_name = sessionName;
+        }
+
+        // Start the complete migration
+        await apiFetch(`/api/client/${state.currentClientId}/complete_migration`, {
+            method: 'POST',
+            body: JSON.stringify(requestBody)
+        });
+
+        showToast('Complete migration started...');
+
+        // Start polling for status
+        completeMigrationPollInterval = setInterval(() => pollCompleteMigrationStatus(), 2000);
+
+    } catch (error) {
+        showToast(error.message, true);
+        resetCompleteMigrationUI();
+    }
+}
+
+/**
+ * Polls the migration status endpoint for complete migration progress.
+ * @async
+ */
+async function pollCompleteMigrationStatus() {
+    if (!state.currentClientId) {
+        clearInterval(completeMigrationPollInterval);
+        return;
+    }
+
+    try {
+        const status = await apiFetch(`/api/client/${state.currentClientId}/migration_status`);
+
+        updateCompleteMigrationProgress(status);
+
+        // Check if migration is complete
+        const activeStates = ['running', 'pending', 'discovering', 'exporting', 'converting', 'validating',
+                             'ddl_migration', 'data_export', 'data_load', 'fk_validation'];
+        const isActive = activeStates.includes(status.status) || activeStates.includes(status.phase);
+
+        if (!isActive) {
+            clearInterval(completeMigrationPollInterval);
+            completeMigrationPollInterval = null;
+            showCompleteMigrationResults(status);
+        }
+
+    } catch (error) {
+        console.error('Failed to poll complete migration status:', error);
+    }
+}
+
+/**
+ * Updates the complete migration progress UI.
+ * @param {object} status - The migration status object
+ */
+function updateCompleteMigrationProgress(status) {
+    const phaseEl = document.getElementById('complete-migration-phase');
+    const countsEl = document.getElementById('complete-migration-counts');
+    const progressBar = document.getElementById('complete-migration-progress-bar');
+    const statusText = document.getElementById('complete-migration-status-text');
+
+    const phaseNames = {
+        'discovery': 'Phase 1: Discovering objects...',
+        'export': 'Phase 1: Exporting DDL...',
+        'converting': 'Phase 1: Converting with AI...',
+        'validating': 'Phase 1: Validating DDL...',
+        'ddl_migration': 'Phase 1: DDL Migration...',
+        'data_export': 'Phase 2: Exporting data...',
+        'data_load': 'Phase 3: Loading data...',
+        'fk_validation': 'Phase 4: Validating FK constraints...',
+        'fk_constraints': 'Phase 4: Applying FK constraints...',
+        'completed': 'Complete!',
+        'failed': 'Failed',
+        'partial': 'Partially Complete'
+    };
+
+    // Determine phase number for progress bar
+    const phaseProgress = {
+        'discovery': 5, 'export': 15, 'converting': 25, 'validating': 40,
+        'ddl_migration': 40, 'data_export': 55, 'data_load': 75,
+        'fk_validation': 90, 'fk_constraints': 95, 'completed': 100
+    };
+
+    if (phaseEl) {
+        phaseEl.textContent = phaseNames[status.phase] || status.phase || 'Starting...';
+    }
+
+    if (countsEl) {
+        const phaseNum = status.phase === 'data_export' ? 2 :
+                        status.phase === 'data_load' ? 3 :
+                        status.phase === 'fk_validation' || status.phase === 'fk_constraints' ? 4 :
+                        status.phase === 'completed' ? 4 : 1;
+        countsEl.textContent = `Phase ${phaseNum} of 4`;
+    }
+
+    if (progressBar) {
+        const percent = phaseProgress[status.phase] || 0;
+        progressBar.style.width = `${percent}%`;
+    }
+
+    if (statusText) {
+        if (status.successful > 0 || status.failed > 0) {
+            statusText.textContent = `DDL: ${status.successful || 0} successful, ${status.failed || 0} failed`;
+        } else if (status.current_file) {
+            statusText.textContent = status.current_file;
+        } else {
+            statusText.textContent = '';
+        }
+    }
+}
+
+/**
+ * Shows the complete migration results.
+ * @param {object} status - The final migration status
+ */
+async function showCompleteMigrationResults(status) {
+    const progressDiv = document.getElementById('complete-migration-progress');
+    const resultsDiv = document.getElementById('complete-migration-results');
+    const resultsContent = document.getElementById('complete-migration-results-content');
+
+    progressDiv?.classList.add('hidden');
+    resultsDiv?.classList.remove('hidden');
+
+    const isSuccess = status.status === 'completed';
+    const isPartial = status.status === 'partial';
+
+    let html = '';
+    if (isSuccess) {
+        html = `
+            <div class="flex items-center mb-3">
+                <i class="fas fa-check-circle text-white text-2xl mr-3"></i>
+                <span class="text-white font-bold text-lg">Complete Migration Successful!</span>
+            </div>
+            <div class="grid grid-cols-2 gap-4 text-sm text-emerald-100">
+                <div><i class="fas fa-table mr-2"></i>DDL Objects: ${status.successful || 0} validated</div>
+                <div><i class="fas fa-database mr-2"></i>Data: Loaded successfully</div>
+                <div><i class="fas fa-link mr-2"></i>FK Constraints: Validated</div>
+                <div><i class="fas fa-clock mr-2"></i>Session: ${status.session_id || 'N/A'}</div>
+            </div>`;
+    } else if (isPartial) {
+        html = `
+            <div class="flex items-center mb-3">
+                <i class="fas fa-exclamation-triangle text-yellow-300 text-2xl mr-3"></i>
+                <span class="text-white font-bold text-lg">Partially Complete</span>
+            </div>
+            <div class="text-sm text-emerald-100 mb-3">
+                <div><i class="fas fa-check mr-2"></i>DDL: ${status.successful || 0} successful, ${status.failed || 0} failed</div>
+            </div>
+            <div class="text-xs text-yellow-200">
+                ${(status.errors || []).slice(0, 3).map(e => `<div class="truncate">${e}</div>`).join('')}
+            </div>`;
+    } else {
+        html = `
+            <div class="flex items-center mb-3">
+                <i class="fas fa-times-circle text-red-300 text-2xl mr-3"></i>
+                <span class="text-white font-bold text-lg">Migration Failed</span>
+            </div>
+            <div class="text-sm text-red-200">
+                ${(status.errors || ['Unknown error']).slice(0, 3).map(e => `<div class="truncate">${e}</div>`).join('')}
+            </div>`;
+    }
+
+    html += `
+        <div class="mt-4 flex gap-2">
+            <button onclick="document.getElementById('complete-migration-results').classList.add('hidden')"
+                    class="text-sm bg-white/20 hover:bg-white/30 text-white py-1 px-3 rounded transition-colors">
+                <i class="fas fa-times mr-1"></i>Dismiss
+            </button>
+        </div>`;
+
+    resultsContent.innerHTML = html;
+
+    // Reset button
+    resetCompleteMigrationUI();
+
+    // Show toast
+    if (isSuccess) {
+        showToast('Complete migration finished successfully!');
+    } else if (isPartial) {
+        showToast('Complete migration partially completed with some errors.', true);
+    } else {
+        showToast('Complete migration failed.', true);
+    }
+
+    // Refresh sessions list
+    refreshSessions();
+}
+
+/**
+ * Resets the complete migration UI to its initial state.
+ */
+function resetCompleteMigrationUI() {
+    const button = document.getElementById('start-complete-migration-btn');
+    if (button) {
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-bolt mr-2"></i>Run Complete';
+    }
+}
+
 /**
  * Starts a data export (COPY or INSERT) for the current client.
  * @async
@@ -2660,6 +2922,7 @@ export function initEventListeners() {
         // Switch for all buttons with IDs
         switch (target.id) {
             case 'start-migration-btn': handleStartMigration(); break;
+            case 'start-complete-migration-btn': handleStartCompleteMigration(); break;
             case 'migration-done-btn':
                 document.getElementById('migration-results')?.classList.add('hidden');
                 break;

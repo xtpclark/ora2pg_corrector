@@ -4,7 +4,7 @@ from flask import Blueprint, request, jsonify, current_app
 from modules.db import get_db, execute_query, get_client_config, extract_ai_settings, ENCRYPTION_KEY
 from modules.audit import log_audit
 from modules.sql_processing import Ora2PgAICorrector
-from modules.orchestrator import MigrationOrchestrator
+from modules.orchestrator import MigrationOrchestrator, CompleteMigrationOrchestrator
 from modules.constants import OUTPUT_DIR
 from modules.responses import (
     success_response, error_response, validation_error_response,
@@ -175,6 +175,115 @@ def start_migration(client_id):
     })
 
 
+def _run_complete_migration_thread(client_id, options, app):
+    """Background thread function to run complete migration with Flask app context."""
+    with app.app_context():
+        try:
+            orchestrator = CompleteMigrationOrchestrator(client_id)
+            _running_migrations[client_id] = orchestrator
+            result = orchestrator.run_complete_migration(options)
+
+            ddl_results = result.get('ddl_results') or {}
+            data_results = result.get('data_results') or {}
+            fk_results = result.get('fk_validation_results') or {}
+
+            data_rows = 0
+            if data_results and data_results.get('load_results'):
+                data_rows = data_results['load_results'].get('total_rows', 0)
+
+            log_audit(client_id, 'complete_migration',
+                     f"Completed: DDL {ddl_results.get('successful', 0)}/{ddl_results.get('failed', 0)}, "
+                     f"Data rows {data_rows}, "
+                     f"FK validated {fk_results.get('validated', 0)}/{fk_results.get('failed', 0)}")
+        except Exception as e:
+            logger.error(f"Complete migration thread failed for client {client_id}: {e}", exc_info=True)
+            if client_id in _running_migrations:
+                _running_migrations[client_id].results['status'] = 'failed'
+                _running_migrations[client_id].results['errors'].append(str(e))
+
+
+@migration_bp.route('/client/<int:client_id>/complete_migration', methods=['POST'])
+def start_complete_migration(client_id):
+    """
+    Start a complete end-to-end migration (DDL + Data + FK validation).
+
+    This runs the full migration workflow in a background thread:
+    1. DDL Migration: Export, AI-correct, and validate schema objects
+    2. Data Export: Export table data using COPY format
+    3. Data Load: Load data into PostgreSQL (with FK bypass)
+    4. FK Validation: Validate all FK constraints
+
+    Use /migration_status to poll for progress.
+
+    Request body (optional):
+    {
+        "session_name": "My Complete Migration",
+        "clean_slate": false,           // Drop existing tables before DDL
+        "auto_create_ddl": true,        // Auto-create missing dependencies
+        "tables": ["TABLE1", "TABLE2"], // Specific tables for data (default: all)
+        "constraint_mode": "replica",   // FK handling: replica, skip, normal
+        "on_error": "continue"          // stop or continue on errors
+    }
+    """
+    # Check database for already running migration
+    conn = get_db()
+    cursor = execute_query(conn, '''
+        SELECT session_id, workflow_status FROM migration_sessions
+        WHERE client_id = ? AND workflow_status IN ('discovering', 'exporting', 'validating',
+                                                     'data_export', 'data_load', 'fk_validation')
+        ORDER BY session_id DESC
+        LIMIT 1
+    ''', (client_id,))
+    running_session = cursor.fetchone()
+
+    if running_session:
+        return error_response(
+            f"A migration is already running for this client (session {running_session['session_id']})",
+            status_code=409
+        )
+
+    # Check in-memory for this worker
+    if client_id in _running_migrations:
+        existing = _running_migrations[client_id]
+        if existing.results.get('status') == 'running':
+            return error_response(
+                'A migration is already running for this client',
+                status_code=409
+            )
+        del _running_migrations[client_id]
+
+    data = request.get_json(silent=True) or {}
+    options = {
+        'clean_slate': data.get('clean_slate', False),
+        'auto_create_ddl': data.get('auto_create_ddl', True),
+        'constraint_mode': data.get('constraint_mode', 'replica'),
+        'on_error': data.get('on_error', 'continue'),
+    }
+    if 'session_name' in data:
+        options['session_name'] = data['session_name']
+    if 'tables' in data:
+        options['tables'] = data['tables']
+
+    # Get the Flask app for the thread context
+    app = current_app._get_current_object()
+
+    # Start migration in background thread
+    thread = threading.Thread(
+        target=_run_complete_migration_thread,
+        args=(client_id, options, app),
+        daemon=True
+    )
+    thread.start()
+
+    log_audit(client_id, 'complete_migration', 'Complete migration started')
+
+    return success_response({
+        'message': 'Complete migration started (DDL + Data + FK validation)',
+        'status': 'running',
+        'poll_url': f'/api/client/{client_id}/migration_status'
+    })
+
+
 @migration_bp.route('/client/<int:client_id>/migration_status', methods=['GET'])
 def get_migration_status(client_id):
     """
@@ -198,17 +307,41 @@ def get_migration_status(client_id):
     """
     conn = get_db()
 
-    # Get the most recent session for this client (regardless of export_type)
-    # This handles both single-type exports and multi-type DDL exports
+    # Priority 1: Find any actively running migration (exporting, validating, etc.)
     cursor = execute_query(conn, '''
         SELECT session_id, workflow_status, current_phase, processed_count, total_count,
                current_file, created_at, export_type
         FROM migration_sessions
-        WHERE client_id = ?
+        WHERE client_id = ? AND workflow_status IN ('discovering', 'exporting', 'validating',
+                                                     'data_export', 'data_load', 'fk_validation')
         ORDER BY session_id DESC
         LIMIT 1
     ''', (client_id,))
     main_session = cursor.fetchone()
+
+    # Priority 2: Get the most recent DDL session (completed migrations)
+    if not main_session:
+        cursor = execute_query(conn, '''
+            SELECT session_id, workflow_status, current_phase, processed_count, total_count,
+                   current_file, created_at, export_type
+            FROM migration_sessions
+            WHERE client_id = ? AND export_type = 'DDL'
+            ORDER BY session_id DESC
+            LIMIT 1
+        ''', (client_id,))
+        main_session = cursor.fetchone()
+
+    # Priority 3: Fall back to any session
+    if not main_session:
+        cursor = execute_query(conn, '''
+            SELECT session_id, workflow_status, current_phase, processed_count, total_count,
+                   current_file, created_at, export_type
+            FROM migration_sessions
+            WHERE client_id = ?
+            ORDER BY session_id DESC
+            LIMIT 1
+        ''', (client_id,))
+        main_session = cursor.fetchone()
 
     if not main_session:
         return success_response({
