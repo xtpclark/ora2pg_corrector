@@ -265,11 +265,46 @@ class MigrationAgent:
 
         filtered_objects = []
         skipped_internal = 0
+        skipped_pk = 0
+
+        # Detect PK indexes: Oracle discovers them as INDEX objects, but Ora2Pg
+        # generates them inline as PRIMARY KEY in CREATE TABLE. These names
+        # typically end with _KEY or _PK and match a table name prefix.
+        table_names = {o.name.upper() for o in self.objects if o.object_type == 'TABLE'}
 
         for obj in self.objects:
             if obj.object_type in skip_types:
                 skipped_internal += 1
                 continue
+
+            # Skip PK indexes — they're created inline in CREATE TABLE.
+            # Oracle discovers PK constraint indexes as separate INDEX objects,
+            # but Ora2Pg generates them as inline PRIMARY KEY in CREATE TABLE DDL.
+            if obj.object_type == 'INDEX':
+                uname = obj.name.upper()
+                is_pk = False
+
+                # Pattern 1: TABLE_KEY, TABLE_PK, TABLE_PKEY
+                for suffix in ('_KEY', '_PK', '_PKEY'):
+                    if uname.endswith(suffix):
+                        table_prefix = uname[:-len(suffix)]
+                        if table_prefix in table_names:
+                            is_pk = True
+                            break
+
+                # Pattern 2: Same name as a table (Oracle default PK index)
+                if not is_pk and uname in table_names:
+                    is_pk = True
+
+                # Pattern 3: PKnnn (Oracle system-generated PK names)
+                if not is_pk and uname.startswith('PK') and uname[2:].isdigit():
+                    is_pk = True
+
+                if is_pk:
+                    obj.status = "validated"  # Already handled by TABLE export
+                    skipped_pk += 1
+                    filtered_objects.append(obj)
+                    continue
 
             # Override discovery's supported flag for types we know Ora2Pg handles
             if obj.object_type in exportable_types:
@@ -291,12 +326,14 @@ class MigrationAgent:
         self.result.total_objects = len(self.objects)
 
         ai_count = sum(1 for o in self.objects if o.needs_ai)
-        native_count = sum(1 for o in self.objects if o.supported and not o.needs_ai)
+        native_count = sum(1 for o in self.objects if o.supported and not o.needs_ai
+                          and o.status != "validated")
         unsupported = sum(1 for o in self.objects if not o.supported)
         self._emit(
             "assess",
             f"Assessment: {native_count} native, {ai_count} AI-assisted, "
-            f"{unsupported} unsupported, {skipped_internal} internal types filtered.",
+            f"{unsupported} unsupported, {skipped_internal} internal filtered, "
+            f"{skipped_pk} PK indexes (inline).",
             25,
         )
 
@@ -457,9 +494,10 @@ class MigrationAgent:
             while obj.attempts < self.MAX_RETRY_PER_OBJECT:
                 obj.attempts += 1
 
-                # Use the corrector's validate_sql which has self-healing built in
+                # Use clean_slate=True to drop existing objects first,
+                # avoiding "already exists" errors that waste AI tokens
                 success, message, corrected_sql, _ = self.corrector.validate_sql(
-                    obj.pg_ddl, self.pg_dsn, defer_fk=True,
+                    obj.pg_ddl, self.pg_dsn, clean_slate=True, defer_fk=True,
                 )
 
                 if success:
@@ -467,20 +505,26 @@ class MigrationAgent:
                     obj.pg_ddl = corrected_sql or obj.pg_ddl
                     self.result.migrated += 1
                     break
-                else:
-                    logger.info(
-                        f"Validation attempt {obj.attempts} failed for {obj.name}: {message}"
+
+                # Check if it's an "already exists" error — treat as success
+                if message and 'already exists' in message.lower():
+                    obj.status = "validated"
+                    self.result.migrated += 1
+                    break
+
+                logger.info(
+                    f"Validation attempt {obj.attempts} failed for {obj.name}: {message}"
+                )
+                if corrected_sql and corrected_sql != obj.pg_ddl:
+                    obj.pg_ddl = corrected_sql  # Use AI-corrected version for next attempt
+                elif obj.attempts < self.MAX_RETRY_PER_OBJECT:
+                    # Force AI re-correction with error context
+                    fixed_sql, metrics = self.corrector.ai_correct_sql(
+                        f"-- ERROR: {message}\n-- Fix this PostgreSQL DDL:\n{obj.pg_ddl}",
+                        source_dialect="oracle",
                     )
-                    if corrected_sql and corrected_sql != obj.pg_ddl:
-                        obj.pg_ddl = corrected_sql  # Use AI-corrected version for next attempt
-                    elif obj.attempts < self.MAX_RETRY_PER_OBJECT:
-                        # Force AI re-correction with error context
-                        fixed_sql, metrics = self.corrector.ai_correct_sql(
-                            f"-- ERROR: {message}\n-- Fix this PostgreSQL DDL:\n{obj.pg_ddl}",
-                            source_dialect="oracle",
-                        )
-                        obj.pg_ddl = fixed_sql
-                        obj.ai_tokens_used += metrics.get('tokens_used', 0)
+                    obj.pg_ddl = fixed_sql
+                    obj.ai_tokens_used += metrics.get('tokens_used', 0)
 
             if obj.status != "validated":
                 obj.status = "failed"
@@ -488,8 +532,11 @@ class MigrationAgent:
                 self.result.failed += 1
                 self.result.edge_cases.append(f"{obj.object_type} {obj.name}: {message}")
 
-        skipped = sum(1 for o in self.objects if o.status in ("pending", "unsupported", "export_failed"))
-        self.result.skipped = skipped
+        # Count all validated objects (including PK indexes pre-validated in assess)
+        self.result.migrated = sum(1 for o in self.objects if o.status == "validated")
+        self.result.failed = sum(1 for o in self.objects if o.status == "failed")
+        self.result.skipped = sum(1 for o in self.objects
+                                  if o.status in ("pending", "unsupported", "export_failed"))
         self._emit(
             "validate",
             f"Validated: {self.result.migrated} ok, {self.result.failed} failed, "

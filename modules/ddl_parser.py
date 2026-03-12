@@ -55,7 +55,7 @@ ANY_CREATE_PATTERN = re.compile(
 
 # Patterns for statement terminators
 # For functions/procedures, look for $$ or language block end
-FUNCTION_END_PATTERN = re.compile(r'\$\$\s*;?\s*$|\bLANGUAGE\s+\w+\s*;', re.IGNORECASE)
+FUNCTION_END_PATTERN = re.compile(r'\$\w*\$\s*;?\s*$|\bLANGUAGE\s+\w+\s*;', re.IGNORECASE)
 
 
 def parse_ddl_file(content, object_type_hint=None):
@@ -122,10 +122,12 @@ def parse_ddl_file(content, object_type_hint=None):
             is_complete = False
 
             if in_function_body:
-                # Functions end with $$ followed by optional LANGUAGE clause and ;
+                # Functions end with a dollar-quote tag followed by LANGUAGE clause and ;
+                # Dollar-quote tags can be $$, $body$, $function$, etc.
                 combined = '\n'.join(current_ddl_lines)
-                # Count $$ occurrences - function body is between two $$
-                dollar_count = combined.count('$$')
+                # Count dollar-quote pairs: match $tag$ patterns
+                dollar_tags = re.findall(r'\$\w*\$', combined)
+                dollar_count = len(dollar_tags)
                 if dollar_count >= 2 and stripped.endswith(';'):
                     is_complete = True
                 elif dollar_count >= 2 and FUNCTION_END_PATTERN.search(stripped):
