@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List
 
 import psycopg2
+import psycopg2.sql
 
 from .db import execute_query, insert_returning_id
 from .sql_processing import Ora2PgAICorrector
@@ -491,13 +492,14 @@ class MigrationAgent:
             pct = 60 + int(((i + 1) / max(total, 1)) * 20)
             self._emit("validate", f"Validating {obj.object_type} {obj.name} ({i+1}/{total})...", pct)
 
+            # Pre-drop the object to avoid "already exists" errors wasting AI tokens
+            self._drop_existing_object(obj.name, obj.object_type)
+
             while obj.attempts < self.MAX_RETRY_PER_OBJECT:
                 obj.attempts += 1
 
-                # Use clean_slate=True to drop existing objects first,
-                # avoiding "already exists" errors that waste AI tokens
                 success, message, corrected_sql, _ = self.corrector.validate_sql(
-                    obj.pg_ddl, self.pg_dsn, clean_slate=True, defer_fk=True,
+                    obj.pg_ddl, self.pg_dsn, defer_fk=True,
                 )
 
                 if success:
@@ -781,6 +783,34 @@ class MigrationAgent:
             return [name_to_obj[n] for n in ordered if n in name_to_obj]
         except Exception:
             return tables
+
+    def _drop_existing_object(self, name: str, object_type: str):
+        """Drop an existing object from PostgreSQL before re-validating."""
+        drop_map = {
+            'TABLE': 'DROP TABLE IF EXISTS {} CASCADE',
+            'VIEW': 'DROP VIEW IF EXISTS {} CASCADE',
+            'SEQUENCE': 'DROP SEQUENCE IF EXISTS {} CASCADE',
+            'FUNCTION': 'DROP FUNCTION IF EXISTS {} CASCADE',
+            'PROCEDURE': 'DROP PROCEDURE IF EXISTS {} CASCADE',
+            'INDEX': 'DROP INDEX IF EXISTS {}',
+            'TYPE': 'DROP TYPE IF EXISTS {} CASCADE',
+        }
+        template = drop_map.get(object_type)
+        if not template:
+            return
+        try:
+            conn = psycopg2.connect(self.pg_dsn)
+            conn.set_session(autocommit=True)
+            cur = conn.cursor()
+            cur.execute(
+                psycopg2.sql.SQL(template).format(
+                    psycopg2.sql.Identifier(name.lower())
+                )
+            )
+            cur.close()
+            conn.close()
+        except Exception as e:
+            logger.warning(f"Pre-drop failed for {object_type} {name}: {e}")
 
     def _count_pg_rows(self, table_name: str) -> Optional[int]:
         """Count rows in a PostgreSQL table."""
