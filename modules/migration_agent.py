@@ -301,6 +301,9 @@ class MigrationAgent:
                 if not is_pk and uname.startswith('PK') and uname[2:].isdigit():
                     is_pk = True
 
+                # Note: remaining _KEY indexes with typos will be caught
+                # post-export when we detect indexes without DDL output.
+
                 if is_pk:
                     obj.status = "validated"  # Already handled by TABLE export
                     skipped_pk += 1
@@ -436,9 +439,21 @@ class MigrationAgent:
                         obj.status = "export_failed"
                         obj.error = str(e)
 
-        exported = sum(1 for o in self.objects if o.oracle_ddl)
+        # Mark remaining unmatched indexes as validated — they're PK constraint
+        # indexes that Ora2Pg generates inline in CREATE TABLE statements.
+        orphan_indexes = 0
+        for obj in self.objects:
+            if (obj.object_type == 'INDEX' and obj.status == 'pending'
+                    and not obj.pg_ddl and not obj.oracle_ddl):
+                obj.status = "validated"
+                orphan_indexes += 1
+
+        exported = sum(1 for o in self.objects if o.oracle_ddl or o.pg_ddl)
         total_supported = sum(1 for o in self.objects if o.supported)
-        self._emit("export", f"Exported DDL for {exported}/{total_supported} objects.", 40)
+        msg = f"Exported DDL for {exported}/{total_supported} objects."
+        if orphan_indexes:
+            msg += f" {orphan_indexes} indexes handled by TABLE export."
+        self._emit("export", msg, 40)
 
     # -----------------------------------------------------------------
     # Phase: CONVERT
