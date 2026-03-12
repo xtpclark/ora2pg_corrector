@@ -249,26 +249,54 @@ class MigrationAgent:
         """Assess complexity and determine conversion strategy per object."""
         self._emit("assess", "Assessing object complexity...", 20)
 
-        # Objects that Ora2Pg handles well natively
+        # Oracle types that are internal/non-exportable — filter out
+        skip_types = {'LOB', 'LOB PARTITION', 'TABLE PARTITION', 'TABLE SUBPARTITION',
+                      'INDEX PARTITION', 'INDEX SUBPARTITION'}
+
+        # Types that Ora2Pg handles natively
         native_types = {'TABLE', 'SEQUENCE', 'INDEX'}
-        # Objects that typically need AI assistance
+
+        # Types that typically need AI assistance
         ai_types = {'FUNCTION', 'PROCEDURE', 'PACKAGE', 'PACKAGE BODY', 'TRIGGER'}
 
+        # Types Ora2Pg can export (override discovery's supported flag)
+        exportable_types = {'TABLE', 'VIEW', 'SEQUENCE', 'FUNCTION', 'PROCEDURE',
+                           'PACKAGE', 'TRIGGER', 'TYPE', 'INDEX', 'GRANT'}
+
+        filtered_objects = []
+        skipped_internal = 0
+
         for obj in self.objects:
+            if obj.object_type in skip_types:
+                skipped_internal += 1
+                continue
+
+            # Override discovery's supported flag for types we know Ora2Pg handles
+            if obj.object_type in exportable_types:
+                obj.supported = True
+
             if not obj.supported:
                 obj.status = "unsupported"
+                filtered_objects.append(obj)
                 continue
+
             if obj.object_type in ai_types:
                 obj.needs_ai = True
             elif obj.object_type == 'VIEW':
-                obj.needs_ai = True  # Conservative: views often have Oracle-isms
+                obj.needs_ai = True  # Views often have Oracle-isms
+
+            filtered_objects.append(obj)
+
+        self.objects = filtered_objects
+        self.result.total_objects = len(self.objects)
 
         ai_count = sum(1 for o in self.objects if o.needs_ai)
         native_count = sum(1 for o in self.objects if o.supported and not o.needs_ai)
         unsupported = sum(1 for o in self.objects if not o.supported)
         self._emit(
             "assess",
-            f"Assessment: {native_count} native, {ai_count} AI-assisted, {unsupported} unsupported.",
+            f"Assessment: {native_count} native, {ai_count} AI-assisted, "
+            f"{unsupported} unsupported, {skipped_internal} internal types filtered.",
             25,
         )
 
@@ -318,17 +346,24 @@ class MigrationAgent:
             export_config['type'] = ora2pg_type
 
             try:
-                result, err = self.corrector.run_ora2pg_export(
+                export_result = self.corrector.run_ora2pg_export(
                     self.client_id, self.db_conn, export_config,
                     session_name=f"agent-{ora2pg_type}",
                 )
                 exported_types.add(ora2pg_type)
 
-                if err:
-                    logger.warning(f"Export warning for {ora2pg_type}: {err}")
+                # Unpack result tuple safely
+                if isinstance(export_result, tuple) and len(export_result) == 2:
+                    result, err = export_result
+                else:
+                    logger.warning(f"Unexpected return from export for {ora2pg_type}: {type(export_result)}")
                     continue
 
-                if not result:
+                if err:
+                    logger.warning(f"Export error for {ora2pg_type}: {err}")
+                    continue
+
+                if not result or not isinstance(result, dict):
                     continue
 
                 # Track session for later reference
@@ -337,29 +372,27 @@ class MigrationAgent:
 
                 # Get the export directory
                 export_dir = result.get('directory', '')
+                session_id = result.get('session_id')
 
-                # If single-file export, the DDL is in sql_output
+                # If single-file export with sql_output, parse it
                 if result.get('sql_output'):
                     self._assign_ddl_from_content(result['sql_output'], obj_type)
 
-                # If we got exported files, parse them
-                if result.get('files') and export_dir:
-                    for filename in result['files']:
-                        filepath = os.path.join(export_dir, filename)
-                        if os.path.exists(filepath):
-                            self._assign_ddl_from_file(filepath, obj_type)
-                elif result.get('files'):
-                    # files without directory — try session dir
-                    session_id = result.get('session_id')
-                    if session_id:
-                        sdir = get_session_dir(self.client_id, session_id)
+                # If we got exported files, find and parse them
+                if result.get('files'):
+                    # Determine directory to look in
+                    search_dir = export_dir
+                    if not search_dir and session_id:
+                        search_dir = get_session_dir(self.client_id, session_id)
+
+                    if search_dir:
                         for filename in result['files']:
-                            filepath = os.path.join(sdir, filename)
+                            filepath = os.path.join(search_dir, filename)
                             if os.path.exists(filepath):
                                 self._assign_ddl_from_file(filepath, obj_type)
 
             except Exception as e:
-                logger.warning(f"Export failed for {ora2pg_type}: {e}")
+                logger.warning(f"Export failed for {ora2pg_type}: {e}", exc_info=True)
                 for obj in self.objects:
                     if obj.object_type == obj_type and obj.status == "pending":
                         obj.status = "export_failed"
@@ -418,8 +451,8 @@ class MigrationAgent:
         total = len(validatable)
 
         for i, obj in enumerate(validatable):
-            pct = 60 + int((i / max(total, 1)) * 20)
-            self._emit("validate", f"Validating {obj.object_type} {obj.name}...", pct)
+            pct = 60 + int(((i + 1) / max(total, 1)) * 20)
+            self._emit("validate", f"Validating {obj.object_type} {obj.name} ({i+1}/{total})...", pct)
 
             while obj.attempts < self.MAX_RETRY_PER_OBJECT:
                 obj.attempts += 1
@@ -478,11 +511,39 @@ class MigrationAgent:
             self._emit("data", "No validated tables to migrate data for.", 90)
             return
 
-        ordered_tables = self._sort_tables_for_data(tables)
+        # Pre-check: get row counts from Oracle to skip empty tables
+        connect_str, _ = self.corrector._build_sqlplus_connect_string(self.config)
+        oracle_counts = self._batch_oracle_row_counts(
+            [t.name for t in tables], connect_str
+        )
+
+        non_empty = [t for t in tables if oracle_counts.get(t.name.upper(), 0) > 0]
+        empty_count = len(tables) - len(non_empty)
+
+        if not non_empty:
+            self._emit(
+                "data",
+                f"All {len(tables)} tables are empty in Oracle. Skipping data migration.",
+                90,
+            )
+            return
+
+        self._emit(
+            "data",
+            f"Found {len(non_empty)} tables with data ({empty_count} empty, skipping).",
+            81,
+        )
+
+        ordered_tables = self._sort_tables_for_data(non_empty)
 
         for i, obj in enumerate(ordered_tables):
-            pct = 80 + int((i / len(ordered_tables)) * 10)
-            self._emit("data", f"Migrating data for {obj.name}...", pct)
+            row_count = oracle_counts.get(obj.name.upper(), 0)
+            pct = 81 + int(((i + 1) / len(ordered_tables)) * 9)
+            self._emit(
+                "data",
+                f"Migrating {obj.name} ({row_count} rows, {i+1}/{len(ordered_tables)})...",
+                pct,
+            )
 
             try:
                 # Use Ora2Pg COPY mode for data transfer
@@ -491,18 +552,23 @@ class MigrationAgent:
                 copy_config['ALLOW'] = obj.name
                 copy_config['PG_DSN'] = self.pg_dsn
 
-                result, err = self.corrector.run_ora2pg_export(
+                export_result = self.corrector.run_ora2pg_export(
                     self.client_id, self.db_conn, copy_config,
                     session_name=f"agent-data-{obj.name}",
                 )
 
+                if isinstance(export_result, tuple) and len(export_result) == 2:
+                    result, err = export_result
+                else:
+                    err = f"Unexpected return: {type(export_result)}"
+
                 if err:
                     logger.warning(f"Data migration warning for {obj.name}: {err}")
+                    self.result.edge_cases.append(f"Data copy failed for {obj.name}: {err}")
                 else:
                     self.result.data_tables_migrated += 1
-                    # Try to get row count from result or count directly
-                    rows = self._count_pg_rows(obj.name)
-                    self.result.data_rows_migrated += rows
+                    pg_rows = self._count_pg_rows(obj.name)
+                    self.result.data_rows_migrated += pg_rows or 0
 
             except Exception as e:
                 logger.warning(f"Data migration failed for {obj.name}: {e}")
@@ -605,6 +671,12 @@ class MigrationAgent:
 
         native_types = {'TABLE', 'SEQUENCE', 'INDEX'}
         assigned = 0
+        unmatched = []
+
+        # Build lookup for fast matching
+        obj_by_name = {}
+        for obj in self.objects:
+            obj_by_name[obj.name.upper()] = obj
 
         for stmt in parsed:
             stmt_name = stmt.get('object_name', '').upper()
@@ -612,17 +684,23 @@ class MigrationAgent:
             if not stmt_name or not stmt_ddl:
                 continue
 
-            for obj in self.objects:
-                if obj.name.upper() == stmt_name:
-                    if obj.object_type in native_types:
-                        # Ora2Pg already converted — assign as PG DDL
-                        obj.pg_ddl = stmt_ddl
-                        obj.status = "converted"
-                    else:
-                        # Needs AI — store as oracle_ddl for re-conversion
-                        obj.oracle_ddl = stmt_ddl
-                    assigned += 1
-                    break
+            obj = obj_by_name.get(stmt_name)
+            if obj:
+                if obj.object_type in native_types:
+                    # Ora2Pg already converted — assign as PG DDL
+                    obj.pg_ddl = stmt_ddl
+                    obj.status = "converted"
+                else:
+                    # Needs AI — store as oracle_ddl for re-conversion
+                    obj.oracle_ddl = stmt_ddl
+                assigned += 1
+            else:
+                unmatched.append(stmt_name)
+
+        if unmatched and len(unmatched) <= 10:
+            logger.info(f"Unmatched DDL objects for {obj_type}: {unmatched}")
+        elif unmatched:
+            logger.info(f"{len(unmatched)} unmatched DDL objects for {obj_type}")
 
         logger.info(f"Assigned DDL to {assigned}/{len(parsed)} parsed objects for type {obj_type}")
 
@@ -675,6 +753,58 @@ class MigrationAgent:
         except Exception as e:
             logger.warning(f"Failed to count PG rows for {table_name}: {e}")
             return None
+
+    def _batch_oracle_row_counts(self, table_names: list, connect_str: str) -> dict:
+        """Get row counts for multiple Oracle tables in a single sqlplus call.
+
+        Returns dict of {TABLE_NAME_UPPER: row_count}.
+        Uses Oracle's USER_TABLES.NUM_ROWS (from stats) for speed,
+        falling back to 1 (assume non-empty) if stats unavailable.
+        """
+        if not table_names or not connect_str:
+            return {}
+
+        try:
+            schema = self.corrector._validate_oracle_identifier(self.oracle_schema)
+
+            # Use ALL_TABLES stats — much faster than COUNT(*) per table
+            sql = f"""
+                SET PAGESIZE 0
+                SET FEEDBACK OFF
+                SET HEADING OFF
+                SET LINESIZE 200
+                SET TRIMOUT ON
+                SET TRIMSPOOL ON
+                SELECT table_name || '|' || NVL(num_rows, 0)
+                FROM all_tables
+                WHERE owner = '{schema}'
+                ORDER BY table_name;
+                EXIT;
+            """
+            proc = subprocess.run(
+                [self.corrector.sqlplus_path, '-S', connect_str],
+                input=sql, capture_output=True, text=True, timeout=60,
+            )
+
+            counts = {}
+            if proc.returncode == 0:
+                for line in proc.stdout.strip().split('\n'):
+                    line = line.strip()
+                    if '|' in line:
+                        name, count_str = line.split('|', 1)
+                        try:
+                            counts[name.strip().upper()] = int(count_str.strip())
+                        except ValueError:
+                            counts[name.strip().upper()] = 1  # Assume non-empty
+
+            logger.info(f"Oracle row counts: {sum(counts.values())} total rows across {len(counts)} tables, "
+                        f"{sum(1 for v in counts.values() if v > 0)} non-empty")
+            return counts
+
+        except Exception as e:
+            logger.warning(f"Failed to get Oracle row counts: {e}")
+            # Fall back: assume all tables have data
+            return {name.upper(): 1 for name in table_names}
 
     def _count_oracle_rows(self, table_name: str, connect_str: str) -> Optional[int]:
         """Count rows in an Oracle table via sqlplus."""
