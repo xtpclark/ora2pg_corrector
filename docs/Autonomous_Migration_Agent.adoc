@@ -1,0 +1,265 @@
+= Autonomous Migration Agent
+:toc: auto
+:toclevels: 3
+
+== Overview
+
+The autonomous migration agent drives end-to-end Oracle-to-PostgreSQL migrations without manual intervention.
+Given a configured client with Oracle and PostgreSQL connection strings, it handles the entire pipeline:
+connect, discover, assess, export, convert, validate, migrate data, and verify.
+
+== Quick Start
+
+=== Via UI
+
+1. Select a client with Oracle + PostgreSQL connections configured
+2. Go to the Migration tab
+3. Click **Launch Agent** on the Autonomous Agent card
+4. Watch the progress bar -- results display when complete
+
+=== Via API
+
+[source,bash]
+----
+# Start a migration
+curl -X POST http://localhost:8000/api/agent/migrate \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": 2}'
+
+# Poll status (returns phase, progress %, message)
+curl http://localhost:8000/api/agent/status/1
+
+# List all migrations (running and completed)
+curl http://localhost:8000/api/agent/migrations
+----
+
+== Architecture
+
+=== Components
+
+[cols="1,2"]
+|===
+| File | Purpose
+
+| `modules/migration_agent.py`
+| Core agent: `MigrationAgent` class with phased pipeline
+
+| `routes/api/agent.py`
+| REST API endpoints (Blueprint: `/api/agent`)
+
+| `templates/partials/_migration_pane.html`
+| UI card with launch button and progress display
+
+| `static/js/handlers.js`
+| JavaScript: `handleStartAgent()` + `pollAgentStatus()`
+
+| `data/agent_migrations/*.json`
+| File-backed state (works across Gunicorn workers)
+|===
+
+=== Class Diagram
+
+----
+MigrationAgent
+├── config: dict              # Client configuration (Oracle DSN, PG DSN, etc.)
+├── corrector: Ora2PgAICorrector  # Existing conversion engine
+├── objects: List[MigrationObject] # Per-object tracking
+├── result: MigrationResult       # Aggregated results
+│
+├── run() → MigrationResult   # Main entry point
+├── _connect()                # Phase 1: Verify both connections
+├── _discover()               # Phase 2: Enumerate schema objects
+├── _assess()                 # Phase 3: Classify and filter objects
+├── _export()                 # Phase 4: Ora2Pg export per type
+├── _convert()                # Phase 5: AI conversion where needed
+├── _validate()               # Phase 6: Execute DDL with self-healing
+├── _migrate_data()           # Phase 7: Ora2Pg COPY with FK ordering
+└── _verify()                 # Phase 8: Row count comparison
+----
+
+== Pipeline Phases
+
+=== Phase 1: Connect
+
+Verifies connectivity to both databases:
+
+* **Oracle**: Runs `SELECT 1 FROM DUAL` via sqlplus with 30-second timeout
+* **PostgreSQL**: Opens a psycopg2 connection to the validation DSN
+
+Fails fast with `MigrationAbort` if either connection fails.
+
+=== Phase 2: Discover
+
+Enumerates all schema objects from Oracle using `corrector._get_object_list()`.
+Returns a list of `{name, type, supported}` dicts from Oracle catalog queries.
+
+Typical types discovered: TABLE, INDEX, VIEW, SEQUENCE, FUNCTION, PROCEDURE,
+PACKAGE, TRIGGER, TYPE, LOB, TABLE PARTITION, etc.
+
+=== Phase 3: Assess
+
+Classifies each object and determines conversion strategy:
+
+[cols="1,2"]
+|===
+| Classification | Action
+
+| **Internal types** (LOB, TABLE PARTITION, INDEX PARTITION, etc.)
+| Filtered out entirely
+
+| **PK indexes** (TABLE_KEY, TABLE_PK suffix, same-as-table name, PKnnn)
+| Marked as pre-validated (handled inline by TABLE export)
+
+| **Native types** (TABLE, SEQUENCE, INDEX)
+| Exported by Ora2Pg, no AI needed
+
+| **AI types** (FUNCTION, PROCEDURE, PACKAGE, TRIGGER, VIEW)
+| Exported by Ora2Pg, then AI-converted
+|===
+
+=== Phase 4: Export
+
+Runs Ora2Pg per type (TABLE, FUNCTION, VIEW, SEQUENCE, etc.):
+
+1. Builds a per-type Ora2Pg config
+2. Calls `corrector.run_ora2pg_export()`
+3. Parses the output file(s) via `ddl_parser.parse_ddl_file()`
+4. Assigns DDL to matching `MigrationObject` instances
+
+**Key detail**: Ora2Pg TABLE export includes both `CREATE TABLE` and `CREATE INDEX`
+statements. The DDL parser extracts both and matches them to the correct objects.
+
+After export, any INDEX objects still without DDL are marked as validated
+(they're PK constraint indexes handled inline by `PRIMARY KEY` in the TABLE DDL).
+
+=== Phase 5: Convert
+
+For objects flagged `needs_ai=True`:
+
+* Calls `corrector.ai_correct_sql()` with the Oracle DDL
+* Stores the converted PostgreSQL DDL on the object
+
+For native types, Ora2Pg output is already PostgreSQL DDL -- assigned directly.
+
+=== Phase 6: Validate
+
+For each object with PostgreSQL DDL:
+
+1. **Pre-drop**: `DROP TABLE/VIEW/FUNCTION IF EXISTS ... CASCADE` to prevent "already exists" errors
+2. **Validate**: `corrector.validate_sql()` executes the DDL against PostgreSQL
+3. **Self-heal**: On failure, AI generates a corrected version (up to 3 attempts)
+4. **Fallback**: If error contains "already exists", treat as success
+
+Objects are validated in dependency order (`DDL_TYPE_ORDER`).
+
+=== Phase 7: Data Migration
+
+For validated TABLE objects with data in Oracle:
+
+1. Pre-checks: `ALL_TABLES.NUM_ROWS` batch query to identify empty tables (skipped)
+2. Sorts tables by FK dependency (topological sort)
+3. Runs Ora2Pg in COPY mode per table
+4. Counts resulting rows in PostgreSQL
+
+=== Phase 8: Verify
+
+Compares row counts between Oracle and PostgreSQL for all validated tables.
+Mismatches are reported as edge cases in the result.
+
+== Threading and State
+
+=== Background Execution
+
+Migrations run in a daemon thread started by the API endpoint:
+
+[source,python]
+----
+thread = threading.Thread(
+    target=_run_migration,
+    args=(migration_id, client_id, config, ai_settings),
+    daemon=True,
+)
+thread.start()
+----
+
+=== Database Access
+
+Background threads cannot use Flask's `g.db` (request-scoped).
+Instead, they call `get_db_standalone()` which creates a new connection
+and the caller is responsible for closing it.
+
+=== File-backed State
+
+Migration state is stored as JSON files in `data/agent_migrations/`:
+
+----
+data/agent_migrations/
+├── 1.json    # {id, client_id, status, phase, message, progress, result}
+├── 2.json
+└── ...
+----
+
+This works across Gunicorn workers (no shared memory needed).
+A progress callback writes updates to the file during execution.
+
+== Performance
+
+Tested on the Adempiere schema (1116 Oracle objects):
+
+[cols="1,1"]
+|===
+| Metric | Value
+
+| Objects migrated | 1103/1104 (99.9%)
+| Failed | 0
+| Duration | 4.3 minutes
+| AI cost | $0.00
+| Tables | 463
+| Indexes | 600 (138 explicit + 462 PK inline)
+| Functions | 28/29 (1 not exported by Ora2Pg)
+| Views | 9
+| Sequences | 3
+|===
+
+=== Optimization History
+
+|===
+| Run | Duration | Change
+
+| #3 | 69 min | Baseline
+| #4 | 32 min | DDL parser dollar-quote fix
+| #7 | 4.6 min | Pre-drop + PK index detection
+| #8 | 4.3 min | Orphan index cleanup
+|===
+
+== Troubleshooting
+
+=== "Already exists" errors consuming AI tokens
+
+The agent pre-drops objects before validation. If this still happens,
+ensure the container was restarted after code changes
+(`docker-compose restart app`). Background threads hold old module references.
+
+=== Empty INDEX export
+
+Ora2Pg's INDEX export type produces empty files. This is expected.
+Indexes are embedded in the TABLE export output. The agent handles this
+automatically by parsing CREATE INDEX from the TABLE export file.
+
+=== ACCTBALANCE function not migrated
+
+Some Oracle functions (especially package body functions) may not appear
+in Ora2Pg's FUNCTION export. These are reported as "pending" in the results.
+Check if the function is part of a PACKAGE rather than a standalone function.
+
+== Future: Self-Evolving Control Plane
+
+Design goal (not yet implemented): when the agent encounters an unhandled edge case,
+it could fix its own code to handle that case permanently:
+
+* DDL parser can't handle a new pattern -> AI updates `modules/ddl_parser.py`
+* SQL preprocessing misses an Oracle idiom -> AI updates `modules/oracle_preprocessing.py`
+* Validation loop hits a new failure mode -> AI adds handling in `modules/sql_processing.py`
+
+Each migration would make the tool smarter. Edge cases that currently require manual
+developer intervention would be resolved autonomously and permanently.
