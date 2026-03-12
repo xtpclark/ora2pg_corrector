@@ -52,6 +52,29 @@ def get_db():
             g.db = None
     return g.db
 
+def get_db_standalone():
+    """Get a database connection outside of Flask request context (thread-safe).
+
+    Use this for background threads, agents, or tasks that run outside the
+    Flask request lifecycle. Caller is responsible for closing the connection.
+    """
+    try:
+        if os.environ.get('DB_BACKEND', 'sqlite') == 'sqlite':
+            conn = sqlite3.connect(SQLITE_DB_PATH, timeout=10)
+            conn.row_factory = sqlite3.Row
+            return conn
+        else:
+            if not os.environ.get('PG_DSN_CONFIG'):
+                raise ValueError("PG_DSN_CONFIG not set for PostgreSQL backend.")
+            return psycopg2.connect(
+                os.environ.get('PG_DSN_CONFIG'),
+                cursor_factory=psycopg2.extras.RealDictCursor,
+            )
+    except Exception as e:
+        logger.error(f"Error creating standalone DB connection: {e}")
+        return None
+
+
 def close_db(e=None):
     """Close the database connection."""
     db = g.pop('db', None)

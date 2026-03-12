@@ -47,6 +47,7 @@ services:
     volumes:
       - ./oracle_setup:/container-entrypoint-initdb.d:z
       - oracle_data:/opt/oracle/oradata
+      - ./sample_schemas/adempiere:/opt/oracle/adempiere_schema:z
     networks:
       - app-network
 

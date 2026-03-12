@@ -26,6 +26,7 @@ from .objects import objects_bp
 from .ddl_cache import ddl_cache_bp
 from .reports import reports_bp
 from .sql_ops import sql_ops_bp
+from .agent import agent_bp
 
 # Register all sub-blueprints with the main api_bp
 api_bp.register_blueprint(clients_bp)
@@ -36,3 +37,4 @@ api_bp.register_blueprint(objects_bp)
 api_bp.register_blueprint(ddl_cache_bp)
 api_bp.register_blueprint(reports_bp)
 api_bp.register_blueprint(sql_ops_bp)
+api_bp.register_blueprint(agent_bp)
