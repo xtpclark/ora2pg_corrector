@@ -1805,6 +1805,125 @@ function resetCompleteMigrationUI() {
 }
 
 /**
+ * Starts an autonomous agent migration for the current client.
+ * @async
+ */
+async function handleStartAgent() {
+    if (!state.currentClientId) {
+        showToast('Please select a client first.', true);
+        return;
+    }
+
+    const button = document.getElementById('start-agent-btn');
+    const progressDiv = document.getElementById('agent-progress');
+    const resultsDiv = document.getElementById('agent-results');
+
+    button.disabled = true;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Launching...';
+    progressDiv?.classList.remove('hidden');
+    resultsDiv?.classList.add('hidden');
+
+    try {
+        const response = await apiFetch('/api/agent/migrate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: state.currentClientId })
+        });
+
+        const migrationId = response.migration_id || (response.data && response.data.migration_id);
+        if (!migrationId) {
+            throw new Error('No migration ID returned');
+        }
+
+        button.innerHTML = '<i class="fas fa-cog fa-spin mr-2"></i>Running...';
+        pollAgentStatus(migrationId);
+
+    } catch (error) {
+        showToast(`Agent launch failed: ${error.message}`, true);
+        button.disabled = false;
+        button.innerHTML = '<i class="fas fa-play mr-2"></i>Launch Agent';
+        progressDiv?.classList.add('hidden');
+    }
+}
+
+/**
+ * Polls the autonomous agent migration status until completion.
+ * @param {number} migrationId
+ */
+async function pollAgentStatus(migrationId) {
+    const phaseEl = document.getElementById('agent-phase');
+    const pctEl = document.getElementById('agent-pct');
+    const barEl = document.getElementById('agent-progress-bar');
+    const statusEl = document.getElementById('agent-status-text');
+    const progressDiv = document.getElementById('agent-progress');
+    const resultsDiv = document.getElementById('agent-results');
+    const resultsContent = document.getElementById('agent-results-content');
+    const button = document.getElementById('start-agent-btn');
+
+    const poll = async () => {
+        try {
+            const data = await apiFetch(`/api/agent/status/${migrationId}`);
+            const migration = data.data || data;
+
+            // Update progress UI
+            if (phaseEl) phaseEl.textContent = (migration.phase || '').toUpperCase();
+            if (pctEl) pctEl.textContent = `${migration.progress || 0}%`;
+            if (barEl) barEl.style.width = `${migration.progress || 0}%`;
+            if (statusEl) statusEl.textContent = migration.message || '';
+
+            if (migration.status === 'running') {
+                setTimeout(poll, 3000);
+            } else {
+                // Complete or failed
+                progressDiv?.classList.add('hidden');
+                resultsDiv?.classList.remove('hidden');
+
+                if (resultsContent && migration.result) {
+                    const r = migration.result;
+                    const success = r.success;
+                    const icon = success ? 'check-circle text-green-400' : 'exclamation-circle text-red-400';
+                    let html = `
+                        <div class="flex items-center mb-3">
+                            <i class="fas fa-${icon} text-xl mr-2"></i>
+                            <span class="font-bold text-lg">${success ? 'Migration Complete' : 'Migration Failed'}</span>
+                        </div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+                            <div class="text-center"><div class="text-2xl font-bold">${r.migrated || 0}</div><div class="text-xs opacity-75">Migrated</div></div>
+                            <div class="text-center"><div class="text-2xl font-bold">${r.failed || 0}</div><div class="text-xs opacity-75">Failed</div></div>
+                            <div class="text-center"><div class="text-2xl font-bold">${r.skipped || 0}</div><div class="text-xs opacity-75">Skipped</div></div>
+                            <div class="text-center"><div class="text-2xl font-bold">${r.data_tables_migrated || 0}</div><div class="text-xs opacity-75">Data Tables</div></div>
+                        </div>
+                        <div class="text-sm opacity-75">
+                            Duration: ${(r.duration_seconds / 60).toFixed(1)} min |
+                            Data rows: ${(r.data_rows_migrated || 0).toLocaleString()} |
+                            AI cost: $${(r.ai_cost_usd || 0).toFixed(4)}
+                        </div>`;
+
+                    if (r.edge_cases && r.edge_cases.length > 0) {
+                        html += `<div class="mt-3 text-sm"><div class="font-medium mb-1">Edge Cases (${r.edge_cases.length}):</div>
+                            <div class="max-h-32 overflow-y-auto text-xs opacity-75">`;
+                        r.edge_cases.slice(0, 20).forEach(ec => {
+                            html += `<div class="truncate">${ec}</div>`;
+                        });
+                        html += '</div></div>';
+                    }
+                    resultsContent.innerHTML = html;
+                }
+
+                button.disabled = false;
+                button.innerHTML = '<i class="fas fa-play mr-2"></i>Launch Agent';
+                showToast(migration.status === 'complete' ? 'Agent migration complete!' : 'Agent migration failed', migration.status !== 'complete');
+            }
+        } catch (error) {
+            console.error('Agent poll error:', error);
+            setTimeout(poll, 5000);
+        }
+    };
+
+    poll();
+}
+
+/**
  * Starts a data export (COPY or INSERT) for the current client.
  * @async
  */
@@ -2923,6 +3042,7 @@ export function initEventListeners() {
         switch (target.id) {
             case 'start-migration-btn': handleStartMigration(); break;
             case 'start-complete-migration-btn': handleStartCompleteMigration(); break;
+            case 'start-agent-btn': handleStartAgent(); break;
             case 'migration-done-btn':
                 document.getElementById('migration-results')?.classList.add('hidden');
                 break;
