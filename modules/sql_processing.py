@@ -15,6 +15,7 @@ from datetime import datetime
 from .db import execute_query, is_postgres, insert_returning_id
 from .constants import get_session_dir, mask_sensitive_config, calculate_ai_cost
 from .oracle_preprocessing import preprocess_oracle_sql
+from .fix_pattern_cache import FixPatternCache
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -129,6 +130,11 @@ class Ora2PgAICorrector:
         self.ai_settings = ai_settings
         self.encryption_key = encryption_key
         self.fernet = Fernet(encryption_key)
+
+        # Fix pattern cache — stores error→fix mappings to skip redundant AI calls
+        from .constants import DATA_DIR
+        cache_db = os.path.join(DATA_DIR, 'fix_pattern_cache.db')
+        self.fix_cache = FixPatternCache(cache_db)
 
     def _validate_oracle_identifier(self, identifier, identifier_type="identifier"):
         """
@@ -1495,7 +1501,18 @@ Failed Query:
                         logger.error(f"Validation failed: {error_message}. Auto-create DDL is disabled.")
                         return False, f"Validation failed: {error_message}. Auto-create DDL is disabled.", None, []
                 else:
+                    # Check fix pattern cache before calling AI
+                    cached = self.fix_cache.lookup(error_message)
+                    if cached:
+                        search_text, replace_text = cached
+                        patched = self.fix_cache.apply_fix(current_sql, search_text, replace_text)
+                        if patched:
+                            logger.info(f"Attempt {attempt + 1}/{max_retries}: Applied cached fix pattern (skipped AI).")
+                            current_sql = patched
+                            continue
+
                     logger.info(f"Attempt {attempt + 1}/{max_retries}: Non-relation error encountered. Asking AI to fix query.")
+                    old_sql = current_sql
                     new_sql, ai_metrics = self._get_query_fix_from_ai(current_sql, error_message)
                     # Accumulate metrics if provided
                     if metrics is not None:
@@ -1505,6 +1522,8 @@ Failed Query:
                     if not new_sql:
                          return False, f"Validation failed: AI could not fix the query error: {error_message}", None, []
                     logger.info("AI provided a potential query fix. Retrying validation with the new query.")
+                    # Store the fix pattern for future cache hits
+                    self.fix_cache.store(error_message, old_sql, new_sql)
                     current_sql = new_sql
 
         return False, f"Validation failed after {max_retries} attempts.", None, []

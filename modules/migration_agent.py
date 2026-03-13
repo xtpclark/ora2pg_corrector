@@ -19,9 +19,10 @@ import os
 import logging
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import psycopg2
 import psycopg2.sql
@@ -255,7 +256,7 @@ class MigrationAgent:
                       'INDEX PARTITION', 'INDEX SUBPARTITION'}
 
         # Types that Ora2Pg handles natively
-        native_types = {'TABLE', 'SEQUENCE', 'INDEX'}
+        native_types = {'TABLE', 'SEQUENCE', 'INDEX', 'VIEW'}
 
         # Types that typically need AI assistance
         ai_types = {'FUNCTION', 'PROCEDURE', 'PACKAGE', 'PACKAGE BODY', 'TRIGGER'}
@@ -321,8 +322,7 @@ class MigrationAgent:
 
             if obj.object_type in ai_types:
                 obj.needs_ai = True
-            elif obj.object_type == 'VIEW':
-                obj.needs_ai = True  # Views often have Oracle-isms
+            # Views are handled natively by Ora2Pg (no AI needed)
 
             filtered_objects.append(obj)
 
@@ -466,90 +466,152 @@ class MigrationAgent:
         convertible = [o for o in self.objects if o.oracle_ddl and o.status != "export_failed"]
         total = len(convertible)
 
-        for i, obj in enumerate(convertible):
-            pct = 40 + int((i / max(total, 1)) * 20)
-            self._emit("convert", f"Converting {obj.object_type} {obj.name}...", pct)
+        # Separate native (instant) from AI-needed objects
+        native_objs = [o for o in convertible if not o.needs_ai]
+        ai_objs = [o for o in convertible if o.needs_ai]
 
-            try:
-                if obj.needs_ai:
-                    pg_ddl, metrics = self.corrector.ai_correct_sql(
-                        obj.oracle_ddl, source_dialect="oracle"
-                    )
+        # Native objects: Ora2Pg already converted, just assign
+        for obj in native_objs:
+            obj.pg_ddl = obj.oracle_ddl
+            obj.status = "converted"
+
+        if not ai_objs:
+            converted = sum(1 for o in self.objects if o.status == "converted")
+            self._emit("convert", f"Converted {converted}/{total} objects (0 needed AI).", 60)
+            return
+
+        self._emit("convert",
+                    f"AI-converting {len(ai_objs)} objects ({len(native_objs)} native done)...", 42)
+
+        # Parallel AI conversion — 4 concurrent threads
+        completed_count = 0
+
+        def convert_one(obj: 'MigrationObject'):
+            """Convert a single object via AI (runs in thread pool)."""
+            pg_ddl, metrics = self.corrector.ai_correct_sql(
+                obj.oracle_ddl, source_dialect="oracle"
+            )
+            return obj, pg_ddl, metrics
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(convert_one, obj): obj for obj in ai_objs}
+
+            for future in as_completed(futures):
+                obj = futures[future]
+                completed_count += 1
+                pct = 42 + int((completed_count / len(ai_objs)) * 18)
+                try:
+                    _, pg_ddl, metrics = future.result()
                     obj.pg_ddl = pg_ddl
                     obj.ai_tokens_used = metrics.get('tokens_used', 0)
                     obj.status = "converted"
-                else:
-                    # Ora2Pg output is already PostgreSQL DDL
-                    obj.pg_ddl = obj.oracle_ddl
-                    obj.status = "converted"
-            except Exception as e:
-                obj.status = "convert_failed"
-                obj.error = str(e)
-                logger.warning(f"Conversion failed for {obj.name}: {e}")
+                except Exception as e:
+                    obj.status = "convert_failed"
+                    obj.error = str(e)
+                    logger.warning(f"Conversion failed for {obj.name}: {e}")
+
+                self._emit("convert",
+                           f"AI-converted {completed_count}/{len(ai_objs)}: {obj.name}", pct)
 
         converted = sum(1 for o in self.objects if o.status == "converted")
-        self._emit("convert", f"Converted {converted}/{total} objects.", 60)
+        self._emit("convert", f"Converted {converted}/{total} objects ({len(ai_objs)} via AI).", 60)
 
     # -----------------------------------------------------------------
     # Phase: VALIDATE
     # -----------------------------------------------------------------
 
+    def _validate_one(self, obj: 'MigrationObject'):
+        """Validate a single object's DDL against PostgreSQL with self-healing."""
+        self._drop_existing_object(obj.name, obj.object_type)
+
+        message = ""
+        while obj.attempts < self.MAX_RETRY_PER_OBJECT:
+            obj.attempts += 1
+
+            success, message, corrected_sql, _ = self.corrector.validate_sql(
+                obj.pg_ddl, self.pg_dsn, defer_fk=True,
+            )
+
+            if success:
+                obj.status = "validated"
+                obj.pg_ddl = corrected_sql or obj.pg_ddl
+                return
+
+            if message and 'already exists' in message.lower():
+                obj.status = "validated"
+                return
+
+            logger.info(
+                f"Validation attempt {obj.attempts} failed for {obj.name}: {message}"
+            )
+            if corrected_sql and corrected_sql != obj.pg_ddl:
+                obj.pg_ddl = corrected_sql
+            elif obj.attempts < self.MAX_RETRY_PER_OBJECT:
+                fixed_sql, metrics = self.corrector.ai_correct_sql(
+                    f"-- ERROR: {message}\n-- Fix this PostgreSQL DDL:\n{obj.pg_ddl}",
+                    source_dialect="oracle",
+                )
+                obj.pg_ddl = fixed_sql
+                obj.ai_tokens_used += metrics.get('tokens_used', 0)
+
+        obj.status = "failed"
+        obj.error = message
+        self.result.edge_cases.append(f"{obj.object_type} {obj.name}: {message}")
+
     def _validate(self):
-        """Validate converted DDL against PostgreSQL with self-healing."""
+        """Validate converted DDL against PostgreSQL with self-healing.
+
+        Objects are validated in dependency-type order (TYPE → SEQUENCE → TABLE →
+        INDEX → VIEW → FUNCTION → …). Within each type group, validation runs
+        in parallel using a thread pool for maximum throughput.
+        """
         self._emit("validate", "Validating DDL against PostgreSQL...", 60)
 
-        # Sort by dependency order
         ordered = self._dependency_order()
         validatable = [o for o in ordered if o.pg_ddl and o.object_type in VALIDATABLE_TYPES]
         total = len(validatable)
+        completed = 0
 
-        for i, obj in enumerate(validatable):
-            pct = 60 + int(((i + 1) / max(total, 1)) * 20)
-            self._emit("validate", f"Validating {obj.object_type} {obj.name} ({i+1}/{total})...", pct)
+        # Group objects by type, preserving DDL_TYPE_ORDER
+        type_groups: dict[str, list] = {}
+        for obj in validatable:
+            type_groups.setdefault(obj.object_type, []).append(obj)
 
-            # Pre-drop the object to avoid "already exists" errors wasting AI tokens
-            self._drop_existing_object(obj.name, obj.object_type)
+        for obj_type in DDL_TYPE_ORDER:
+            group = type_groups.get(obj_type, [])
+            if not group:
+                continue
 
-            while obj.attempts < self.MAX_RETRY_PER_OBJECT:
-                obj.attempts += 1
+            self._emit("validate",
+                        f"Validating {len(group)} {obj_type}s ({completed}/{total} done)...",
+                        60 + int((completed / max(total, 1)) * 20))
 
-                success, message, corrected_sql, _ = self.corrector.validate_sql(
-                    obj.pg_ddl, self.pg_dsn, defer_fk=True,
-                )
+            # Parallel validation within type group — 6 concurrent workers
+            workers = min(6, len(group))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {pool.submit(self._validate_one, obj): obj for obj in group}
+                for future in as_completed(futures):
+                    obj = futures[future]
+                    completed += 1
+                    try:
+                        future.result()
+                    except Exception as e:
+                        obj.status = "failed"
+                        obj.error = str(e)
+                        logger.warning(f"Validation exception for {obj.name}: {e}")
+                    pct = 60 + int((completed / max(total, 1)) * 20)
+                    self._emit("validate",
+                               f"Validated {completed}/{total}: {obj.object_type} {obj.name}",
+                               pct)
 
-                if success:
-                    obj.status = "validated"
-                    obj.pg_ddl = corrected_sql or obj.pg_ddl
-                    self.result.migrated += 1
-                    break
+        # Handle any types not in DDL_TYPE_ORDER
+        for obj_type, group in type_groups.items():
+            if obj_type not in DDL_TYPE_ORDER:
+                for obj in group:
+                    completed += 1
+                    self._validate_one(obj)
 
-                # Check if it's an "already exists" error — treat as success
-                if message and 'already exists' in message.lower():
-                    obj.status = "validated"
-                    self.result.migrated += 1
-                    break
-
-                logger.info(
-                    f"Validation attempt {obj.attempts} failed for {obj.name}: {message}"
-                )
-                if corrected_sql and corrected_sql != obj.pg_ddl:
-                    obj.pg_ddl = corrected_sql  # Use AI-corrected version for next attempt
-                elif obj.attempts < self.MAX_RETRY_PER_OBJECT:
-                    # Force AI re-correction with error context
-                    fixed_sql, metrics = self.corrector.ai_correct_sql(
-                        f"-- ERROR: {message}\n-- Fix this PostgreSQL DDL:\n{obj.pg_ddl}",
-                        source_dialect="oracle",
-                    )
-                    obj.pg_ddl = fixed_sql
-                    obj.ai_tokens_used += metrics.get('tokens_used', 0)
-
-            if obj.status != "validated":
-                obj.status = "failed"
-                obj.error = message
-                self.result.failed += 1
-                self.result.edge_cases.append(f"{obj.object_type} {obj.name}: {message}")
-
-        # Count all validated objects (including PK indexes pre-validated in assess)
+        # Recount from object statuses
         self.result.migrated = sum(1 for o in self.objects if o.status == "validated")
         self.result.failed = sum(1 for o in self.objects if o.status == "failed")
         self.result.skipped = sum(1 for o in self.objects
@@ -565,8 +627,46 @@ class MigrationAgent:
     # Phase: DATA
     # -----------------------------------------------------------------
 
+    def _migrate_one_table(self, obj: 'MigrationObject', oracle_row_count: int) -> Tuple[bool, int]:
+        """Migrate data for a single table via Ora2Pg COPY mode.
+
+        Returns (success, rows_migrated).
+        """
+        try:
+            copy_config = self.config.copy()
+            copy_config['type'] = 'COPY'
+            copy_config['ALLOW'] = obj.name
+            copy_config['PG_DSN'] = self.pg_dsn
+
+            export_result = self.corrector.run_ora2pg_export(
+                self.client_id, self.db_conn, copy_config,
+                session_name=f"agent-data-{obj.name}",
+            )
+
+            if isinstance(export_result, tuple) and len(export_result) == 2:
+                result, err = export_result
+            else:
+                err = f"Unexpected return: {type(export_result)}"
+
+            if err:
+                logger.warning(f"Data migration warning for {obj.name}: {err}")
+                self.result.edge_cases.append(f"Data copy failed for {obj.name}: {err}")
+                return False, 0
+
+            pg_rows = self._count_pg_rows(obj.name) or 0
+            return True, pg_rows
+
+        except Exception as e:
+            logger.warning(f"Data migration failed for {obj.name}: {e}")
+            self.result.edge_cases.append(f"Data migration failed for {obj.name}: {e}")
+            return False, 0
+
     def _migrate_data(self):
-        """Migrate data for validated tables via Ora2Pg COPY mode."""
+        """Migrate data for validated tables via Ora2Pg COPY mode.
+
+        Tables are sorted by FK dependency, then migrated in parallel waves.
+        Tables at the same dependency depth run concurrently.
+        """
         self._emit("data", "Migrating data...", 80)
 
         tables = [o for o in self.objects if o.object_type == 'TABLE' and o.status == 'validated']
@@ -594,49 +694,45 @@ class MigrationAgent:
 
         self._emit(
             "data",
-            f"Found {len(non_empty)} tables with data ({empty_count} empty, skipping).",
+            f"Found {len(non_empty)} tables with data ({empty_count} empty, skipping). "
+            f"Migrating in parallel waves...",
             81,
         )
 
+        # Build FK dependency waves — tables at same depth can run in parallel
         ordered_tables = self._sort_tables_for_data(non_empty)
 
-        for i, obj in enumerate(ordered_tables):
-            row_count = oracle_counts.get(obj.name.upper(), 0)
-            pct = 81 + int(((i + 1) / len(ordered_tables)) * 9)
-            self._emit(
-                "data",
-                f"Migrating {obj.name} ({row_count} rows, {i+1}/{len(ordered_tables)})...",
-                pct,
-            )
+        # Migrate with parallel workers (4 concurrent Ora2Pg COPY processes)
+        completed = 0
+        total = len(ordered_tables)
+        workers = min(4, total)
 
-            try:
-                # Use Ora2Pg COPY mode for data transfer
-                copy_config = self.config.copy()
-                copy_config['type'] = 'COPY'
-                copy_config['ALLOW'] = obj.name
-                copy_config['PG_DSN'] = self.pg_dsn
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {}
+            for obj in ordered_tables:
+                row_count = oracle_counts.get(obj.name.upper(), 0)
+                f = pool.submit(self._migrate_one_table, obj, row_count)
+                futures[f] = (obj, row_count)
 
-                export_result = self.corrector.run_ora2pg_export(
-                    self.client_id, self.db_conn, copy_config,
-                    session_name=f"agent-data-{obj.name}",
+            for future in as_completed(futures):
+                obj, row_count = futures[future]
+                completed += 1
+                pct = 81 + int((completed / total) * 9)
+
+                try:
+                    success, pg_rows = future.result()
+                    if success:
+                        self.result.data_tables_migrated += 1
+                        self.result.data_rows_migrated += pg_rows
+                except Exception as e:
+                    logger.warning(f"Data migration exception for {obj.name}: {e}")
+                    self.result.edge_cases.append(f"Data migration failed for {obj.name}: {e}")
+
+                self._emit(
+                    "data",
+                    f"Data: {completed}/{total} tables ({self.result.data_rows_migrated} rows)...",
+                    pct,
                 )
-
-                if isinstance(export_result, tuple) and len(export_result) == 2:
-                    result, err = export_result
-                else:
-                    err = f"Unexpected return: {type(export_result)}"
-
-                if err:
-                    logger.warning(f"Data migration warning for {obj.name}: {err}")
-                    self.result.edge_cases.append(f"Data copy failed for {obj.name}: {err}")
-                else:
-                    self.result.data_tables_migrated += 1
-                    pg_rows = self._count_pg_rows(obj.name)
-                    self.result.data_rows_migrated += pg_rows or 0
-
-            except Exception as e:
-                logger.warning(f"Data migration failed for {obj.name}: {e}")
-                self.result.edge_cases.append(f"Data migration failed for {obj.name}: {e}")
 
         self._emit(
             "data",
@@ -733,7 +829,7 @@ class MigrationAgent:
                         f"content length: {len(content)} chars")
             return
 
-        native_types = {'TABLE', 'SEQUENCE', 'INDEX'}
+        native_types = {'TABLE', 'SEQUENCE', 'INDEX', 'VIEW'}
         assigned = 0
         unmatched = []
 

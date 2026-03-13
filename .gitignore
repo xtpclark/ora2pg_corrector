@@ -58,4 +58,8 @@ settings.db
 .DS_Store
 Thumbs.db
 CLAUDE.md
-CLAUDE.md
+
+# Large binary files (Oracle dump files, seed data archives)
+*.dmp
+*.tar.gz
+sample_schemas/*/seed/
