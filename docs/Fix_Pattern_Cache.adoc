@@ -1,0 +1,192 @@
+= Fix Pattern Cache
+:toc: auto
+:toclevels: 3
+
+== Overview
+
+The Fix Pattern Cache is a lightweight machine-learning-lite system that eliminates redundant AI calls during SQL validation. When the AI fixes a validation error, the error pattern and the corresponding fix are cached. On future identical errors, the cached fix is applied directly -- zero AI tokens spent.
+
+This is the cheapest possible learning loop: no embeddings, no training, no inference cost on repeat hits. Just error normalization, hashing, and diff replay.
+
+== How It Works
+
+=== The Problem
+
+During Oracle-to-PostgreSQL migration, many objects hit the same validation errors:
+
+* `argument of AND must be type boolean, not type bigint` -- Oracle allows implicit boolean coercion, PostgreSQL does not
+* `syntax error at or near "..."` -- Oracle-specific syntax that Ora2Pg doesn't fully convert
+* `operator does not exist: timestamp + bigint` -- Oracle date arithmetic idioms
+
+Without caching, every occurrence triggers a separate AI API call. In a 185-view schema, the same error pattern can appear 35+ times -- each one costing tokens and wall-clock time.
+
+=== The Solution
+
+[source]
+----
+Validation Error
+      │
+      ▼
+ Normalize Error         Strip object names, line numbers,
+      │                  whitespace → canonical pattern
+      ▼
+ Hash Pattern            SHA256 → 16-char key
+      │
+      ▼
+ Cache Lookup            SQLite: fix_patterns table
+      │
+   ┌──┴──┐
+   │     │
+  HIT   MISS
+   │     │
+   │     ▼
+   │  Call AI ──────► Diff original vs fixed SQL
+   │     │                    │
+   │     │           Store (pattern_hash, search, replace)
+   │     │                    │
+   │     ▼                    ▼
+   │  Apply AI Fix     Cache for next time
+   │
+   ▼
+ Apply Cached Fix       search → replace on SQL
+   │                    (no AI call)
+   ▼
+ Retry Validation
+----
+
+=== Error Normalization
+
+Errors are normalized so structurally identical errors produce the same cache key, regardless of which specific object triggered them:
+
+[cols="1,1"]
+|===
+| Raw Error | Normalized Pattern
+
+| `relation "c_invoice" already exists`
+| `relation "__ID__" already exists`
+
+| `argument of AND must be type boolean, not type bigint\nLINE 6: CASE WHEN il.QtyInvoiced<>0...`
+| `argument of AND must be type boolean, not type bigint`
+
+| `function date_trunc(integer, bigint) does not exist`
+| `function date_trunc(integer, bigint) does not exist`
+|===
+
+Normalization rules:
+
+1. Strip `LINE N: ...` context (PostgreSQL error detail)
+2. Replace quoted identifiers with `__ID__` placeholder
+3. Normalize line/position references to `N`
+4. Collapse whitespace
+
+=== Fix Transforms
+
+When the AI fixes an error, the cache stores the *diff* between the original and fixed SQL -- not the full SQL. This makes fixes portable across different objects with the same error pattern.
+
+For example, the fix for `argument of AND must be type boolean, not type bigint` is typically:
+
+[source,sql]
+----
+-- Original (Oracle idiom)
+CASE WHEN il.M_Product_ID AND il.M_Product_ID IS NOT NULL THEN ...
+
+-- Fixed (PostgreSQL)
+CASE WHEN il.M_Product_ID <> 0 AND il.M_Product_ID IS NOT NULL THEN ...
+----
+
+The cache stores the search/replace pair, not the full DDL.
+
+== Storage
+
+=== Schema
+
+[source,sql]
+----
+CREATE TABLE fix_patterns (
+    pattern_hash    TEXT PRIMARY KEY,  -- SHA256[:16] of normalized error
+    error_pattern   TEXT NOT NULL,     -- Normalized error text
+    object_type     TEXT,              -- TABLE, VIEW, FUNCTION, etc.
+    fix_description TEXT,              -- Human-readable fix description
+    search_regex    TEXT NOT NULL,     -- Text to find in failing SQL
+    replace_template TEXT NOT NULL,    -- Replacement text
+    hit_count       INTEGER DEFAULT 1, -- Times this pattern was reused
+    created_at      TIMESTAMP,
+    last_used_at    TIMESTAMP
+);
+----
+
+=== Location
+
+* **File**: `data/fix_pattern_cache.db` (SQLite)
+* **Module**: `modules/fix_pattern_cache.py`
+* **Integration**: `modules/sql_processing.py` line ~1503 (validation retry loop)
+
+== Performance Impact
+
+Tested on Adempiere 3.9.4 schema (2489 Oracle objects, 185 views, 56 functions):
+
+[cols="1,1,1"]
+|===
+| Metric | Without Cache | With Cache
+
+| AI calls for validation fixes
+| ~2,623
+| ~2,481 (142 skipped)
+
+| Top pattern hits
+| n/a
+| `syntax error at "__ID__"`: 35 hits
+
+| Second pattern
+| n/a
+| `AND must be boolean, not bigint`: 35 hits
+
+| Cache patterns stored
+| n/a
+| 17
+|===
+
+The cache starts cold on the first run and warms up as errors are encountered. Benefits compound across runs -- the second migration of a similar schema sees immediate cache hits from patterns stored during the first run.
+
+== Compounding Effect
+
+The cache persists across migrations. Common Oracle→PostgreSQL error patterns are largely schema-independent:
+
+* Boolean coercion (`AND` on integers) appears in any schema using Oracle's implicit casting
+* Date arithmetic (`timestamp + bigint`) appears wherever Oracle `DATE + NUMBER` is used
+* Syntax differences are consistent across Oracle versions
+
+This means migrating Schema A makes Schema B faster, even if they share no tables. The error patterns overlap because they stem from the same Oracle→PostgreSQL language differences.
+
+== Architecture
+
+[source]
+----
+Ora2PgAICorrector
+└── fix_cache: FixPatternCache
+        │
+        ├── normalize_error()    Canonical error pattern
+        ├── lookup()             Check cache before AI
+        ├── store()              Cache after AI fix
+        ├── apply_fix()          Apply cached transform
+        └── stats()              Pattern count + hit count
+----
+
+The cache is initialized in `Ora2PgAICorrector.__init__()` and used in the validation retry loop at `validate_sql()`. The integration is two touch points:
+
+1. **Before AI call**: `self.fix_cache.lookup(error_message)` -- if hit, apply and skip AI
+2. **After AI fix**: `self.fix_cache.store(error_message, old_sql, new_sql)` -- cache for next time
+
+== Future: MCP Server
+
+The current implementation is a local SQLite cache. A future enhancement could expose it as an MCP (Model Context Protocol) server, making the pattern knowledge base:
+
+* Queryable from Claude Code or other AI tools
+* Shareable across projects and teams
+* Evolving into a broader Oracle→PostgreSQL knowledge base
+
+The MCP server would provide tools like:
+
+* `lookup_fix_pattern(error, object_type)` -- find known fix
+* `store_fix_pattern(error, original, fixed)` -- add new pattern
+* `list_patterns(sort_by_hits)` -- browse accumulated knowledge
