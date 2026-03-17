@@ -140,9 +140,13 @@ def insert_returning_id(conn, table, columns, values, id_column='id'):
         cursor.execute(query, values)
         return cursor.lastrowid
 
-def init_db():
-    """Initialize the database schema."""
-    conn = get_db()
+def init_db(conn=None):
+    """Initialize the database schema.
+
+    :param conn: Optional database connection. Uses Flask g.db if not provided.
+    """
+    if conn is None:
+        conn = get_db()
     if not conn:
         logger.error("DB connection failed, aborting initialization.")
         return

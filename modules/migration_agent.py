@@ -108,6 +108,8 @@ class MigrationAgent:
         encryption_key: bytes,
         ai_settings: dict,
         callback=None,
+        ddl_only: bool = False,
+        skip_verify: bool = False,
     ):
         """
         :param client_id: Client ID from the database
@@ -116,6 +118,8 @@ class MigrationAgent:
         :param encryption_key: Fernet encryption key
         :param ai_settings: AI provider settings dict
         :param callback: Optional progress callback(phase, message, pct)
+        :param ddl_only: If True, skip data migration and verification
+        :param skip_verify: If True, skip row count verification
         """
         self.client_id = client_id
         self.config = client_config
@@ -123,6 +127,8 @@ class MigrationAgent:
         self.encryption_key = encryption_key
         self.ai_settings = ai_settings
         self.callback = callback
+        self.ddl_only = ddl_only
+        self.skip_verify = skip_verify
 
         # Key config values
         self.oracle_schema = client_config.get('oracle_schema', client_config.get('schema', ''))
@@ -150,8 +156,10 @@ class MigrationAgent:
             self._phase(Phase.EXPORT, self._export)
             self._phase(Phase.CONVERT, self._convert)
             self._phase(Phase.VALIDATE, self._validate)
-            self._phase(Phase.DATA, self._migrate_data)
-            self._phase(Phase.VERIFY, self._verify)
+            if not self.ddl_only:
+                self._phase(Phase.DATA, self._migrate_data)
+                if not self.skip_verify:
+                    self._phase(Phase.VERIFY, self._verify)
             self.result.phase = Phase.COMPLETE
             self.result.success = True
         except MigrationAbort as e:
